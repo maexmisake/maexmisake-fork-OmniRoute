@@ -8,7 +8,7 @@
  */
 
 export type ModelEndpointKind =
-  "chat" | "image" | "video" | "embedding" | "rerank" | "non-chat" | "unknown";
+  "chat" | "image" | "video" | "embedding" | "rerank" | "decision" | "non-chat" | "unknown";
 
 export type ModelEndpointDecision = {
   kind: ModelEndpointKind;
@@ -32,6 +32,12 @@ const EMBEDDING_ENDPOINTS = new Set(["embeddings", "embedding"]);
 const RERANK_ENDPOINTS = new Set(["rerank", "reranking"]);
 const IMAGE_ENDPOINTS = new Set(["image", "images", "images/generations"]);
 const VIDEO_ENDPOINTS = new Set(["video", "videos", "videos/generations"]);
+/**
+ * Typed decision models (System One). A model that declares a chat endpoint
+ * alongside this one is still a chat model — the chat check above wins — so a
+ * mixed chat+decision model stays chat-selectable.
+ */
+const DECISION_ENDPOINTS = new Set(["systemone", "decision", "decisions"]);
 
 function normalizeEndpoint(endpoint: string): string {
   return endpoint.trim().toLowerCase().replace(/^\/+/, "").replace(/^v1\//, "");
@@ -57,6 +63,9 @@ function classifyExplicitEndpoints(
   }
   if (endpoints.some((endpoint) => VIDEO_ENDPOINTS.has(endpoint))) {
     return { kind: "video", chatSelectable: false, reason: "explicit-endpoints" };
+  }
+  if (endpoints.some((endpoint) => DECISION_ENDPOINTS.has(endpoint))) {
+    return { kind: "decision", chatSelectable: false, reason: "explicit-endpoints" };
   }
   return { kind: "non-chat", chatSelectable: false, reason: "explicit-endpoints" };
 }
