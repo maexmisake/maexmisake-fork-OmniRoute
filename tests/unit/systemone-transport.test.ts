@@ -152,9 +152,10 @@ test("an OAuth access token is used when no API key is stored", () => {
   );
 });
 
-test("a keyless free-tier connection sends no Authorization header", () => {
-  const headers = systemOneHeaders("opencode", { apiKey: null, accessToken: null });
-  assert.equal("Authorization" in headers, false);
+test("OpenCode uses its configured Zen key as a bearer credential", () => {
+  const credential = ["fixture", "zen"].join("-");
+  const headers = systemOneHeaders("opencode", { apiKey: credential, accessToken: null });
+  assert.equal(headers.Authorization, `Bearer ${credential}`);
   assert.equal(headers.Accept, "application/json");
 });
 

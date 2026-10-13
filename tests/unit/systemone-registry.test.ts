@@ -208,17 +208,32 @@ test("the model tier is derived per provider and per model id", () => {
   assert.equal(systemOneModelTier("openrouter", "typesafe/jev-1.13:free"), "free");
 });
 
-test("a free-tier model is only dispatchable on a connection that is not a paid account", () => {
-  // Keyless OpenCode connection: the documented free tier.
-  assert.equal(isConnectionEligibleForTier("free", { apiKey: null, accessToken: null }), true);
-  // A paid key must never be billed for the free alias.
-  assert.equal(isConnectionEligibleForTier("free", { apiKey: "sk-live-paid" }), false);
-  // Unless the operator explicitly declares that account to be the free tier.
+test("a free-tier model requires a keyed connection explicitly tagged free", () => {
+  const credential = ["fixture", "credential"].join("-");
+  // The documented OpenCode endpoint always requires a Zen API key.
   assert.equal(
-    isConnectionEligibleForTier("free", {
-      apiKey: "sk-live-paid",
-      providerSpecificData: { systemOneTier: "free" },
-    }),
+    isConnectionEligibleForTier(
+      "free",
+      { apiKey: credential, accessToken: null },
+      "opencode"
+    ),
+    false
+  );
+  // A normal paid key must never be billed for the free alias.
+  assert.equal(
+    isConnectionEligibleForTier("free", { apiKey: credential }, "opencode"),
+    false
+  );
+  // The operator must explicitly mark the legitimate free-account key.
+  assert.equal(
+    isConnectionEligibleForTier(
+      "free",
+      {
+        apiKey: credential,
+        providerSpecificData: { systemOneTier: "free" },
+      },
+      "opencode"
+    ),
     true
   );
 });

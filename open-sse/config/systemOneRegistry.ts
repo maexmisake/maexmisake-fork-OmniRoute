@@ -99,9 +99,9 @@ export const SYSTEMONE_BACKENDS = {
     decisionUrl: "https://opencode.ai/inference/v1/systemone",
     modelsUrl: "https://opencode.ai/zen/v1/models",
     allowedHosts: ["opencode.ai"],
-    // OpenCode Zen's free tier is keyless (and client-contract restricted); a
-    // paid Zen account authenticates with a bearer key.
-    requiresKey: false,
+    // The documented System One endpoint requires an OpenCode Zen API key for
+    // both paid Jev and the limited-time free model.
+    requiresKey: true,
     timeoutMs: 30_000,
     limits: JEV_SYSTEMONE_LIMITS,
     // Documented Zen decision ids: `jev-1.13`, `jev-1.13-free`.
@@ -321,11 +321,9 @@ type ConnectionTierFields = {
  *
  * A free-tier model is dispatchable only on an account that is itself the free
  * tier: a keyless connection, or one the operator explicitly tagged
- * `systemOneTier: "free"`. Routing a free alias through a paid credential would
- * bill that account for a model the caller asked for as free (and OpenCode's
- * free tier is limited-time and client-restricted, so the request would not be
- * free anyway). A paid model, conversely, needs a credential whenever the
- * backend requires one.
+ * `systemOneTier: "free"`. A paid model, conversely, always needs the backend's
+ * normal credential when `requiresKey` is true. A free-tier model may still need
+ * a credential; the tier tag prevents paid fallback, it does not bypass auth.
  */
 export function isConnectionEligibleForTier(
   tier: SystemOneTier,
@@ -334,12 +332,12 @@ export function isConnectionEligibleForTier(
 ): boolean {
   const declared = connection.providerSpecificData?.systemOneTier;
   const hasCredential = Boolean(connection.apiKey || connection.accessToken);
-  if (tier === "free") {
-    if (declared === "free") return true;
-    return !hasCredential;
-  }
-  if (declared === "free") return false;
   const requiresKey =
     provider && isSystemOneProvider(provider) ? !!systemOneBackend(provider).requiresKey : false;
+  if (tier === "free") {
+    if (declared !== "free") return false;
+    return requiresKey ? hasCredential : true;
+  }
+  if (declared === "free") return false;
   return requiresKey ? hasCredential : true;
 }

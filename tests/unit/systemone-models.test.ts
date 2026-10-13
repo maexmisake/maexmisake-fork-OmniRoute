@@ -62,6 +62,13 @@ function connection(
   };
 }
 
+function freeConnection(provider: string): SystemOneCatalogConnection {
+  return connection(provider, {
+    apiKey: ["fixture", "free", provider].join("-"),
+    providerSpecificData: { systemOneTier: "free" },
+  });
+}
+
 function deps(
   connections: SystemOneCatalogConnection[],
   bodies: Record<string, unknown | (() => Promise<Response>)>,
@@ -143,7 +150,13 @@ test("OpenRouter reads its public decisions filter", async () => {
 test("OpenCode Zen's shared model list is filtered to its decision models", async () => {
   const response = await handleSystemOneModels(
     {},
-    deps([connection("opencode", { apiKey: null })], { "opencode.ai": ZEN_LIST })
+    deps(
+      [
+        connection("opencode", { apiKey: ["fixture", "paid", "opencode"].join("-") }),
+        freeConnection("opencode"),
+      ],
+      { "opencode.ai": ZEN_LIST }
+    )
   );
   const models = await listed(response);
   assert.deepEqual(
@@ -188,7 +201,8 @@ test("every configured backend contributes to one aggregated list", async () => 
     deps(
       [
         connection("openrouter"),
-        connection("opencode", { apiKey: null }),
+        connection("opencode", { apiKey: ["fixture", "paid", "opencode"].join("-") }),
+        freeConnection("opencode"),
         connection("vercel-ai-gateway"),
       ],
       {
@@ -325,7 +339,13 @@ test("the API key's model rules filter the list by its qualified id", async () =
         return modelId !== "opencode/jev-1.13-free";
       },
     },
-    deps([connection("opencode", { apiKey: null })], { "opencode.ai": ZEN_LIST })
+    deps(
+      [
+        connection("opencode", { apiKey: ["fixture", "paid", "opencode"].join("-") }),
+        freeConnection("opencode"),
+      ],
+      { "opencode.ai": ZEN_LIST }
+    )
   );
   assert.deepEqual(
     (await listed(response)).map((model) => model.id),

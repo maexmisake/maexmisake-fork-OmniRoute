@@ -112,10 +112,9 @@ export function systemOneUrl(
 /**
  * Headers for a System One call: JSON plus the connection's own bearer token.
  *
- * A keyless connection (OpenCode Zen's free tier) sends no `Authorization`
- * header at all rather than an empty bearer. `providerSpecificData.headers` is
- * deliberately NOT merged — it is operator data on a chat connection and must
- * not be able to replace the credential on this path.
+ * Every hosted backend requires its configured key. The tier tag only controls
+ * whether a key can serve a limited-time free model; it never makes the route
+ * anonymous.
  */
 export function systemOneHeaders(
   provider: string,

@@ -224,7 +224,15 @@ test("a 401 cools down the selected connection and records no usage row", async 
 test("a 403 is surfaced as 403 — a restricted free tier is not reported as success", async () => {
   const recorded = recorder();
   const response = await handleSystemOneProxy(
-    options({ provider: "opencode", tier: "free", credentials: { connectionId: "conn-free" } }),
+    options({
+      provider: "opencode",
+      tier: "free",
+      credentials: {
+        connectionId: "conn-free",
+        apiKey: ["fixture", "free", "key"].join("-"),
+        providerSpecificData: { systemOneTier: "free" },
+      },
+    }),
     deps(recorded, async () => jsonResponse({ error: "FreeTierError" }, 403))
   );
   assert.equal(response.status, 403);
@@ -413,29 +421,46 @@ test("missing or sentinel credentials are rejected before any upstream call", as
   }
 });
 
-test("a keyless connection may serve a keyless backend but not a key-requiring one", async () => {
-  const keyless = recorder();
+test("a tagged free-tier OpenCode key authenticates while a keyless connection is rejected", async () => {
+  const credential = ["zen", "free", "fixture"].join("-");
+  const free = recorder();
   const freeResponse = await handleSystemOneProxy(
     options({
       provider: "opencode",
       tier: "free",
       canonicalModel: "opencode/jev-1.13-free",
       body: { model: "jev-1.13-free", state: STATE, questions: { urgent: { type: "noul" } } },
-      credentials: { connectionId: "conn-free", apiKey: null },
+      credentials: {
+        connectionId: "conn-free",
+        apiKey: credential,
+        providerSpecificData: { systemOneTier: "free" },
+      },
+    }),
+    deps(free, async () => jsonResponse(ANSWER_BODY))
+  );
+  assert.equal(freeResponse.status, 200);
+  assert.equal(free.requests.length, 1);
+  assert.equal(
+    (free.requests[0].init.headers as Record<string, string>).Authorization,
+    `Bearer ${credential}`
+  );
+
+  const keyless = recorder();
+  const keylessResponse = await handleSystemOneProxy(
+    options({
+      provider: "opencode",
+      tier: "free",
+      canonicalModel: "opencode/jev-1.13-free",
+      credentials: {
+        connectionId: "conn-keyless",
+        apiKey: null,
+        providerSpecificData: { systemOneTier: "free" },
+      },
     }),
     deps(keyless, async () => jsonResponse(ANSWER_BODY))
   );
-  assert.equal(freeResponse.status, 200);
-  assert.equal(keyless.requests.length, 1);
-  assert.equal("Authorization" in (keyless.requests[0].init.headers as object), false);
-
-  const paid = recorder();
-  const paidResponse = await handleSystemOneProxy(
-    options({ credentials: { connectionId: "conn-2", apiKey: null } }),
-    deps(paid, async () => jsonResponse(ANSWER_BODY))
-  );
-  assert.equal(paidResponse.status, 401);
-  assert.equal(paid.requests.length, 0);
+  assert.equal(keylessResponse.status, 401);
+  assert.equal(keyless.requests.length, 0);
 });
 
 test("a free-tier model is never dispatched on a paid account", async () => {
