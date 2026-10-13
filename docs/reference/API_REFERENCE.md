@@ -507,6 +507,8 @@ Use this endpoint when a sidecar runs out-of-process and cannot import
 | POST   | `/v1/classify`                            | Jina classify (`api.jina.ai`)      |
 | POST   | `/v1/segment`                             | Jina segmenter (`segment.jina.ai`) |
 | POST   | `/v1/moderations`                         | OpenAI Moderations                 |
+| POST   | `/v1/systemone`                           | Typed decisions (noul/choice/score) |
+| GET    | `/v1/systemone/models`                    | Decision model catalog             |
 | GET    | `/v1/models`                              | OpenAI                             |
 | POST   | `/v1/messages/count_tokens`               | Anthropic                          |
 | GET    | `/v1beta/models`                          | Gemini                             |
@@ -538,6 +540,12 @@ POST /v1/search      { "query": "...", "provider": "jina-search" }
 
 # Moderations
 POST /v1/moderations { "model": "omni-moderation-latest", "input": "..." }
+
+# System One typed decision — answers questions about `state` with probabilities, not text.
+# `model` is a bare alias (`jev`, `jev-free`) or a provider-qualified id
+# (`openrouter/typesafe/jev-1.13`, which pins that one backend). Decision models are listed
+# by GET /v1/systemone/models, not by GET /v1/models. See docs/research/systemone-native.md.
+POST /v1/systemone   { "model": "jev", "state": "...", "questions": { "urgent": { "type": "noul" } } }
 
 # TTS — returns audio/mpeg (or requested format) body
 POST /v1/audio/speech { "model": "openai/tts-1", "input": "Hello", "voice": "alloy" }
