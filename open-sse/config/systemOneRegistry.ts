@@ -73,6 +73,13 @@ export type SystemOneBackend = {
   /** Request-shape limits for this backend. */
   limits: SystemOneLimits;
   /**
+   * Fallback filter for a catalog that lists chat and decision models together
+   * (OpenCode Zen's `/zen/v1/models`) or carries no modality metadata. A row
+   * whose own metadata already declares a decision capability is kept
+   * regardless; this only decides the rows that declare nothing.
+   */
+  decisionModelPattern: RegExp;
+  /**
    * Whether the wire contract has been confirmed against the live upstream from
    * this repository. Documentation-derived endpoints stay `false`.
    */
@@ -97,6 +104,8 @@ export const SYSTEMONE_BACKENDS = {
     requiresKey: false,
     timeoutMs: 30_000,
     limits: JEV_SYSTEMONE_LIMITS,
+    // Documented Zen decision ids: `jev-1.13`, `jev-1.13-free`.
+    decisionModelPattern: /^jev(?:[-.]|$)/i,
     contractVerified: false,
   },
   "vercel-ai-gateway": {
@@ -108,6 +117,8 @@ export const SYSTEMONE_BACKENDS = {
     requiresKey: true,
     timeoutMs: 30_000,
     limits: JEV_SYSTEMONE_LIMITS,
+    // The gateway's own id for the model is `typesafe-ai/jev`.
+    decisionModelPattern: /(?:^|\/)jev(?:[-.]|$)/i,
     contractVerified: false,
   },
   openrouter: {
@@ -120,6 +131,9 @@ export const SYSTEMONE_BACKENDS = {
     requiresKey: true,
     timeoutMs: 30_000,
     limits: JEV_SYSTEMONE_LIMITS,
+    // OpenRouter tags decision models in `architecture.output_modalities`, so
+    // the pattern is only a fallback for a row that carries none.
+    decisionModelPattern: /(?:^|\/)jev(?:[-.]|$)/i,
     contractVerified: false,
   },
 } as const satisfies Record<string, SystemOneBackend>;
