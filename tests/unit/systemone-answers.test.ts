@@ -208,7 +208,7 @@ test("per-backend limits bound the number of candidates and questions", () => {
   if (!tooManyChoices.ok) assert.equal(tooManyChoices.status, 400);
 
   const tooManyLevels = validateSystemOneBackendBody(
-    "opencode",
+    "opencode-zen",
     body({ questions: { severity: { type: "score", criteria: Array(40).fill("level") } } })
   );
   assert.equal(tooManyLevels.ok, false);
@@ -220,7 +220,7 @@ test("per-backend limits bound the number of candidates and questions", () => {
 });
 
 test("a request within the backend limits is accepted on every backend", () => {
-  for (const provider of ["opencode", "openrouter", "vercel-ai-gateway"]) {
+  for (const provider of ["opencode-zen", "openrouter", "vercel-ai-gateway"]) {
     assert.deepEqual(
       validateSystemOneBackendBody(
         provider,

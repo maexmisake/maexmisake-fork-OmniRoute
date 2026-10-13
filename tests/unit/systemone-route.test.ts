@@ -167,7 +167,7 @@ test("a bare alias with no configured backend names the backends to configure", 
   const { response, body } = await post(noulRequest("jev"));
   assert.equal(response.status, 400);
   assert.match(body.error.message, /Configure one of/i);
-  assert.match(body.error.message, /opencode/);
+  assert.match(body.error.message, /opencode-zen/);
   assert.ok(!body.error.message.includes(STATE));
   assert.equal(fetchCalls, 0);
 });
