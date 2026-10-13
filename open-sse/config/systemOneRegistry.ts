@@ -34,6 +34,30 @@ export class SystemOneTargetError extends Error {
 
 export type SystemOneTier = "free" | "paid";
 
+/**
+ * Request-shape limits enforced before a credential is spent.
+ *
+ * The candidate/question counts are the Jev model family's own documented
+ * limits (choice accepts at most 255 options, Score at most 10 levels), so all
+ * three backends share them while staying overridable per backend. `maxBodyBytes`
+ * is OmniRoute's own guard, not a vendor-published figure.
+ */
+export type SystemOneLimits = {
+  maxQuestions: number;
+  minCriteria: number;
+  maxChoiceCriteria: number;
+  maxScoreLevels: number;
+  maxBodyBytes: number;
+};
+
+export const JEV_SYSTEMONE_LIMITS: SystemOneLimits = {
+  maxQuestions: 64,
+  minCriteria: 1,
+  maxChoiceCriteria: 255,
+  maxScoreLevels: 10,
+  maxBodyBytes: 1_048_576,
+};
+
 export type SystemOneBackend = {
   /** OmniRoute provider id — credentials stay in the normal provider connection store. */
   provider: string;
@@ -46,6 +70,8 @@ export type SystemOneBackend = {
   allowedHosts: readonly string[];
   requiresKey: boolean;
   timeoutMs: number;
+  /** Request-shape limits for this backend. */
+  limits: SystemOneLimits;
   /**
    * Whether the wire contract has been confirmed against the live upstream from
    * this repository. Documentation-derived endpoints stay `false`.
@@ -70,6 +96,7 @@ export const SYSTEMONE_BACKENDS = {
     // paid Zen account authenticates with a bearer key.
     requiresKey: false,
     timeoutMs: 30_000,
+    limits: JEV_SYSTEMONE_LIMITS,
     contractVerified: false,
   },
   "vercel-ai-gateway": {
@@ -80,6 +107,7 @@ export const SYSTEMONE_BACKENDS = {
     allowedHosts: ["ai-gateway.vercel.sh"],
     requiresKey: true,
     timeoutMs: 30_000,
+    limits: JEV_SYSTEMONE_LIMITS,
     contractVerified: false,
   },
   openrouter: {
@@ -91,6 +119,7 @@ export const SYSTEMONE_BACKENDS = {
     allowedHosts: ["openrouter.ai"],
     requiresKey: true,
     timeoutMs: 30_000,
+    limits: JEV_SYSTEMONE_LIMITS,
     contractVerified: false,
   },
 } as const satisfies Record<string, SystemOneBackend>;
