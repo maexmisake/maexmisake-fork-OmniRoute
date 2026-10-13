@@ -319,9 +319,8 @@ type ConnectionTierFields = {
 /**
  * Whether a provider connection may serve a model of this tier.
  *
- * A free-tier model is dispatchable only on an account that is itself the free
- * tier: a keyless connection, or one the operator explicitly tagged
- * `systemOneTier: "free"`. A paid model, conversely, always needs the backend's
+ * A free-tier model is dispatchable only on a connection the operator explicitly
+ * tagged `systemOneTier: "free"`. A paid model, conversely, always needs the backend's
  * normal credential when `requiresKey` is true. A free-tier model may still need
  * a credential; the tier tag prevents paid fallback, it does not bypass auth.
  */
