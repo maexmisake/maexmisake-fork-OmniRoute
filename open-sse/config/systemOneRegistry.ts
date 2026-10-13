@@ -80,6 +80,19 @@ export type SystemOneBackend = {
    */
   decisionModelPattern: RegExp;
   /**
+   * True when `modelsUrl` lists decision models only (the Vercel TypeSafe
+   * catalog). Every safely named row there is a decision model even though the
+   * rows carry no modality or endpoint metadata, so the id pattern must not
+   * filter it. A mixed catalog (OpenCode Zen) keeps this false.
+   */
+  dedicatedDecisionCatalog: boolean;
+  /**
+   * True when the backend itself rejects a question without non-empty
+   * `instructions` (OpenRouter answers 400 for a choice/score question that has
+   * none). Other backends treat them as optional.
+   */
+  requiresInstructions: boolean;
+  /**
    * Whether the wire contract has been confirmed against the live upstream from
    * this repository. Documentation-derived endpoints stay `false`.
    */
@@ -106,6 +119,8 @@ export const SYSTEMONE_BACKENDS = {
     limits: JEV_SYSTEMONE_LIMITS,
     // Documented Zen decision ids: `jev-1.13`, `jev-1.13-free`.
     decisionModelPattern: /^jev(?:[-.]|$)/i,
+    dedicatedDecisionCatalog: false,
+    requiresInstructions: false,
     contractVerified: false,
   },
   "vercel-ai-gateway": {
@@ -117,8 +132,11 @@ export const SYSTEMONE_BACKENDS = {
     requiresKey: true,
     timeoutMs: 30_000,
     limits: JEV_SYSTEMONE_LIMITS,
-    // The gateway's own id for the model is `typesafe-ai/jev`.
+    // The gateway's own id for the model is `typesafe-ai/jev`; the dedicated
+    // TypeSafe catalog also serves the bare root `jev`.
     decisionModelPattern: /(?:^|\/)jev(?:[-.]|$)/i,
+    dedicatedDecisionCatalog: true,
+    requiresInstructions: false,
     contractVerified: false,
   },
   openrouter: {
@@ -134,6 +152,8 @@ export const SYSTEMONE_BACKENDS = {
     // OpenRouter tags decision models in `architecture.output_modalities`, so
     // the pattern is only a fallback for a row that carries none.
     decisionModelPattern: /(?:^|\/)jev(?:[-.]|$)/i,
+    dedicatedDecisionCatalog: false,
+    requiresInstructions: true,
     contractVerified: false,
   },
 } as const satisfies Record<string, SystemOneBackend>;
@@ -182,6 +202,11 @@ const PUBLISHED_PRICING: Readonly<
 
 export function isSystemOneProvider(value: string): value is SystemOneProviderId {
   return Object.prototype.hasOwnProperty.call(SYSTEMONE_BACKENDS, value);
+}
+
+/** A model the backend's registry names as a decision model, regardless of row metadata. */
+export function isKnownSystemOneDecisionModel(provider: string, model: string): boolean {
+  return isSystemOneProvider(provider) && SYSTEMONE_BACKENDS[provider].decisionModelPattern.test(model);
 }
 
 export function listSystemOneProviders(): SystemOneProviderId[] {

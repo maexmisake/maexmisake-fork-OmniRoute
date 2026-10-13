@@ -97,7 +97,7 @@ import { checkResourcePressureGuard } from "../utils/resourcePressure.ts";
 import { normalizeHeaders } from "../utils/headers.ts";
 import { resolveChatCoreRequestFormat } from "./chatCore/requestFormat.ts";
 import { decisionOnlyChatRejection } from "@/lib/providerModels/decisionOnlyChatGuard.ts";
-import { getSyncedAvailableModels } from "@/lib/db/models";
+import { getSyncedAvailableModelsByConnection } from "@/lib/db/models";
 
 import { resolveChatCoreTargetFormat } from "./chatCore/targetFormat.ts";
 import { resolveOmniGlyphTransport } from "../services/compression/imageTransportPolicy.ts";
@@ -425,10 +425,15 @@ async function handleChatCoreInner({
   let { provider, model, extendedContext } = modelInfo;
   // Fail closed before any credential or executor work when the resolved model is
   // explicitly decision-only. Mixed chat+System One rows stay chat-selectable.
-  const decisionRejection = await decisionOnlyChatRejection(modelInfo, (providerId) =>
-    getSyncedAvailableModels(providerId)
+  const decisionRejection = await decisionOnlyChatRejection(modelInfo, async (providerId) =>
+    Object.values(await getSyncedAvailableModelsByConnection(providerId)).flat()
   );
-  if (decisionRejection) return decisionRejection;
+  if (decisionRejection) {
+    return {
+      ...createErrorResult(400, "This decision-only model requires the System One endpoint"),
+      response: decisionRejection,
+    };
+  }
   const getExecutorClientHeaders = () =>
     buildExecutorClientHeaders(clientRawRequest?.headers, userAgent, { provider, body });
   // Keep the selected rule across format conversion, retries and refreshed credentials.

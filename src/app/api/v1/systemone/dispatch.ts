@@ -40,6 +40,7 @@ import {
   type SystemOneProxyOptions,
 } from "@omniroute/open-sse/handlers/systemOne.ts";
 import {
+  isConnectionEligibleForTier,
   SYSTEMONE_MAX_FALLBACK_CANDIDATES,
   type SystemOneCandidate,
 } from "@omniroute/open-sse/config/systemOneRegistry.ts";
@@ -51,6 +52,7 @@ import {
   clearRecoveredProviderState,
   getProviderCredentialsWithQuotaPreflight,
 } from "@/sse/services/auth";
+import { getProviderConnections } from "@/lib/db/providers";
 import * as log from "@/sse/utils/logger";
 
 /**
@@ -77,6 +79,19 @@ export type SystemOneDispatchDeps = {
   /** Re-checks the key's model rules for one candidate's canonical id. */
   validateRoutingTarget: (canonicalModel: string) => Promise<Response | null>;
   validateBackendBody: (provider: string, body: Record<string, unknown>) => SystemOneValidation;
+  /**
+   * Active connections of the candidate's provider split by whether they may
+   * serve the candidate's tier. The selector knows no tier, so without this an
+   * ineligible account would be selected, rejected, and still spend an attempt.
+   */
+  listTierEligibility: (candidate: SystemOneCandidate) => Promise<SystemOneTierEligibility>;
+};
+
+export type SystemOneTierEligibility = {
+  /** Every active connection of the provider. */
+  total: number;
+  /** Connections that must never be selected for this candidate. */
+  ineligibleConnectionIds: string[];
 };
 
 export const defaultSystemOneDispatchDeps: SystemOneDispatchDeps = {
@@ -90,6 +105,25 @@ export const defaultSystemOneDispatchDeps: SystemOneDispatchDeps = {
   // re-check, and the route injects the real check whenever a key is present.
   validateRoutingTarget: async () => null,
   validateBackendBody: validateSystemOneBackendBody,
+  listTierEligibility: async (candidate) => {
+    const connections = (await getProviderConnections({
+      provider: candidate.provider,
+      isActive: true,
+    })) as Array<{
+      id?: unknown;
+      apiKey?: string | null;
+      accessToken?: string | null;
+      providerSpecificData?: Record<string, unknown> | null;
+    }>;
+    const ineligibleConnectionIds = connections
+      .filter(
+        (connection) =>
+          typeof connection.id === "string" &&
+          !isConnectionEligibleForTier(candidate.tier, connection, candidate.provider)
+      )
+      .map((connection) => connection.id as string);
+    return { total: connections.length, ineligibleConnectionIds };
+  },
 };
 
 export type SystemOneDispatchInput = {
@@ -203,9 +237,30 @@ async function attemptCandidate(
   const body = { ...input.body, model: candidate.model };
   const limits = deps.validateBackendBody(candidate.provider, body);
   if (!limits.ok) {
+    const refusal = errorResponse(limits.status, limits.message);
+    if (limits.backendContract) {
+      // Only this backend's own contract refuses the body; another candidate may
+      // still take it, and if none does the caller gets this precise message.
+      outcome.diagnostic = refusal;
+      return null;
+    }
     // A request shape this backend refuses is the caller's: another account or
     // backend would refuse the same bytes.
-    return errorResponse(limits.status, limits.message);
+    return refusal;
+  }
+
+  // A failed read restricts nothing: the proxy still refuses an ineligible account.
+  const eligibility = await deps
+    .listTierEligibility(candidate)
+    .catch((): SystemOneTierEligibility => ({ total: 0, ineligibleConnectionIds: [] }));
+  if (eligibility.total > 0 && eligibility.ineligibleConnectionIds.length >= eligibility.total) {
+    outcome.diagnostic = errorResponse(
+      candidate.tier === "free" ? HTTP_STATUS.FORBIDDEN : HTTP_STATUS.UNAUTHORIZED,
+      candidate.tier === "free"
+        ? `Model ${candidate.canonicalModel} is a free-tier model and no ${candidate.provider} account is tagged as the free tier`
+        : `No ${candidate.provider} account can serve ${candidate.canonicalModel}`
+    );
+    return null;
   }
 
   const attempted = new Set<string>();
@@ -214,7 +269,7 @@ async function attemptCandidate(
       provider: candidate.provider,
       model: candidate.model,
       allowedConnections: input.allowedConnections ?? null,
-      excludeConnectionIds: [...attempted],
+      excludeConnectionIds: [...attempted, ...eligibility.ineligibleConnectionIds],
     });
 
     const unusable = describeUnusableSelection(candidate.provider, credentials);

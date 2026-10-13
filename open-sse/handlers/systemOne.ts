@@ -36,6 +36,10 @@ import {
 import { attachOmniRouteMetaHeaders } from "@/domain/omnirouteResponseMeta";
 import { generateRequestId } from "@/shared/utils/requestId";
 import { saveCallLog, saveRequestUsage } from "@/lib/usageDb";
+import {
+  SYSTEMONE_LEDGER_SERVICE_TIER,
+  SYSTEMONE_UNPRICED_USAGE_SERVICE_TIER,
+} from "@/lib/db/costLedger";
 import { recordCost } from "@/domain/costRules";
 import { calculateCostDetailed } from "@/lib/usage/costCalculator";
 import { markAccountUnavailable } from "../../src/sse/services/auth.ts";
@@ -368,7 +372,7 @@ export async function handleSystemOneProxy(
 
     if (!response.ok) return upstreamFailure(deps, call, response, parsed);
 
-    const answers = parseSystemOneAnswers(parsed);
+    const answers = parseSystemOneAnswers(parsed, { questions: options.body.questions });
     if (!answers.ok) {
       const message = `System One upstream returned an invalid response body: ${answers.detail}`;
       await logCall(deps, call, 502, tokenCounts(null, null), message);
@@ -377,6 +381,9 @@ export async function handleSystemOneProxy(
 
     const tokens = tokenCounts(answers.usage.inputTokens, answers.usage.outputTokens);
     const costUsd = await resolveCost(deps, call, answers.usage);
+    const accountingTimestamp = new Date().toISOString();
+    const usageServiceTier =
+      costUsd === null ? SYSTEMONE_UNPRICED_USAGE_SERVICE_TIER : SYSTEMONE_LEDGER_SERVICE_TIER;
 
     await logCall(deps, call, 200, tokens);
     await deps
@@ -387,6 +394,8 @@ export async function handleSystemOneProxy(
         status: "200",
         success: true,
         latencyMs: Date.now() - call.startTime,
+        timestamp: accountingTimestamp,
+        serviceTier: usageServiceTier,
         endpoint: SYSTEMONE_ROUTE_PATH,
         ...(call.connectionId ? { connectionId: call.connectionId } : {}),
         ...(call.apiKeyId ? { apiKeyId: call.apiKeyId } : {}),
@@ -398,7 +407,9 @@ export async function handleSystemOneProxy(
         provider: call.provider,
         model: call.canonicalModel,
         tokens: { input: tokens.prompt_tokens, output: tokens.completion_tokens },
+        serviceTier: SYSTEMONE_LEDGER_SERVICE_TIER,
         success: true,
+        timestamp: accountingTimestamp,
         requestId: call.correlationId ?? undefined,
       });
     }

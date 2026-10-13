@@ -1,7 +1,12 @@
 import { getDbInstance } from "@/lib/db/core";
 import type { ProviderLimitsCacheEntry } from "@/lib/db/providerLimits";
 import { getProviderQuotaWindowStartIso } from "@/lib/db/quotaResetEvents";
-import { sumSearchLedgerSpendSince } from "@/lib/db/costLedger";
+import {
+  sumSearchLedgerSpendSince,
+  sumSystemOneLedgerSpendSince,
+  SYSTEMONE_LEDGER_SERVICE_TIER,
+  SYSTEMONE_UNPRICED_USAGE_SERVICE_TIER,
+} from "@/lib/db/costLedger";
 import { calculateCostDetailed } from "./costCalculator";
 import { isFeatureFlagEnabled } from "@/shared/utils/featureFlags";
 import {
@@ -483,6 +488,14 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
   let total = 0;
   let hasUnpricedUsage = false;
   for (const row of rows) {
+    if (row.serviceTier === SYSTEMONE_UNPRICED_USAGE_SERVICE_TIER) {
+      hasUnpricedUsage = true;
+      continue;
+    }
+    // System One costs are recorded once in request_cost_ledger, not re-priced
+    // from usage_history's canonical provider/model identity.
+    if (row.serviceTier === SYSTEMONE_LEDGER_SERVICE_TIER) continue;
+
     const provider = typeof row.provider === "string" ? row.provider : "";
     const model = typeof row.model === "string" ? row.model : "";
     if (!provider || !model) continue;
@@ -514,9 +527,10 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
     total += costUsd;
   }
 
-  // Web search spend is not in usage_history; it lives in request_cost_ledger
-  // under the search-only service_tier marker, so chat rows are never re-counted.
+  // Web search and System One spend are not re-priced from usage_history; each
+  // has a narrow ledger marker, so ordinary chat history is never re-counted.
   total += sumSearchLedgerSpendSince(apiKeyId, sinceIso);
+  total += sumSystemOneLedgerSpendSince(apiKeyId, sinceIso);
   return { totalUsd: roundUsd(total), hasUnpricedUsage };
 }
 

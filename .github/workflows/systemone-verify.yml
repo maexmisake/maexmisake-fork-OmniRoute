@@ -1,0 +1,169 @@
+name: System One Verify
+
+# Fork-only verification of the native System One routes. It builds the repository's own
+# Dockerfile (runner-base, webpack) into the runner's local Docker daemon and smoke-tests
+# the image against a local mock upstream with synthetic credentials.
+#
+# Deliberately NOT here: image publication, registry login, secrets, deployment,
+# privileged containers, host volumes, or any production/provider access.
+
+on:
+  push:
+    branches: [feat/native-system-one]
+  pull_request:
+    branches: [release/v3.8.52]
+    # No draft filter: draft PRs must run too.
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: systemone-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Read-only token. Nothing in this workflow writes to the repository, packages, checks,
+# statuses, issues or pull requests.
+permissions:
+  contents: read
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  CI_NODE_VERSION: "24"
+  DOCKER_BUILD_SUMMARY: "false"
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+
+jobs:
+  source-checks:
+    name: Focused tests, typecheck and lint
+    # Own fork only; a pull request must also come from a branch of this same repository.
+    if: >-
+      github.event.repository.full_name == 'maexmisake/maexmisake-fork-OmniRoute' &&
+      (github.event_name != 'pull_request' ||
+        github.event.pull_request.head.repo.full_name == github.event.repository.full_name)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      JWT_SECRET: ci-test-secret-with-sufficient-length-for-validation
+      API_KEY_SECRET: ci-test-api-key-secret-long
+      DISABLE_SQLITE_AUTO_BACKUP: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          package-manager-cache: false
+          node-version: ${{ env.CI_NODE_VERSION }}
+      - uses: ./.github/actions/npm-ci-retry
+        with:
+          cache: "false"
+      - name: System One and verification-harness unit tests
+        run: >-
+          node --import tsx/esm
+          --import ./open-sse/utils/setupPolyfill.ts
+          --import ./tests/_setup/isolateDataDir.ts
+          --test --test-force-exit
+          tests/unit/systemone-*.test.ts
+          tests/unit/typesafe-systemone.test.ts
+          tests/unit/providers-constants-split.test.ts
+          tests/unit/docker-build-memory-budget.test.ts
+          tests/unit/workflows-no-foreign-fork-publishers.test.ts
+      - name: Typecheck (core)
+        run: npm run typecheck:core
+      - name: Lint System One sources and verification harness
+        run: >-
+          npx eslint
+          --suppressions-location config/quality/eslint-suppressions.json
+          open-sse/config/systemOneRegistry.ts
+          open-sse/handlers/systemOne.ts
+          open-sse/handlers/systemOneCatalog.ts
+          open-sse/handlers/systemOneModels.ts
+          open-sse/handlers/systemOneTransport.ts
+          open-sse/services/typesafe/systemOneAnswers.ts
+          src/app/api/v1/systemone
+          src/lib/providerModels/decisionOnlyChatGuard.ts
+          scripts/ci/systemone-mock-upstream.mjs
+          scripts/ci/systemone-smoke.mjs
+          tests/unit/systemone-verify-workflow.test.ts
+
+  image-smoke:
+    name: Docker image build and System One smoke
+    if: >-
+      github.event.repository.full_name == 'maexmisake/maexmisake-fork-OmniRoute' &&
+      (github.event_name != 'pull_request' ||
+        github.event.pull_request.head.repo.full_name == github.event.repository.full_name)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      IMAGE_REF: omniroute-systemone-verify:${{ github.run_id }}-${{ github.run_attempt }}
+      EVIDENCE_DIR: ${{ github.workspace }}/systemone-evidence
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          package-manager-cache: false
+          node-version: ${{ env.CI_NODE_VERSION }}
+
+      # The webpack build runs ~3 Node processes of up to ~4.5 GB RSS each (see
+      # tests/unit/docker-build-memory-budget.test.ts). A runner with less RAM would be
+      # OOM-killed minutes into the build, so fail early with the reason.
+      - name: Check runner resources
+        run: |
+          mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+          echo "runner: $(nproc) vCPU, ${mem_mb} MB RAM"
+          if [ "$mem_mb" -lt 12000 ]; then
+            echo "::error::Runner has ${mem_mb} MB RAM; the Docker build needs at least 12 GB (use a 16 GB hosted runner)."
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Same Dockerfile and bundler pin as docker-publish.yml (webpack, runner-base), but
+      # built for the local daemon only: load, never push, and no registry login anywhere.
+      - name: Build runner-base image (load only)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: runner-base
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_REF }}
+          build-args: |
+            OMNIROUTE_USE_TURBOPACK=0
+            OMNIROUTE_BUILD_MEMORY_MB=6144
+            OMNIROUTE_BUILD_WORKERS=2
+
+      - name: Smoke-test the image (health, auth, route, catalog, rejections)
+        run: bash scripts/ci/systemone-image-smoke.sh "$IMAGE_REF" "$EVIDENCE_DIR"
+
+      - name: Summarize smoke results
+        if: always()
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const file = process.argv[1] + "/smoke-results.json";
+            if (!fs.existsSync(file)) { console.log("No smoke-results.json was produced."); process.exit(0); }
+            const result = JSON.parse(fs.readFileSync(file, "utf8"));
+            const rows = result.steps.map((s) => `| ${s.ok ? "pass" : "FAIL"} | ${s.name} |`);
+            console.log(["## System One image smoke", "", "| Result | Check |", "| --- | --- |", ...rows].join("\n"));
+          ' "$EVIDENCE_DIR" >> "$GITHUB_STEP_SUMMARY"
+
+      # Belt and braces: the smoke script removes its own containers/network on every
+      # exit path; this catches a runner-side cancellation that skipped its trap.
+      - name: Remove containers, network and image
+        if: always()
+        run: |
+          docker ps -aq --filter label=systemone-verify | xargs -r docker rm -f -v
+          docker network ls -q --filter name=systemone-verify- | xargs -r docker network rm
+          docker image rm -f "$IMAGE_REF" || true
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: systemone-verify-evidence
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: warn
+          retention-days: 7

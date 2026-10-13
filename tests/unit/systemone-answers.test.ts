@@ -226,9 +226,9 @@ test("a request within the backend limits is accepted on every backend", () => {
         provider,
         body({
           questions: {
-            route: { type: "choice", criteria: { a: "A", b: "B" } },
-            severity: { type: "score", criteria: ["low", "high"] },
-            urgent: { type: "noul" },
+            route: { type: "choice", instructions: "Choose the option", criteria: { a: "A", b: "B" } },
+            severity: { type: "score", instructions: "Score severity", criteria: ["low", "high"] },
+            urgent: { type: "noul", instructions: "Is this urgent?" },
           },
         })
       ),

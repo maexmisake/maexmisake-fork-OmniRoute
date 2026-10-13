@@ -51,7 +51,7 @@ type SystemOneCredentialSelection =
 const STATE = "patient record: Jane Doe, flagged for review";
 
 function requestBody(extra: Record<string, unknown> = {}) {
-  return { model: "jev", state: STATE, questions: { urgent: { type: "noul" } }, ...extra };
+  return { model: "jev", state: STATE, questions: { urgent: { type: "noul", instructions: "Is this urgent?" } }, ...extra };
 }
 
 type FakeConnection = {
@@ -104,6 +104,7 @@ function harness(options: {
   const policyChecks: string[] = [];
 
   const deps: Partial<SystemOneDispatchDeps> = {
+    listTierEligibility: async () => ({ total: 0, ineligibleConnectionIds: [] }),
     selectCredentials: async (selection) => {
       selections.push({
         ...selection,
@@ -524,7 +525,7 @@ test("the backend's own request limits reject before any credential is spent", a
       body: {
         model: "opencode-zen/jev-1.13",
         state: "x".repeat(1_100_000),
-        questions: { urgent: { type: "noul" } },
+        questions: { urgent: { type: "noul", instructions: "Is this urgent?" } },
       },
       requestedModel: "opencode-zen/jev-1.13",
     },

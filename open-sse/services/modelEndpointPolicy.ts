@@ -7,6 +7,8 @@
  * provider knowledge here so discovery, import, and catalog projection agree.
  */
 
+import { isKnownSystemOneDecisionModel } from "../config/systemOneRegistry.ts";
+
 export type ModelEndpointKind =
   "chat" | "image" | "video" | "embedding" | "rerank" | "decision" | "non-chat" | "unknown";
 
@@ -122,6 +124,15 @@ export function getModelEndpointDecision(
   supportedEndpoints?: readonly string[]
 ): ModelEndpointDecision {
   const explicit = classifyExplicitEndpoints(supportedEndpoints);
+  if (provider && isKnownSystemOneDecisionModel(provider, modelId)) {
+    const endpoints = supportedEndpoints?.map(normalizeEndpoint) ?? [];
+    const hasDecision = endpoints.some((endpoint) => DECISION_ENDPOINTS.has(endpoint));
+    // Imported catalogs historically defaulted untagged models to chat. Only
+    // explicit dual capability can override the known decision-only model rule.
+    if (explicit?.chatSelectable && hasDecision) return explicit;
+    if (explicit?.kind === "decision") return explicit;
+    return { kind: "decision", chatSelectable: false, reason: "provider-policy" };
+  }
   if (provider?.trim().toLowerCase() === "openrouter") {
     // Unconditional, unlike the OpenAI branch below: there is no "batch"
     // endpoint name an upstream could declare alongside a chat one, and the

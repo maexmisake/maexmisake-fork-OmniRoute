@@ -10,6 +10,8 @@ import { isObsoleteKiroModelAlias } from "@omniroute/open-sse/services/kiroModel
 import { filterSelectableModels } from "@omniroute/open-sse/services/modelLifecycle.ts";
 import { getEmbeddingProvider } from "@omniroute/open-sse/config/embeddingRegistry.ts";
 import { hasPayloadFreeEvidence } from "@/shared/utils/payloadFreeEvidence";
+import { getModelEndpointDecision } from "@omniroute/open-sse/services/modelEndpointPolicy.ts";
+import { normalizeModelSupportedEndpoints } from "@/shared/constants/modelSupportedEndpoints";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -589,21 +591,29 @@ export function normalizeDiscoveredModels(
           : undefined;
     const explicitInputTypes = Array.isArray(record.supportedInputTypes);
 
-    const supportedEndpoints = Array.isArray(record.supportedEndpoints)
-      ? Array.from(
+    const outputModalities = asRecord(record.architecture).output_modalities;
+    const decisionModalities = Array.isArray(outputModalities) && outputModalities.includes("decisions");
+    const declaredEndpoints = record.supportedEndpoints ?? record.supported_endpoints;
+    let supportedEndpoints = Array.isArray(declaredEndpoints)
+      ? normalizeModelSupportedEndpoints(Array.from(
           new Set(
-            record.supportedEndpoints
+            declaredEndpoints
               .map((endpoint) => toNonEmptyString(endpoint))
               .filter((endpoint): endpoint is string => Boolean(endpoint))
           )
-        ).sort()
-      : modality.isEmbedding
-        ? ["embeddings"]
-        : modality.isRerank
-          ? ["rerank"]
-          : modality.isImage
-            ? ["images"]
-            : undefined;
+        )).sort()
+      : decisionModalities
+        ? (outputModalities.includes("text") ? ["chat", "systemone"] : ["systemone"])
+        : modality.isEmbedding
+          ? ["embeddings"]
+          : modality.isRerank
+            ? ["rerank"]
+            : modality.isImage
+              ? ["images"]
+              : undefined;
+    if (getModelEndpointDecision(providerId, id, supportedEndpoints).kind === "decision") {
+      supportedEndpoints = ["systemone"];
+    }
 
     const apiFormat =
       toNonEmptyString(record.apiFormat) ||

@@ -57,7 +57,18 @@ export type SystemOneAnswersFailure = {
 
 export type SystemOneAnswersResult = SystemOneAnswersSuccess | SystemOneAnswersFailure;
 
-export type SystemOneValidation = { ok: true } | { ok: false; status: number; message: string };
+export type SystemOneValidation =
+  | { ok: true }
+  | {
+      ok: false;
+      status: number;
+      message: string;
+      /**
+       * Set when only this backend refuses the request while the shared contract
+       * accepts it, so another backend may still serve it.
+       */
+      backendContract?: true;
+    };
 
 const OK: SystemOneValidation = { ok: true };
 
@@ -84,7 +95,7 @@ function parseProbabilities(value: unknown): SystemOneProbabilities | null | "in
   const out: SystemOneProbabilities = {};
   for (const [key, raw] of Object.entries(value)) {
     const probability = finiteNumber(raw);
-    if (probability === null || probability < 0) return "invalid";
+    if (probability === null || probability < 0 || probability > 1) return "invalid";
     out[key] = probability;
   }
   return out;
@@ -145,11 +156,52 @@ function parseUsage(raw: unknown): SystemOneUsage {
 }
 
 /**
+ * Check the parsed answers against the questions that were asked: every
+ * requested question is answered with its own type, a choice names one of the
+ * offered options, and a score is a number within the offered levels. Nothing is
+ * coerced or filled in — a mismatch is reported, never repaired. Answers to
+ * questions that were not asked are left alone.
+ */
+function checkAnswersAgainstQuestions(
+  answers: Record<string, SystemOneAnswer>,
+  questions: Record<string, unknown>
+): SystemOneAnswersFailure | null {
+  for (const [name, raw] of Object.entries(questions)) {
+    if (!isRecord(raw)) continue;
+    const answer = Object.prototype.hasOwnProperty.call(answers, name) ? answers[name] : undefined;
+    if (!answer) return invalid(`System One response did not answer question ${name}`);
+    if (answer.type !== raw.type) {
+      return invalid(`System One answer ${name} had a different type than the question`);
+    }
+    if (answer.type === "choice" && isRecord(raw.criteria)) {
+      const options = Object.keys(raw.criteria);
+      if (!options.includes(answer.choice)) {
+        return invalid(`System One choice answer ${name} was not one of the offered options`);
+      }
+      const stray = Object.keys(answer.probabilities ?? {}).find((key) => !options.includes(key));
+      if (stray !== undefined) {
+        return invalid(`System One choice answer ${name} had probabilities for an unoffered option`);
+      }
+    }
+    if (answer.type === "score" && Array.isArray(raw.criteria)) {
+      // Levels may be counted from 0 or from 1, so the range is the union.
+      if (answer.score < 0 || answer.score > raw.criteria.length) {
+        return invalid(`System One score answer ${name} was outside the offered levels`);
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Parse a System One response body. Answers of all three question types are
  * preserved with their probabilities, confidence and usage; a body that answers
  * no question at all is a failure, not an empty success.
  */
-export function parseSystemOneAnswers(body: unknown): SystemOneAnswersResult {
+export function parseSystemOneAnswers(
+  body: unknown,
+  request?: { questions?: unknown }
+): SystemOneAnswersResult {
   if (!isRecord(body)) return invalid("System One response was not a JSON object");
   if (!isRecord(body.answers)) return invalid("System One response missing answers");
 
@@ -161,6 +213,11 @@ export function parseSystemOneAnswers(body: unknown): SystemOneAnswersResult {
     const parsed = parseAnswer(name, raw);
     if ("ok" in parsed) return parsed;
     answers[name] = parsed;
+  }
+
+  if (isRecord(request?.questions)) {
+    const mismatch = checkAnswersAgainstQuestions(answers, request.questions);
+    if (mismatch) return mismatch;
   }
 
   return {
@@ -232,6 +289,25 @@ function candidateCount(question: Question): { kind: SystemOneQuestionType; coun
   return null;
 }
 
+function validateBackendInstructions(
+  provider: string,
+  questions: Record<string, unknown>
+): SystemOneValidation {
+  for (const [name, question] of Object.entries(questions)) {
+    if (!isRecord(question)) continue;
+    const instructions = question.instructions;
+    if (typeof instructions !== "string" || !instructions.trim()) {
+      return {
+        ok: false,
+        status: 400,
+        message: `questions.${name}.instructions must be a non-empty string for ${provider}`,
+        backendContract: true,
+      };
+    }
+  }
+  return OK;
+}
+
 function validateLimits(
   provider: string,
   body: Record<string, unknown>,
@@ -266,9 +342,17 @@ export function validateSystemOneBackendBody(
   provider: string,
   body: Record<string, unknown>
 ): SystemOneValidation {
-  const { limits } = systemOneBackend(provider);
+  const backend = systemOneBackend(provider);
+  const { limits } = backend;
   const shape = validateLimits(provider, body, limits);
   if (!shape.ok) return shape;
+  if (backend.requiresInstructions) {
+    const instructions = validateBackendInstructions(
+      provider,
+      isRecord(body.questions) ? body.questions : {}
+    );
+    if (!instructions.ok) return instructions;
+  }
   const bytes = Buffer.byteLength(JSON.stringify(body ?? null), "utf8");
   if (bytes > limits.maxBodyBytes) {
     return fail(`Request body must not exceed ${limits.maxBodyBytes} bytes for ${provider}`, 413);

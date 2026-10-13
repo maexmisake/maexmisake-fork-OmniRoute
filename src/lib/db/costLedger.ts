@@ -197,11 +197,12 @@ export function aggregateLedger(
 }
 
 /**
- * `service_tier` marker on every web-search ledger row. Chat rows only ever carry
- * a real tier (standard/priority/flex/default), so this never matches chat spend,
- * which per-key USD quotas already count from usage_history.
+ * `service_tier` markers for usage that has its own persisted cost path. These
+ * rows are excluded from usage_history repricing and added from the ledger.
  */
 export const SEARCH_LEDGER_SERVICE_TIER = "search";
+export const SYSTEMONE_LEDGER_SERVICE_TIER = "systemone";
+export const SYSTEMONE_UNPRICED_USAGE_SERVICE_TIER = "systemone-unpriced";
 
 /**
  * Total web-search spend for an api key since an ISO timestamp, failed calls
@@ -216,6 +217,22 @@ export function sumSearchLedgerSpendSince(apiKeyId: string, sinceIso: string): n
        WHERE api_key_id = ? AND timestamp >= ? AND service_tier = ?`
     )
     .get(apiKeyId, sinceIso, SEARCH_LEDGER_SERVICE_TIER);
+  return getAggRow(row).amountUsd;
+}
+
+/**
+ * Total known System One spend. Unknown System One usage has no ledger row and
+ * is identified separately by its usage_history service-tier marker.
+ */
+export function sumSystemOneLedgerSpendSince(apiKeyId: string, sinceIso: string): number {
+  if (!apiKeyId) return 0;
+  const row = getDbInstance()
+    .prepare(
+      `SELECT COALESCE(SUM(amount_usd), 0) AS amount_usd
+       FROM request_cost_ledger
+       WHERE api_key_id = ? AND timestamp >= ? AND service_tier = ?`
+    )
+    .get(apiKeyId, sinceIso, SYSTEMONE_LEDGER_SERVICE_TIER);
   return getAggRow(row).amountUsd;
 }
 

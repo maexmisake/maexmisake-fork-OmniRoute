@@ -18,6 +18,7 @@ import {
 } from "@/shared/constants/antigravityClientProfile";
 import { parseExtraApiKeys } from "@/shared/utils/parseApiKeys";
 import { providerHasFreeModels } from "@/shared/utils/freeModels";
+import { isSystemOneProvider } from "@omniroute/open-sse/config/systemOneRegistry.ts";
 import { maskEmail } from "@/shared/utils/maskEmail";
 import useEmailPrivacyStore from "@/store/emailPrivacyStore";
 import { useNotificationStore } from "@/store/notificationStore";
@@ -108,6 +109,7 @@ export interface EditConnectionModalProps {
   onClose: () => void;
 }
 const stringField = (value: unknown) => (typeof value === "string" ? value : "");
+type SystemOneTierSelection = "" | "free";
 export default function EditConnectionModal({
   isOpen,
   connection,
@@ -123,6 +125,7 @@ export default function EditConnectionModal({
   const connectionAuthType = connection?.authType;
   const connectionProviderSpecificData = connection?.providerSpecificData;
   const showFreeModelsToggle = providerHasFreeModels(provider);
+  const showSystemOneTier = isSystemOneProvider(provider);
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
@@ -181,6 +184,7 @@ export default function EditConnectionModal({
       stringField(connectionProviderSpecificData?.connectorName) ||
       CHATGPT_WEB_CODEX_CONNECTOR_NAME,
     m365Tier: normalizeM365TierValue(connectionProviderSpecificData?.tier) as M365TierValue,
+    systemOneTier: "" as SystemOneTierSelection,
     peakHourProtection: { ...EMPTY_PEAK_HOUR_PROTECTION, windows: [] } as PeakHourProtectionConfig,
   });
   const [testing, setTesting] = useState(false);
@@ -409,6 +413,8 @@ export default function EditConnectionModal({
           stringField(connection.providerSpecificData?.connectorName) ||
           CHATGPT_WEB_CODEX_CONNECTOR_NAME,
         m365Tier: normalizeM365TierValue(connection.providerSpecificData?.tier) as M365TierValue,
+        systemOneTier:
+          connection.providerSpecificData?.systemOneTier === "free" ? "free" : "",
         peakHourProtection: {
           ...EMPTY_PEAK_HOUR_PROTECTION,
           ...((connection.providerSpecificData?.peakHourProtection as PeakHourProtectionConfig) ||
@@ -731,6 +737,11 @@ export default function EditConnectionModal({
         // choice and switching back to the default would never take effect.
         if (showProtocolSelector) {
           updates.providerSpecificData.targetFormat = formData.targetFormat || null;
+        }
+        if (showSystemOneTier) {
+          // Explicit null clears the previous free tag through the provider update merge.
+          updates.providerSpecificData.systemOneTier =
+            formData.systemOneTier === "free" ? "free" : null;
         }
       }
       if (isResponsesConnection && updates.providerSpecificData) {
@@ -1209,6 +1220,36 @@ export default function EditConnectionModal({
                   />
                 )}
                 <ProviderTierField provider={provider} />
+                {showSystemOneTier && (
+                  <Select
+                    label={providerText(t, "systemOneTierLabel", "System One account tier")}
+                    value={formData.systemOneTier}
+                    placeholder={providerText(
+                      t,
+                      "systemOneTierDefaultOption",
+                      "Default (paid models allowed; tier unset)"
+                    )}
+                    placeholderDisabled={false}
+                    options={[
+                      {
+                        value: "free",
+                        label: providerText(t, "systemOneTierFreeOption", "Free models only"),
+                      },
+                    ]}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        systemOneTier: e.target.value === "free" ? "free" : "",
+                      })
+                    }
+                    hint={providerText(
+                      t,
+                      "systemOneTierHint",
+                      "Routing guard only; it does not change provider billing or credits. Free restricts this connection to free System One model IDs only."
+                    )}
+                    data-testid="system-one-tier-select"
+                  />
+                )}
                 {isM365TierCapable && (
                   <Select
                     label={t("m365TierLabel")}

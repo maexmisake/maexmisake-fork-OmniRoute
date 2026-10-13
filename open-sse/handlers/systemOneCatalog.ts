@@ -11,6 +11,7 @@
  * Pure: no I/O, no DB.
  */
 
+import { hasUnsafeModelIdSyntax } from "../utils/modelIdSafety.ts";
 import {
   systemOneBackend,
   systemOneModelTier,
@@ -88,7 +89,11 @@ export function isDecisionCatalogRow(provider: string, row: UpstreamCatalogRow):
   }
   if (modalities.length || endpoints.length) return false;
   const id = stringField(row, "id", "name");
-  return !!id && systemOneBackend(provider).decisionModelPattern.test(id);
+  if (!id) return false;
+  const backend = systemOneBackend(provider);
+  // A decision-only catalog lists nothing else, so a row needs a name, not a
+  // Jev-shaped one. Mixed catalogs still rely on the id pattern.
+  return backend.dedicatedDecisionCatalog || backend.decisionModelPattern.test(id);
 }
 
 /** OpenRouter-style per-token price string from a USD-per-1M-token rate. */
@@ -122,9 +127,10 @@ export function toDecisionCatalogModel(
   row: UpstreamCatalogRow
 ): DecisionCatalogModel | null {
   const upstreamId = stringField(row, "id", "name");
-  if (!upstreamId) return null;
-  // `~vendor/model` is OpenRouter's own alias spelling, not a provider prefix.
-  const root = upstreamId.replace(/^~/, "");
+  if (!upstreamId || hasUnsafeModelIdSyntax(upstreamId)) return null;
+  // The id is kept exactly as the upstream spells it: OpenRouter's `~vendor/model`
+  // alias form is a real, routable id and must round-trip unchanged.
+  const root = upstreamId;
   const servesChat =
     outputModalities(row).includes("text") ||
     declaredEndpoints(row).some((endpoint) => endpoint === "chat" || endpoint === "responses");

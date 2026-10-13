@@ -1,0 +1,586 @@
+{
+  "schema_version": 1,
+  "implementation_head_at_run": "56119e3f28275539f5215b372ceb7acb3a3ec0e3",
+  "date": "2026-10-13",
+  "scope": "real-route-handlers-over-loopback-http-with-isolated-storage",
+  "isolated_storage_deleted": true,
+  "issuer_key_rotation_performed": false,
+  "old_provider_keys_used": false,
+  "real_provider_receipts": [
+    {
+      "test": "unauthenticated",
+      "status": 401,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "authentication_error",
+      "error_category": "provider-or-contract-rejection"
+    },
+    {
+      "test": "catalog-initial",
+      "status": 200,
+      "model": null,
+      "provider": null,
+      "cost_status": null,
+      "models": [
+        {
+          "id": "opencode-zen/jev-1.13",
+          "root": "jev-1.13",
+          "type": "decision"
+        },
+        {
+          "id": "vercel-ai-gateway/jev",
+          "root": "jev",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/scaledown/classify-1",
+          "root": "scaledown/classify-1",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/perplexity/pplx-decider-27b-latest",
+          "root": "perplexity/pplx-decider-27b-latest",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/nace-ai/drex-v2.0",
+          "root": "nace-ai/drex-v2.0",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/microsoft/microsoft-decision-1",
+          "root": "microsoft/microsoft-decision-1",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/nace-ai/drex-v1.5",
+          "root": "nace-ai/drex-v1.5",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/cloudflare/clef-omni",
+          "root": "cloudflare/clef-omni",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/upstage/solar-decide-flash",
+          "root": "upstage/solar-decide-flash",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/perplexity/pplx-decider-v1.1-27b",
+          "root": "perplexity/pplx-decider-v1.1-27b",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/openai/gpt-6-luna-decisions",
+          "root": "openai/gpt-6-luna-decisions",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/liquid/d1",
+          "root": "liquid/d1",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/cloudflare/clef-flash",
+          "root": "cloudflare/clef-flash",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/cloudflare/clef",
+          "root": "cloudflare/clef",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/togethercomputer/tev1-4b-experimental",
+          "root": "togethercomputer/tev1-4b-experimental",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/inception/mercury-decide",
+          "root": "inception/mercury-decide",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/upstage/solar-decide",
+          "root": "upstage/solar-decide",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/respan/span-01",
+          "root": "respan/span-01",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/respan/span-01-lite",
+          "root": "respan/span-01-lite",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/jaredpalmer/kev-4b",
+          "root": "jaredpalmer/kev-4b",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/typesafe/jev-latest",
+          "root": "typesafe/jev-latest",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/typesafe/jev-1.13",
+          "root": "typesafe/jev-1.13",
+          "type": "decision"
+        }
+      ]
+    },
+    {
+      "test": "zen-paid-account-1",
+      "status": 402,
+      "model": "opencode-zen/jev-1.13",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "billing_error",
+      "error_category": "credits-exhausted"
+    },
+    {
+      "test": "zen-paid-account-2",
+      "status": 402,
+      "model": "opencode-zen/jev-1.13",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "billing_error",
+      "error_category": "credits-exhausted"
+    },
+    {
+      "test": "zen-paid-account-3",
+      "status": 402,
+      "model": "opencode-zen/jev-1.13",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "billing_error",
+      "error_category": "credits-exhausted"
+    },
+    {
+      "test": "zen-paid-account-4",
+      "status": 402,
+      "model": "opencode-zen/jev-1.13",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "billing_error",
+      "error_category": "credits-exhausted"
+    },
+    {
+      "test": "zen-paid-account-5",
+      "status": 402,
+      "model": "opencode-zen/jev-1.13",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "billing_error",
+      "error_category": "credits-exhausted"
+    },
+    {
+      "test": "zen-paid-account-6",
+      "status": 402,
+      "model": "opencode-zen/jev-1.13",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "billing_error",
+      "error_category": "credits-exhausted"
+    },
+    {
+      "test": "zen-paid-account-7",
+      "status": 402,
+      "model": "opencode-zen/jev-1.13",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "billing_error",
+      "error_category": "credits-exhausted"
+    },
+    {
+      "test": "zen-paid-account-8",
+      "status": 402,
+      "model": "opencode-zen/jev-1.13",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "billing_error",
+      "error_category": "credits-exhausted"
+    },
+    {
+      "test": "vercel-all-operations",
+      "status": 200,
+      "model": "vercel-ai-gateway/typesafe-ai/jev",
+      "provider": "vag",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "openrouter-all-operations",
+      "status": 200,
+      "model": "openrouter/typesafe/jev-1.13",
+      "provider": "openrouter",
+      "cost_status": "known",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62,
+        "cost": 1.4994e-05
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "bare-alias-real-fallback",
+      "status": 200,
+      "model": "jev",
+      "provider": "openrouter",
+      "cost_status": "known",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62,
+        "cost": 1.4994e-05
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "zen-free-account-1",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "zen-free-account-2",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "zen-free-account-3",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "zen-free-account-4",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "zen-free-account-5",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "zen-free-account-6",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "zen-free-account-7",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "zen-free-account-8",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "catalog-final",
+      "status": 200,
+      "model": null,
+      "provider": null,
+      "cost_status": null,
+      "models": [
+        {
+          "id": "opencode-zen/jev-1.13-free",
+          "root": "jev-1.13-free",
+          "type": "decision"
+        },
+        {
+          "id": "vercel-ai-gateway/jev",
+          "root": "jev",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/scaledown/classify-1",
+          "root": "scaledown/classify-1",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/perplexity/pplx-decider-27b-latest",
+          "root": "perplexity/pplx-decider-27b-latest",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/nace-ai/drex-v2.0",
+          "root": "nace-ai/drex-v2.0",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/microsoft/microsoft-decision-1",
+          "root": "microsoft/microsoft-decision-1",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/nace-ai/drex-v1.5",
+          "root": "nace-ai/drex-v1.5",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/cloudflare/clef-omni",
+          "root": "cloudflare/clef-omni",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/upstage/solar-decide-flash",
+          "root": "upstage/solar-decide-flash",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/perplexity/pplx-decider-v1.1-27b",
+          "root": "perplexity/pplx-decider-v1.1-27b",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/openai/gpt-6-luna-decisions",
+          "root": "openai/gpt-6-luna-decisions",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/liquid/d1",
+          "root": "liquid/d1",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/cloudflare/clef-flash",
+          "root": "cloudflare/clef-flash",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/cloudflare/clef",
+          "root": "cloudflare/clef",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/togethercomputer/tev1-4b-experimental",
+          "root": "togethercomputer/tev1-4b-experimental",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/inception/mercury-decide",
+          "root": "inception/mercury-decide",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/upstage/solar-decide",
+          "root": "upstage/solar-decide",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/respan/span-01",
+          "root": "respan/span-01",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/respan/span-01-lite",
+          "root": "respan/span-01-lite",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/jaredpalmer/kev-4b",
+          "root": "jaredpalmer/kev-4b",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/typesafe/jev-latest",
+          "root": "typesafe/jev-latest",
+          "type": "decision"
+        },
+        {
+          "id": "openrouter/typesafe/jev-1.13",
+          "root": "typesafe/jev-1.13",
+          "type": "decision"
+        }
+      ]
+    },
+    {
+      "test": "rotation-invalid-control",
+      "status": 401,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": null,
+      "cost_status": null,
+      "error_type": "authentication_error",
+      "error_category": "authentication"
+    },
+    {
+      "test": "rotation-new-key-recovery",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    },
+    {
+      "test": "quota-simulated-real-account-selection",
+      "status": 200,
+      "model": "opencode-zen/jev-1.13-free",
+      "provider": "opencode-zen",
+      "cost_status": "unknown",
+      "answer_types": {
+        "is_blue": "noul",
+        "pick": "choice",
+        "level": "score"
+      },
+      "usage": {
+        "input_tokens": 357,
+        "output_tokens": 62
+      },
+      "valid_answers": true
+    }
+  ],
+  "persisted_accounting_counts": {
+    "call_logs": 25,
+    "usage_history": 13
+  },
+  "test_results": {
+    "focused": {
+      "pass": 143,
+      "fail": 0,
+      "skipped": 0
+    },
+    "compatibility_security": {
+      "pass": 250,
+      "fail": 0,
+      "skipped": 0
+    }
+  },
+  "limitations": [
+    "This is a loopback HTTP bridge to actual route handlers, not the full Next middleware/runtime.",
+    "Zen paid Jev returned HTTP 402 on every available account; no credits were added.",
+    "Quota exhaustion was simulated in isolated connection state, not induced by spending credits.",
+    "Key replacement used an invalid synthetic credential followed by the current rotated issuer key; no issuer rotation or old-key comparison performed.",
+    "Vercel and Zen did not report usage.cost; no fabricated price assigned.",
+    "Snapshot precedes subsequent corrections; final-head regression and live recheck recorded separately."
+  ]
+}
