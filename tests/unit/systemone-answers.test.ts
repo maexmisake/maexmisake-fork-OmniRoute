@@ -29,15 +29,13 @@ function body(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("a noul answer keeps its boolean value, probabilities and confidence", () => {
+test("a noul answer keeps its probability value", () => {
   const result = parseSystemOneAnswers({
     model: "jev-1.13",
     answers: {
       urgent: {
         type: "noul",
-        answer: true,
-        probabilities: { true: 0.91, false: 0.09 },
-        confidence: 0.84,
+        noul: 0.91,
       },
     },
     usage: { input_tokens: 120, output_tokens: 3 },
@@ -47,9 +45,9 @@ test("a noul answer keeps its boolean value, probabilities and confidence", () =
   assert.equal(result.model, "jev-1.13");
   assert.deepEqual(result.answers.urgent, {
     type: "noul",
-    answer: true,
-    probabilities: { true: 0.91, false: 0.09 },
-    confidence: 0.84,
+    noul: 0.91,
+    probabilities: null,
+    confidence: null,
   });
   assert.deepEqual(result.usage, { inputTokens: 120, outputTokens: 3, costUsd: null });
 });
@@ -96,7 +94,7 @@ test("a score answer keeps its numeric level", () => {
 test("several typed questions are answered in one response", () => {
   const result = parseSystemOneAnswers({
     answers: {
-      urgent: { type: "noul", answer: false, confidence: 0.9 },
+      urgent: { type: "noul", noul: 0.1 },
       route: { type: "choice", choice: "a", probabilities: { a: 1 } },
       severity: { type: "score", score: 2 },
     },
@@ -113,7 +111,7 @@ test("several typed questions are answered in one response", () => {
 
 test("a reported zero cost is preserved as a known zero, not as unknown", () => {
   const result = parseSystemOneAnswers({
-    answers: { q: { type: "noul", answer: true } },
+    answers: { q: { type: "noul", noul: 1 } },
     usage: { input_tokens: 5, output_tokens: 0, cost: 0 },
   });
   assert.equal(result.ok, true);
@@ -131,14 +129,14 @@ test("malformed answer bodies are rejected without echoing the request state", (
     { answers: null },
     { answers: [] },
     { answers: {} },
-    { answers: { q: { type: "telepathy", answer: true } } },
+    { answers: { q: { type: "telepathy", noul: 1 } } },
     { answers: { q: { type: "noul" } } },
-    { answers: { q: { type: "noul", answer: "yes" } } },
+    { answers: { q: { type: "noul", noul: "yes" } } },
     { answers: { q: { type: "choice", probabilities: { a: 1 } } } },
     { answers: { q: { type: "choice", choice: "   " } } },
     { answers: { q: { type: "score", score: "high" } } },
     { answers: { q: { type: "choice", choice: "a", probabilities: { a: -1 } } } },
-    { answers: { q: { type: "noul", answer: true, confidence: 1.5 } } },
+    { answers: { q: { type: "noul", noul: 2 } } },
   ];
   for (const payload of cases) {
     const result = parseSystemOneAnswers(payload);

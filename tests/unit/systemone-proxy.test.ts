@@ -24,7 +24,7 @@ const UPSTREAM_KEY = "sk-live-operator-key";
 const ANSWER_BODY = {
   model: "typesafe/jev-1.13",
   answers: {
-    urgent: { type: "noul", answer: true, probabilities: { true: 0.9 }, confidence: 0.8 },
+    urgent: { type: "noul", noul: 0.9 },
   },
   usage: { input_tokens: 100, output_tokens: 2 },
 };
@@ -106,7 +106,7 @@ test("a successful decision is returned with its answers and accounted once", as
   assert.equal(response.status, 200);
   const body = (await response.json()) as typeof ANSWER_BODY;
   assert.equal(body.answers.urgent.type, "noul");
-  assert.equal(body.answers.urgent.answer, true);
+  assert.equal(body.answers.urgent.noul, 0.9);
 
   assert.equal(recorded.requests.length, 1);
   assert.equal(recorded.requests[0].url, "https://openrouter.ai/api/v1/systemone");

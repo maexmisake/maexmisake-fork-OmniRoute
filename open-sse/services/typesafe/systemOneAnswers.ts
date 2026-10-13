@@ -29,7 +29,7 @@ type AnswerCommon = {
   confidence: number | null;
 };
 
-export type SystemOneNoulAnswer = AnswerCommon & { type: "noul"; answer: boolean };
+export type SystemOneNoulAnswer = AnswerCommon & { type: "noul"; noul: number };
 export type SystemOneChoiceAnswer = AnswerCommon & { type: "choice"; choice: string };
 export type SystemOneScoreAnswer = AnswerCommon & { type: "score"; score: number };
 export type SystemOneAnswer = SystemOneNoulAnswer | SystemOneChoiceAnswer | SystemOneScoreAnswer;
@@ -118,10 +118,11 @@ function parseAnswer(name: string, raw: unknown): SystemOneAnswer | SystemOneAns
   const common = { probabilities, confidence };
 
   if (type === "noul") {
-    if (typeof raw.answer !== "boolean") {
-      return invalid(`System One noul answer ${name} had no boolean answer`);
+    const noul = finiteNumber(raw.noul);
+    if (noul === null || noul < 0 || noul > 1) {
+      return invalid(`System One noul answer ${name} had no probability between 0 and 1`);
     }
-    return { type, answer: raw.answer, ...common };
+    return { type, noul, ...common };
   }
   if (type === "choice") {
     const choice = typeof raw.choice === "string" ? raw.choice.trim() : "";
