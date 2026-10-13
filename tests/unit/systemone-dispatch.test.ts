@@ -199,7 +199,7 @@ test("a retryable failure rotates to the next connection of the same provider", 
 
   const response = await dispatch(
     "openrouter/typesafe/jev-1.13",
-    ["openrouter", "opencode"],
+    ["openrouter", "opencode-zen"],
     harnessed
   );
 
@@ -219,52 +219,52 @@ test("a retryable failure rotates to the next connection of the same provider", 
 
 test("a bare alias crosses to the next backend once its connections are exhausted", async () => {
   const harnessed = harness({
-    pools: { opencode: [freeKey("zen-1")], openrouter: [keyed("or-1")] },
+    pools: { "opencode-zen": [freeKey("zen-1")], openrouter: [keyed("or-1")] },
     respond: (attempt) =>
-      attempt.provider === "opencode" ? json(503, { error: "upstream_down" }) : json(200, ANSWER),
+      attempt.provider === "opencode-zen" ? json(503, { error: "upstream_down" }) : json(200, ANSWER),
   });
 
-  const response = await dispatch("jev", ["opencode", "openrouter"], harnessed);
+  const response = await dispatch("jev", ["opencode-zen", "openrouter"], harnessed);
 
   assert.equal(response.status, 200);
   assert.deepEqual(
     harnessed.attempts.map((attempt) => `${attempt.provider}:${attempt.upstreamModel}`),
-    ["opencode:jev-1.13", "openrouter:typesafe/jev-1.13"]
+    ["opencode-zen:jev-1.13", "openrouter:typesafe/jev-1.13"]
   );
   // Each candidate keeps its own canonical identity for policy/usage/cooldown.
   assert.deepEqual(
     harnessed.attempts.map((attempt) => attempt.canonicalModel),
-    ["opencode/jev-1.13", "openrouter/typesafe/jev-1.13"]
+    ["opencode-zen/jev-1.13", "openrouter/typesafe/jev-1.13"]
   );
   assert.equal(harnessed.attempts[0].requestedModel, "jev");
 });
 
 test("a provider-qualified id never crosses to another backend", async () => {
   const harnessed = harness({
-    pools: { opencode: [freeKey("zen-1")], openrouter: [keyed("or-1")] },
+    pools: { "opencode-zen": [freeKey("zen-1")], openrouter: [keyed("or-1")] },
     respond: () => json(429, { error: "rate_limited" }, { "retry-after": "30" }),
   });
 
-  const response = await dispatch("opencode/jev-1.13", ["opencode", "openrouter"], harnessed);
+  const response = await dispatch("opencode-zen/jev-1.13", ["opencode-zen", "openrouter"], harnessed);
 
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("retry-after"), "30");
-  assert.deepEqual(new Set(harnessed.attempts.map((a) => a.provider)), new Set(["opencode"]));
-  assert.ok(harnessed.selections.every((selection) => selection.provider === "opencode"));
+  assert.deepEqual(new Set(harnessed.attempts.map((a) => a.provider)), new Set(["opencode-zen"]));
+  assert.ok(harnessed.selections.every((selection) => selection.provider === "opencode-zen"));
 });
 
 test("a free-tier alias rotates within the free backend and never reaches a paid one", async () => {
   // The normal paid account is offered first; the proxy rejects it for a
   // free-tier model, and the loop must find the tagged free account instead.
   const harnessed = harness({
-    pools: { opencode: [keyed("zen-paid"), freeKey("zen-free")], openrouter: [keyed("or-1")] },
+    pools: { "opencode-zen": [keyed("zen-paid"), freeKey("zen-free")], openrouter: [keyed("or-1")] },
     respond: (attempt) =>
       attempt.connectionId === "zen-paid"
         ? json(403, { error: "FreeTierError" })
         : json(200, ANSWER),
   });
 
-  const response = await dispatch("jev-free", ["opencode", "openrouter"], harnessed);
+  const response = await dispatch("jev-free", ["opencode-zen", "openrouter"], harnessed);
 
   assert.equal(response.status, 200);
   assert.deepEqual(
@@ -274,23 +274,23 @@ test("a free-tier alias rotates within the free backend and never reaches a paid
   // The tier travels with every attempt, so the proxy can refuse a paid account.
   assert.ok(harnessed.attempts.every((attempt) => attempt.tier === "free"));
   // No paid backend is ever consulted for a free alias, not even after a failure.
-  assert.ok(harnessed.selections.every((selection) => selection.provider === "opencode"));
+  assert.ok(harnessed.selections.every((selection) => selection.provider === "opencode-zen"));
 });
 
 test("a free-tier alias with only paid accounts fails closed instead of falling back", async () => {
   const harnessed = harness({
-    pools: { opencode: [keyed("zen-paid")], openrouter: [keyed("or-1")] },
+    pools: { "opencode-zen": [keyed("zen-paid")], openrouter: [keyed("or-1")] },
     respond: () => json(403, { error: "FreeTierError" }),
   });
 
-  const response = await dispatch("jev-free", ["opencode", "openrouter"], harnessed);
+  const response = await dispatch("jev-free", ["opencode-zen", "openrouter"], harnessed);
 
   assert.equal(response.status, 403);
   assert.deepEqual(
     harnessed.attempts.map((attempt) => attempt.connectionId),
     ["zen-paid"]
   );
-  assert.ok(harnessed.selections.every((selection) => selection.provider === "opencode"));
+  assert.ok(harnessed.selections.every((selection) => selection.provider === "opencode-zen"));
 });
 
 test("the key's connection allowlist is passed to every credential selection", async () => {
@@ -312,17 +312,17 @@ test("the key's connection allowlist is passed to every credential selection", a
 
 test("each candidate is re-checked against the key's rules by canonical id", async () => {
   const harnessed = harness({
-    pools: { opencode: [freeKey("zen-1")], openrouter: [keyed("or-1")] },
+    pools: { "opencode-zen": [freeKey("zen-1")], openrouter: [keyed("or-1")] },
     policy: (canonicalModel) =>
-      canonicalModel === "opencode/jev-1.13"
+      canonicalModel === "opencode-zen/jev-1.13"
         ? json(403, { error: { message: "Model not allowed for this API key" } })
         : null,
   });
 
-  const response = await dispatch("jev", ["opencode", "openrouter"], harnessed);
+  const response = await dispatch("jev", ["opencode-zen", "openrouter"], harnessed);
 
   assert.equal(response.status, 200);
-  assert.deepEqual(harnessed.policyChecks, ["opencode/jev-1.13", "openrouter/typesafe/jev-1.13"]);
+  assert.deepEqual(harnessed.policyChecks, ["opencode-zen/jev-1.13", "openrouter/typesafe/jev-1.13"]);
   // A rejected candidate must not spend a credential selection at all.
   assert.ok(harnessed.selections.every((selection) => selection.provider === "openrouter"));
   assert.deepEqual(
@@ -333,11 +333,11 @@ test("each candidate is re-checked against the key's rules by canonical id", asy
 
 test("a candidate the key may not use is reported, not silently dropped", async () => {
   const harnessed = harness({
-    pools: { opencode: [freeKey("zen-1")] },
+    pools: { "opencode-zen": [freeKey("zen-1")] },
     policy: () => json(403, { error: { message: "Model not allowed for this API key" } }),
   });
 
-  const response = await dispatch("opencode/jev-1.13", ["opencode"], harnessed);
+  const response = await dispatch("opencode-zen/jev-1.13", ["opencode-zen"], harnessed);
 
   assert.equal(response.status, 403);
   assert.equal(harnessed.attempts.length, 0);
@@ -411,11 +411,11 @@ test("a lease-fenced selection is treated as unusable rather than dispatched", a
 test("a caller-fault status is returned without spending another account", async () => {
   for (const status of [400, 404, 413, 415, 422]) {
     const harnessed = harness({
-      pools: { opencode: [freeKey("zen-1"), freeKey("zen-2")], openrouter: [keyed("or-1")] },
+      pools: { "opencode-zen": [freeKey("zen-1"), freeKey("zen-2")], openrouter: [keyed("or-1")] },
       respond: () => json(status, { error: "bad_request" }),
     });
 
-    const response = await dispatch("jev", ["opencode", "openrouter"], harnessed);
+    const response = await dispatch("jev", ["opencode-zen", "openrouter"], harnessed);
 
     assert.equal(response.status, status);
     assert.equal(harnessed.attempts.length, 1, `status ${status} must not be retried`);
@@ -427,11 +427,11 @@ test("an ambiguous 502 fails closed instead of rotating accounts", async () => {
   // failure onto 502. A contract violation would repeat on every account, so
   // the conservative choice is to stop.
   const harnessed = harness({
-    pools: { opencode: [freeKey("zen-1"), freeKey("zen-2")], openrouter: [keyed("or-1")] },
+    pools: { "opencode-zen": [freeKey("zen-1"), freeKey("zen-2")], openrouter: [keyed("or-1")] },
     respond: () => json(502, { error: { message: "invalid response body" } }),
   });
 
-  const response = await dispatch("jev", ["opencode", "openrouter"], harnessed);
+  const response = await dispatch("jev", ["opencode-zen", "openrouter"], harnessed);
 
   assert.equal(response.status, 502);
   assert.equal(harnessed.attempts.length, 1);
@@ -440,11 +440,11 @@ test("an ambiguous 502 fails closed instead of rotating accounts", async () => {
 
 test("a caller cancellation is not retried", async () => {
   const harnessed = harness({
-    pools: { opencode: [freeKey("zen-1"), freeKey("zen-2")] },
+    pools: { "opencode-zen": [freeKey("zen-1"), freeKey("zen-2")] },
     respond: () => json(499, { error: "aborted" }),
   });
 
-  const response = await dispatch("opencode/jev-1.13", ["opencode"], harnessed);
+  const response = await dispatch("opencode-zen/jev-1.13", ["opencode-zen"], harnessed);
 
   assert.equal(response.status, 499);
   assert.equal(harnessed.attempts.length, 1);
@@ -464,7 +464,7 @@ test("connection rotation and the candidate chain are both bounded", async () =>
 
   const chained = harness({
     pools: {
-      opencode: [freeKey("zen-1")],
+      "opencode-zen": [freeKey("zen-1")],
       openrouter: [keyed("or-1")],
       "vercel-ai-gateway": [keyed("v-1")],
     },
@@ -472,7 +472,7 @@ test("connection rotation and the candidate chain are both bounded", async () =>
   });
   const chainedResponse = await dispatch(
     "jev",
-    ["opencode", "openrouter", "vercel-ai-gateway"],
+    ["opencode-zen", "openrouter", "vercel-ai-gateway"],
     chained
   );
 
@@ -484,31 +484,31 @@ test("connection rotation and the candidate chain are both bounded", async () =>
 
 test("the last upstream failure is preserved over a later selector diagnostic", async () => {
   const harnessed = harness({
-    pools: { opencode: [freeKey("zen-1")] },
+    pools: { "opencode-zen": [freeKey("zen-1")] },
     respond: () => json(429, { error: "rate_limited" }, { "retry-after": "11" }),
   });
 
   // openrouter is a configured candidate for the alias but has no pool here, so
   // its selection returns null AFTER opencode already answered 429.
-  const response = await dispatch("jev", ["opencode", "openrouter"], harnessed);
+  const response = await dispatch("jev", ["opencode-zen", "openrouter"], harnessed);
 
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("retry-after"), "11");
 });
 
 test("the backend's own request limits reject before any credential is spent", async () => {
-  const tooManyLevels = harness({ pools: { opencode: [freeKey("zen-1")] } });
+  const tooManyLevels = harness({ pools: { "opencode-zen": [freeKey("zen-1")] } });
   const levelsResponse = await dispatchSystemOne(
     {
-      candidates: resolveSystemOneCandidates("opencode/jev-1.13"),
+      candidates: resolveSystemOneCandidates("opencode-zen/jev-1.13"),
       body: {
-        model: "opencode/jev-1.13",
+        model: "opencode-zen/jev-1.13",
         state: STATE,
         questions: {
           severity: { type: "score", criteria: Array.from({ length: 11 }, (_, i) => `l${i}`) },
         },
       },
-      requestedModel: "opencode/jev-1.13",
+      requestedModel: "opencode-zen/jev-1.13",
     },
     tooManyLevels.deps
   );
@@ -517,16 +517,16 @@ test("the backend's own request limits reject before any credential is spent", a
   assert.equal(tooManyLevels.attempts.length, 0);
   assert.equal(tooManyLevels.selections.length, 0);
 
-  const oversized = harness({ pools: { opencode: [freeKey("zen-1")] } });
+  const oversized = harness({ pools: { "opencode-zen": [freeKey("zen-1")] } });
   const oversizedResponse = await dispatchSystemOne(
     {
-      candidates: resolveSystemOneCandidates("opencode/jev-1.13"),
+      candidates: resolveSystemOneCandidates("opencode-zen/jev-1.13"),
       body: {
-        model: "opencode/jev-1.13",
+        model: "opencode-zen/jev-1.13",
         state: "x".repeat(1_100_000),
         questions: { urgent: { type: "noul" } },
       },
-      requestedModel: "opencode/jev-1.13",
+      requestedModel: "opencode-zen/jev-1.13",
     },
     oversized.deps
   );

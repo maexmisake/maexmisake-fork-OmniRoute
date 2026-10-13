@@ -41,7 +41,7 @@ test("a decision-only model is classified as a non-chat decision capability", ()
   assert.equal(decision.chatSelectable, false);
   assert.equal(decision.reason, "explicit-endpoints");
   assert.equal(
-    getModelEndpointDecision("opencode", "jev-1.13", ["decision"]).kind,
+    getModelEndpointDecision("opencode-zen", "jev-1.13", ["decision"]).kind,
     "decision",
     "the `decision` spelling classifies the same way"
   );
@@ -133,7 +133,7 @@ test("the chat guard leaves chat and mixed models alone", async () => {
 
 test("the chat guard consults the connection's synced rows when no metadata is passed", async () => {
   const rejection = await decisionOnlyChatRejection(
-    { provider: "opencode", model: "jev-1.13" },
+    { provider: "opencode-zen", model: "jev-1.13" },
     async () => [
       { id: "jev-1.13", supportedEndpoints: ["systemone"] },
       { id: "big-pickle", supportedEndpoints: ["chat"] },
@@ -143,7 +143,7 @@ test("the chat guard consults the connection's synced rows when no metadata is p
   assert.equal(rejection.status, 400);
 
   assert.equal(
-    await decisionOnlyChatRejection({ provider: "opencode", model: "big-pickle" }, async () => [
+    await decisionOnlyChatRejection({ provider: "opencode-zen", model: "big-pickle" }, async () => [
       { id: "big-pickle", supportedEndpoints: ["chat"] },
     ]),
     null

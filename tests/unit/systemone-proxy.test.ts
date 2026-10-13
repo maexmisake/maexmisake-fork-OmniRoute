@@ -225,7 +225,7 @@ test("a 403 is surfaced as 403 — a restricted free tier is not reported as suc
   const recorded = recorder();
   const response = await handleSystemOneProxy(
     options({
-      provider: "opencode",
+      provider: "opencode-zen",
       tier: "free",
       credentials: {
         connectionId: "conn-free",
@@ -426,9 +426,9 @@ test("a tagged free-tier OpenCode key authenticates while a keyless connection i
   const free = recorder();
   const freeResponse = await handleSystemOneProxy(
     options({
-      provider: "opencode",
+      provider: "opencode-zen",
       tier: "free",
-      canonicalModel: "opencode/jev-1.13-free",
+      canonicalModel: "opencode-zen/jev-1.13-free",
       body: { model: "jev-1.13-free", state: STATE, questions: { urgent: { type: "noul" } } },
       credentials: {
         connectionId: "conn-free",
@@ -448,9 +448,9 @@ test("a tagged free-tier OpenCode key authenticates while a keyless connection i
   const keyless = recorder();
   const keylessResponse = await handleSystemOneProxy(
     options({
-      provider: "opencode",
+      provider: "opencode-zen",
       tier: "free",
-      canonicalModel: "opencode/jev-1.13-free",
+      canonicalModel: "opencode-zen/jev-1.13-free",
       credentials: {
         connectionId: "conn-keyless",
         apiKey: null,
@@ -467,9 +467,9 @@ test("a free-tier model is never dispatched on a paid account", async () => {
   const recorded = recorder();
   const response = await handleSystemOneProxy(
     options({
-      provider: "opencode",
+      provider: "opencode-zen",
       tier: "free",
-      canonicalModel: "opencode/jev-1.13-free",
+      canonicalModel: "opencode-zen/jev-1.13-free",
       body: { model: "jev-1.13-free", state: STATE, questions: { urgent: { type: "noul" } } },
       credentials: { connectionId: "conn-paid", apiKey: "sk-paid-zen-account" },
     }),

@@ -93,8 +93,8 @@ export type SystemOneBackend = {
  * an operator can re-point either per connection if the docs move.
  */
 export const SYSTEMONE_BACKENDS = {
-  opencode: {
-    provider: "opencode",
+  "opencode-zen": {
+    provider: "opencode-zen",
     label: "OpenCode Zen",
     decisionUrl: "https://opencode.ai/inference/v1/systemone",
     modelsUrl: "https://opencode.ai/zen/v1/models",
@@ -153,20 +153,20 @@ const SYSTEMONE_MODEL_ALIASES: Readonly<
   Record<string, ReadonlyArray<{ provider: SystemOneProviderId; model: string }>>
 > = {
   jev: [
-    { provider: "opencode", model: "jev-1.13" },
+    { provider: "opencode-zen", model: "jev-1.13" },
     { provider: "openrouter", model: "typesafe/jev-1.13" },
     { provider: "vercel-ai-gateway", model: "typesafe-ai/jev" },
   ],
   "jev-1.13": [
-    { provider: "opencode", model: "jev-1.13" },
+    { provider: "opencode-zen", model: "jev-1.13" },
     { provider: "openrouter", model: "typesafe/jev-1.13" },
     { provider: "vercel-ai-gateway", model: "typesafe-ai/jev" },
   ],
   // OpenCode Zen's Jev Free is a limited-time free model and the only free-tier
   // System One model documented on any backend. It must never be served by a
   // paid account, so the alias resolves to that one candidate.
-  "jev-free": [{ provider: "opencode", model: "jev-1.13-free" }],
-  "jev-1.13-free": [{ provider: "opencode", model: "jev-1.13-free" }],
+  "jev-free": [{ provider: "opencode-zen", model: "jev-1.13-free" }],
+  "jev-1.13-free": [{ provider: "opencode-zen", model: "jev-1.13-free" }],
 };
 
 /**

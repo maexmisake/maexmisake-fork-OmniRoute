@@ -70,7 +70,7 @@ through.
 
 | Backend           | Provider id         | Decision endpoint                                   | Catalog endpoint                                              | Key required |
 | ----------------- | ------------------- | --------------------------------------------------- | ------------------------------------------------------------- | ------------ |
-| OpenCode Zen      | `opencode`          | `https://opencode.ai/inference/v1/systemone`        | `https://opencode.ai/zen/v1/models`                           | yes          |
+| OpenCode Zen      | `opencode-zen`      | `https://opencode.ai/inference/v1/systemone`        | `https://opencode.ai/zen/v1/models`                           | yes          |
 | Vercel AI Gateway | `vercel-ai-gateway` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `https://ai-gateway.vercel.sh/typesafe/v1/models`             | yes          |
 | OpenRouter        | `openrouter`        | `https://openrouter.ai/api/v1/systemone`            | `https://openrouter.ai/api/v1/models?output_modalities=decisions` | yes       |
 

@@ -28,7 +28,7 @@ function captureError(fn: () => unknown): SystemOneEndpointError {
 }
 
 test("each backend resolves its documented decision endpoint by default", () => {
-  assert.equal(systemOneUrl("opencode", {}), "https://opencode.ai/inference/v1/systemone");
+  assert.equal(systemOneUrl("opencode-zen", {}), "https://opencode.ai/inference/v1/systemone");
   assert.equal(
     systemOneUrl("vercel-ai-gateway", {}),
     "https://ai-gateway.vercel.sh/typesafe/v1/systemone"
@@ -37,7 +37,7 @@ test("each backend resolves its documented decision endpoint by default", () => 
 });
 
 test("each backend resolves its documented catalog endpoint by default", () => {
-  assert.equal(systemOneUrl("opencode", {}, "models"), "https://opencode.ai/zen/v1/models");
+  assert.equal(systemOneUrl("opencode-zen", {}, "models"), "https://opencode.ai/zen/v1/models");
   assert.equal(
     systemOneUrl("vercel-ai-gateway", {}, "models"),
     "https://ai-gateway.vercel.sh/typesafe/v1/models"
@@ -50,7 +50,7 @@ test("each backend resolves its documented catalog endpoint by default", () => {
 
 test("a per-connection endpoint override on an allowlisted host is honored", () => {
   assert.equal(
-    systemOneUrl("opencode", {
+    systemOneUrl("opencode-zen", {
       providerSpecificData: { systemOneUrl: "https://opencode.ai/zen/v1/systemone" },
     }),
     "https://opencode.ai/zen/v1/systemone"
@@ -64,7 +64,7 @@ test("a per-connection endpoint override on an allowlisted host is honored", () 
   );
   assert.equal(
     systemOneUrl(
-      "opencode",
+      "opencode-zen",
       { providerSpecificData: { systemOneModelsUrl: "https://opencode.ai/zen/v2/models" } },
       "models"
     ),
@@ -76,11 +76,11 @@ test("the decision override does not leak into the catalog read, or the reverse"
   const connection = {
     providerSpecificData: { systemOneUrl: "https://opencode.ai/zen/v1/systemone" },
   };
-  assert.equal(systemOneUrl("opencode", connection, "models"), "https://opencode.ai/zen/v1/models");
+  assert.equal(systemOneUrl("opencode-zen", connection, "models"), "https://opencode.ai/zen/v1/models");
   const catalogOnly = {
     providerSpecificData: { systemOneModelsUrl: "https://opencode.ai/zen/v2/models" },
   };
-  assert.equal(systemOneUrl("opencode", catalogOnly), "https://opencode.ai/inference/v1/systemone");
+  assert.equal(systemOneUrl("opencode-zen", catalogOnly), "https://opencode.ai/inference/v1/systemone");
 });
 
 test("an override outside the provider's allowlisted hosts is rejected", () => {
@@ -93,7 +93,7 @@ test("an override outside the provider's allowlisted hosts is rejected", () => {
     "https://openrouter.ai/api/v1/systemone",
   ]) {
     const error = captureError(() =>
-      systemOneUrl("opencode", { providerSpecificData: { systemOneUrl: url } })
+      systemOneUrl("opencode-zen", { providerSpecificData: { systemOneUrl: url } })
     );
     assert.equal(error.status, 400);
     assert.match(error.message, /allowlist/i);
@@ -108,7 +108,7 @@ test("a plaintext, credentialed or malformed override is rejected", () => {
     "not a url",
   ]) {
     const error = captureError(() =>
-      systemOneUrl("opencode", { providerSpecificData: { systemOneUrl: url } })
+      systemOneUrl("opencode-zen", { providerSpecificData: { systemOneUrl: url } })
     );
     assert.equal(error.status, 400);
     // The rejection must not quote the credential it just refused.
@@ -119,7 +119,7 @@ test("a plaintext, credentialed or malformed override is rejected", () => {
 test("a blank override is treated as unset, not as an error", () => {
   for (const blank of ["", "   "]) {
     assert.equal(
-      systemOneUrl("opencode", { providerSpecificData: { systemOneUrl: blank } }),
+      systemOneUrl("opencode-zen", { providerSpecificData: { systemOneUrl: blank } }),
       "https://opencode.ai/inference/v1/systemone"
     );
   }
@@ -154,7 +154,7 @@ test("an OAuth access token is used when no API key is stored", () => {
 
 test("OpenCode uses its configured Zen key as a bearer credential", () => {
   const credential = ["fixture", "zen"].join("-");
-  const headers = systemOneHeaders("opencode", { apiKey: credential, accessToken: null });
+  const headers = systemOneHeaders("opencode-zen", { apiKey: credential, accessToken: null });
   assert.equal(headers.Authorization, `Bearer ${credential}`);
   assert.equal(headers.Accept, "application/json");
 });

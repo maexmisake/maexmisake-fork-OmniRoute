@@ -36,11 +36,11 @@ function captureError(fn: () => unknown): SystemOneTargetError {
 
 test("the three authorized backends are registered and nothing else", () => {
   assert.deepEqual(listSystemOneProviders().sort(), [
-    "opencode",
+    "opencode-zen",
     "openrouter",
     "vercel-ai-gateway",
   ]);
-  assert.equal(isSystemOneProvider("opencode"), true);
+  assert.equal(isSystemOneProvider("opencode-zen"), true);
   assert.equal(isSystemOneProvider("openrouter"), true);
   assert.equal(isSystemOneProvider("vercel-ai-gateway"), true);
   assert.equal(isSystemOneProvider("typesafe"), false);
@@ -50,10 +50,10 @@ test("the three authorized backends are registered and nothing else", () => {
 
 test("each backend carries the documented decision and catalog endpoints", () => {
   assert.equal(
-    SYSTEMONE_BACKENDS.opencode.decisionUrl,
+    SYSTEMONE_BACKENDS["opencode-zen"].decisionUrl,
     "https://opencode.ai/inference/v1/systemone"
   );
-  assert.equal(SYSTEMONE_BACKENDS.opencode.modelsUrl, "https://opencode.ai/zen/v1/models");
+  assert.equal(SYSTEMONE_BACKENDS["opencode-zen"].modelsUrl, "https://opencode.ai/zen/v1/models");
   assert.equal(
     SYSTEMONE_BACKENDS["vercel-ai-gateway"].decisionUrl,
     "https://ai-gateway.vercel.sh/typesafe/v1/systemone"
@@ -79,7 +79,7 @@ test("every backend declares its allowlisted override hosts and a key requiremen
     assert.equal(typeof backend.contractVerified, "boolean");
     assert.equal(backend.contractVerified, false);
   }
-  assert.deepEqual(SYSTEMONE_BACKENDS.opencode.allowedHosts, ["opencode.ai"]);
+  assert.deepEqual(SYSTEMONE_BACKENDS["opencode-zen"].allowedHosts, ["opencode.ai"]);
   assert.deepEqual(SYSTEMONE_BACKENDS.openrouter.allowedHosts, ["openrouter.ai"]);
   assert.deepEqual(SYSTEMONE_BACKENDS["vercel-ai-gateway"].allowedHosts, ["ai-gateway.vercel.sh"]);
 });
@@ -108,10 +108,10 @@ test("qualified ids keep the vendor prefix of each gateway's own model id", () =
     tier: "paid",
     pinned: true,
   });
-  assert.deepEqual(resolveSystemOneCandidates("opencode/jev-1.13")[0], {
-    provider: "opencode",
+  assert.deepEqual(resolveSystemOneCandidates("opencode-zen/jev-1.13")[0], {
+    provider: "opencode-zen",
     model: "jev-1.13",
-    canonicalModel: "opencode/jev-1.13",
+    canonicalModel: "opencode-zen/jev-1.13",
     tier: "paid",
     pinned: true,
   });
@@ -127,7 +127,7 @@ test("a qualified id for a provider without System One support fails closed", ()
 
 test("a qualified id never falls back to another backend", () => {
   for (const id of [
-    "opencode/jev-1.13",
+    "opencode-zen/jev-1.13",
     "openrouter/typesafe/jev-1.13",
     "vercel-ai-gateway/typesafe-ai/jev",
   ]) {
@@ -143,7 +143,7 @@ test("unsafe model id syntax is rejected before any URL is built", () => {
     "openrouter/typesafe/jev#frag",
     "openrouter/..%2f..%2fadmin",
     "openrouter/../secret",
-    "opencode/jev\\1.13",
+    "opencode-zen/jev\\1.13",
     "",
     "   ",
   ]) {
@@ -157,7 +157,7 @@ test("a bare paid alias fans out across backends, bounded and price ordered", ()
   assert.ok(candidates.length <= SYSTEMONE_MAX_FALLBACK_CANDIDATES);
   assert.deepEqual(
     candidates.map((candidate) => candidate.canonicalModel),
-    ["opencode/jev-1.13", "openrouter/typesafe/jev-1.13", "vercel-ai-gateway/typesafe-ai/jev"]
+    ["opencode-zen/jev-1.13", "openrouter/typesafe/jev-1.13", "vercel-ai-gateway/typesafe-ai/jev"]
   );
   assert.ok(candidates.every((candidate) => candidate.pinned === false));
   assert.ok(candidates.every((candidate) => candidate.tier === "paid"));
@@ -190,7 +190,7 @@ test("the free alias resolves only to free-tier candidates — never a paid one"
   const candidates = resolveSystemOneCandidates("jev-1.13-free");
   assert.deepEqual(
     candidates.map((candidate) => candidate.canonicalModel),
-    ["opencode/jev-1.13-free"]
+    ["opencode-zen/jev-1.13-free"]
   );
   assert.ok(candidates.every((candidate) => candidate.tier === "free"));
 });
@@ -202,8 +202,8 @@ test("a paid alias never produces a free-tier candidate", () => {
 });
 
 test("the model tier is derived per provider and per model id", () => {
-  assert.equal(systemOneModelTier("opencode", "jev-1.13-free"), "free");
-  assert.equal(systemOneModelTier("opencode", "jev-1.13"), "paid");
+  assert.equal(systemOneModelTier("opencode-zen", "jev-1.13-free"), "free");
+  assert.equal(systemOneModelTier("opencode-zen", "jev-1.13"), "paid");
   assert.equal(systemOneModelTier("openrouter", "typesafe/jev-1.13"), "paid");
   assert.equal(systemOneModelTier("openrouter", "typesafe/jev-1.13:free"), "free");
 });
@@ -215,13 +215,13 @@ test("a free-tier model requires a keyed connection explicitly tagged free", () 
     isConnectionEligibleForTier(
       "free",
       { apiKey: credential, accessToken: null },
-      "opencode"
+      "opencode-zen"
     ),
     false
   );
   // A normal paid key must never be billed for the free alias.
   assert.equal(
-    isConnectionEligibleForTier("free", { apiKey: credential }, "opencode"),
+    isConnectionEligibleForTier("free", { apiKey: credential }, "opencode-zen"),
     false
   );
   // The operator must explicitly mark the legitimate free-account key.
@@ -232,7 +232,7 @@ test("a free-tier model requires a keyed connection explicitly tagged free", () 
         apiKey: credential,
         providerSpecificData: { systemOneTier: "free" },
       },
-      "opencode"
+      "opencode-zen"
     ),
     true
   );
@@ -251,5 +251,5 @@ test("pricing provenance is explicit — unknown rates are not reported as free"
   // No published per-token rate is asserted for a gateway-served decision model.
   assert.equal(nativeSystemOnePricing("openrouter", "typesafe/jev-1.13"), null);
   assert.equal(nativeSystemOnePricing("vercel-ai-gateway", "typesafe-ai/jev"), null);
-  assert.equal(nativeSystemOnePricing("opencode", "jev-1.13"), null);
+  assert.equal(nativeSystemOnePricing("opencode-zen", "jev-1.13"), null);
 });

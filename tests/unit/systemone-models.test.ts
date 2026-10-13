@@ -152,8 +152,8 @@ test("OpenCode Zen's shared model list is filtered to its decision models", asyn
     {},
     deps(
       [
-        connection("opencode", { apiKey: ["fixture", "paid", "opencode"].join("-") }),
-        freeConnection("opencode"),
+        connection("opencode-zen", { apiKey: ["fixture", "paid", "opencode-zen"].join("-") }),
+        freeConnection("opencode-zen"),
       ],
       { "opencode.ai": ZEN_LIST }
     )
@@ -161,7 +161,7 @@ test("OpenCode Zen's shared model list is filtered to its decision models", asyn
   const models = await listed(response);
   assert.deepEqual(
     models.map((model) => model.id),
-    ["opencode/jev-1.13", "opencode/jev-1.13-free"]
+    ["opencode-zen/jev-1.13", "opencode-zen/jev-1.13-free"]
   );
   // A chat model from the same list is not a decision model.
   assert.ok(!models.some((model) => String(model.id).includes("big-pickle")));
@@ -173,12 +173,12 @@ test("OpenCode Zen's shared model list is filtered to its decision models", asyn
 test("a paid-only OpenCode account does not advertise the free-tier model", async () => {
   const response = await handleSystemOneModels(
     {},
-    deps([connection("opencode", { apiKey: "sk-paid-zen" })], { "opencode.ai": ZEN_LIST })
+    deps([connection("opencode-zen", { apiKey: "sk-paid-zen" })], { "opencode.ai": ZEN_LIST })
   );
   const models = await listed(response);
   assert.deepEqual(
     models.map((model) => model.id),
-    ["opencode/jev-1.13"]
+    ["opencode-zen/jev-1.13"]
   );
 });
 
@@ -201,8 +201,8 @@ test("every configured backend contributes to one aggregated list", async () => 
     deps(
       [
         connection("openrouter"),
-        connection("opencode", { apiKey: ["fixture", "paid", "opencode"].join("-") }),
-        freeConnection("opencode"),
+        connection("opencode-zen", { apiKey: ["fixture", "paid", "opencode-zen"].join("-") }),
+        freeConnection("opencode-zen"),
         connection("vercel-ai-gateway"),
       ],
       {
@@ -213,8 +213,8 @@ test("every configured backend contributes to one aggregated list", async () => 
     )
   );
   assert.deepEqual((await listed(response)).map((model) => model.id).sort(), [
-    "opencode/jev-1.13",
-    "opencode/jev-1.13-free",
+    "opencode-zen/jev-1.13",
+    "opencode-zen/jev-1.13-free",
     "openrouter/typesafe/jev-1.13",
     "vercel-ai-gateway/typesafe-ai/jev",
   ]);
@@ -294,7 +294,7 @@ test("a second key for the same provider is a fallback, not a duplicate listing"
 test("one broken backend still lets the healthy ones list, reported as partial", async () => {
   const response = await handleSystemOneModels(
     {},
-    deps([connection("openrouter"), connection("opencode", { apiKey: null })], {
+    deps([connection("openrouter"), connection("opencode-zen", { apiKey: null })], {
       "openrouter.ai": OPENROUTER_LIST,
       "opencode.ai": async () => new Response("boom", { status: 500 }),
     })
@@ -336,22 +336,22 @@ test("the API key's model rules filter the list by its qualified id", async () =
     {
       isModelAllowed: async (modelId) => {
         asked.push(modelId);
-        return modelId !== "opencode/jev-1.13-free";
+        return modelId !== "opencode-zen/jev-1.13-free";
       },
     },
     deps(
       [
-        connection("opencode", { apiKey: ["fixture", "paid", "opencode"].join("-") }),
-        freeConnection("opencode"),
+        connection("opencode-zen", { apiKey: ["fixture", "paid", "opencode-zen"].join("-") }),
+        freeConnection("opencode-zen"),
       ],
       { "opencode.ai": ZEN_LIST }
     )
   );
   assert.deepEqual(
     (await listed(response)).map((model) => model.id),
-    ["opencode/jev-1.13"]
+    ["opencode-zen/jev-1.13"]
   );
-  assert.deepEqual(asked.sort(), ["opencode/jev-1.13", "opencode/jev-1.13-free"]);
+  assert.deepEqual(asked.sort(), ["opencode-zen/jev-1.13", "opencode-zen/jev-1.13-free"]);
 });
 
 test("the API key's connection allowlist narrows which connections are read", async () => {
