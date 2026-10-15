@@ -11,7 +11,9 @@ process.env.USAGE_LIMIT_IGNORE_UNPRICED = "false";
 const { getDbInstance, resetDbInstance } = await import("../../src/lib/db/core.ts");
 const { updatePricing } = await import("../../src/lib/db/settings.ts");
 const { saveRequestUsage } = await import("../../src/lib/usage/usageHistory.ts");
-const { getApiKeyUsageLimitStatus } = await import("../../src/lib/usage/apiKeyUsageLimits.ts");
+const { getApiKeyUsageLimitStatus, buildApiKeyUsageLimitRejection } =
+  await import("../../src/lib/usage/apiKeyUsageLimits.ts");
+const { handleSystemOneProxy } = await import("../../open-sse/handlers/systemOne.ts");
 
 const NOW = Date.parse("2026-10-14T20:00:00.000Z");
 const ENTRY = {
@@ -160,4 +162,131 @@ test("recorded costs exclude failures, other keys and rows before quota windows"
   assert.equal(status.weeklySpentUsd, 0.1);
   assert.equal(status.dailyExceeded, false);
   assert.equal(status.weeklyExceeded, false);
+});
+
+for (const fixture of [
+  { name: "both counts unknown", input: null, output: null, cost: null, unpriced: true },
+  { name: "output unknown", input: 1_000_000, output: null, cost: null, unpriced: true },
+  { name: "input unknown", input: null, output: 1, cost: null, unpriced: true },
+  { name: "measured zero", input: 0, output: 0, cost: null, unpriced: false },
+  { name: "reported zero", input: null, output: null, cost: 0, unpriced: false },
+  { name: "reported positive", input: null, output: null, cost: 0.125, unpriced: false },
+  { name: "reported cap", input: null, output: null, cost: 2, unpriced: false },
+]) {
+  test(`native response persists ${fixture.name} and enforces USD quotas`, async () => {
+    await updatePricing({ openrouter: { "typesafe/jev-1.13": { input: 0.2, output: 1 } } });
+    const response = await handleSystemOneProxy(
+      {
+        provider: "openrouter",
+        canonicalModel: "openrouter/typesafe/jev-1.13",
+        body: {
+          model: "typesafe/jev-1.13",
+          state: "test",
+          questions: { accepted: { type: "noul", instructions: "Accept?" } },
+        },
+        credentials: { apiKey: "synthetic-key", connectionId: "synthetic-connection" },
+        apiKeyInfo: { id: ENTRY.apiKeyId },
+      },
+      {
+        withCapacity: async (_options, _signal, run) => run(),
+        fetchSystemOne: async () =>
+          Response.json({
+            answers: { accepted: { type: "noul", noul: 0.9 } },
+            usage: {
+              input_tokens: fixture.input,
+              output_tokens: fixture.output,
+              cost: fixture.cost,
+            },
+          }),
+        saveRequestUsage: async (entry) => {
+          await saveRequestUsage({ ...entry, timestamp: ENTRY.timestamp });
+        },
+      }
+    );
+    assert.equal(response.status, 200);
+    const status = await getStatus();
+    assert.equal(status.dailyHasUnpricedUsage, fixture.unpriced);
+    assert.equal(status.weeklyHasUnpricedUsage, fixture.unpriced);
+    assert.equal(status.dailyExceeded, fixture.unpriced || fixture.cost === 2);
+    assert.equal(status.weeklyExceeded, fixture.unpriced || fixture.cost === 2);
+    assert.equal(status.dailySpentUsd, fixture.cost ?? 0);
+    if (status.dailyExceeded) {
+      assert.equal(
+        buildApiKeyUsageLimitRejection(new Request("http://localhost/v1/systemone"), status, NOW)
+          .status,
+        429
+      );
+    }
+    assert.equal(
+      response.headers.get("X-OmniRoute-Tokens-In"),
+      fixture.input === null ? null : String(fixture.input)
+    );
+    assert.equal(
+      response.headers.get("X-OmniRoute-Tokens-Out"),
+      fixture.output === null ? null : String(fixture.output)
+    );
+    assert.equal(
+      response.headers.get("X-OmniRoute-Cost-Status"),
+      fixture.unpriced ? "unknown" : "known"
+    );
+    assert.deepEqual(
+      getDbInstance()
+        .prepare("SELECT tokens_input, tokens_output, cost_usd FROM usage_history")
+        .all(),
+      [
+        {
+          tokens_input: fixture.input,
+          tokens_output: fixture.output,
+          cost_usd: fixture.cost ?? (fixture.unpriced ? null : 0),
+        },
+      ]
+    );
+  });
+}
+
+test("historical NULL tokens fail closed even beside a complete priced row", async () => {
+  const model = "historical-null-tokens";
+  await updatePricing({ vercel: { [model]: { input: 0.2, output: 1 } } });
+  await saveRequestUsage({ ...ENTRY, model });
+  getDbInstance()
+    .prepare(
+      `INSERT INTO usage_history
+    (provider, model, api_key_id, tokens_input, tokens_output, success, timestamp)
+    VALUES ('vercel', ?, ?, NULL, 0, 1, ?)`
+    )
+    .run(model, ENTRY.apiKeyId, ENTRY.timestamp);
+  const status = await getStatus();
+  assert.equal(status.dailySpentUsd, 0.2);
+  assert.equal(status.dailyHasUnpricedUsage, true);
+  assert.equal(status.dailyExceeded, true);
+});
+
+test("NULL-token duplicate callbacks enrich cost without duplicating usage", async () => {
+  const entry = { ...ENTRY, tokens: { prompt_tokens: null, completion_tokens: null } };
+  await saveRequestUsage(entry);
+  await saveRequestUsage({ ...entry, costUsd: 0 });
+  await saveRequestUsage({ ...entry, costUsd: 0.125 });
+  assert.deepEqual(
+    getDbInstance()
+      .prepare("SELECT tokens_input, tokens_output, cost_usd FROM usage_history")
+      .all(),
+    [{ tokens_input: null, tokens_output: null, cost_usd: 0 }]
+  );
+});
+
+test("known alternate token aliases and omitted historical fields keep their meaning", async () => {
+  await saveRequestUsage({
+    ...ENTRY,
+    tokens: { input: null, prompt_tokens: 10, output: null, completion_tokens: 1 },
+  });
+  await saveRequestUsage({ ...ENTRY, tokens: {} });
+  assert.deepEqual(
+    getDbInstance()
+      .prepare("SELECT tokens_input, tokens_output FROM usage_history ORDER BY id")
+      .all(),
+    [
+      { tokens_input: 10, tokens_output: 1 },
+      { tokens_input: 0, tokens_output: 0 },
+    ]
+  );
 });

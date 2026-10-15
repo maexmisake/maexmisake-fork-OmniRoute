@@ -20,6 +20,8 @@ const { saveRequestUsage } = await import("../../src/lib/usage/usageHistory.ts")
 const { getUsageStats, getConnectionSpendUsdSinceAdded } =
   await import("../../src/lib/usage/usageStats.ts");
 const { rollupUsageHistoryBeforeDate } = await import("../../src/lib/usage/aggregateHistory.ts");
+const { getProviderWindowCostBreakdown } =
+  await import("../../src/lib/usage/providerWindowCosts.ts");
 const analyticsRoute = await import("../../src/app/api/usage/analytics/route.ts");
 
 const pricedModel = "recorded-cost-priced-model";
@@ -104,6 +106,91 @@ test("connection spend uses exact costs, including zero, and estimates only NULL
   const result = await getConnectionSpendUsdSinceAdded("vercel", "recorded-cost-account");
   close(result.costUsd, 0.375);
   assert.equal(result.requests, 4);
+});
+
+for (const domainEntries of [0, 4, 5]) {
+  test(`provider window preserves raw recorded costs with ${domainEntries} legacy cost entries`, async () => {
+    getDbInstance().exec("DELETE FROM domain_cost_history");
+    const timestamp = new Date(Date.now() - 600_000).toISOString();
+    await seed(timestamp);
+    if (domainEntries) {
+      const insert = getDbInstance().prepare(
+        "INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)"
+      );
+      for (let index = 0; index < domainEntries; index++) {
+        insert.run("recorded-cost-key", 0.9, Date.parse(timestamp) + index);
+      }
+    }
+    const result = await getProviderWindowCostBreakdown({ provider: "vercel" });
+    // NULL row retains legacy matching; exact row costs always win over either source.
+    close(result.totalCostUsd, domainEntries ? 1.075 : 0.375);
+    assert.equal(result.rows[0].requests, 4);
+    const models = result.rows[0].models;
+    close(models.find((row) => row.model === unpricedModel)!.costUsd, 0.125);
+    close(models.find((row) => row.model === pricedModel)!.costUsd, domainEntries ? 0.95 : 0.25);
+  });
+}
+
+for (const costUsd of [0.125, 0]) {
+  test(`provider window returns exact raw cost ${costUsd} rather than token price`, async () => {
+    await updatePricing({ vercel: { [pricedModel]: { input: 0.2, output: 1 } } });
+    await saveRequestUsage({
+      provider: "vercel",
+      model: pricedModel,
+      costUsd,
+      tokens: { input: 1_000_000, output: 0 },
+      success: true,
+    });
+    close((await getProviderWindowCostBreakdown({ provider: "vercel" })).totalCostUsd, costUsd);
+  });
+}
+
+test("mixed row and legacy costs stay exact across API key renames", async () => {
+  getDbInstance().exec("DELETE FROM domain_cost_history");
+  const timestamp = new Date(Date.now() - 600_000).toISOString();
+  await seed(timestamp);
+  getDbInstance()
+    .prepare("UPDATE usage_history SET api_key_name = 'Renamed' WHERE cost_usd IS NULL")
+    .run();
+  await saveRequestUsage({
+    provider: "vercel",
+    model: pricedModel,
+    apiKeyId: "recorded-cost-key",
+    apiKeyName: "Original",
+    tokens: { input: 1_000_000, output: 0 },
+    success: true,
+    timestamp: new Date(Date.parse(timestamp) + 120_000).toISOString(),
+  });
+  for (let index = 0; index < 4; index++) {
+    getDbInstance()
+      .prepare("INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)")
+      .run("recorded-cost-key", 0.9, Date.parse(timestamp) + index);
+  }
+  const result = await getProviderWindowCostBreakdown({ provider: "vercel" });
+  close(result.totalCostUsd, 1.275);
+});
+
+test("fully recorded provider windows stay aggregated even with legacy cost history", async () => {
+  await seed();
+  const db = getDbInstance();
+  db.prepare("UPDATE usage_history SET cost_usd = 0.2 WHERE cost_usd IS NULL").run();
+  db.prepare("INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)").run(
+    "recorded-cost-key",
+    9,
+    Date.now() - 1_000
+  );
+  const originalPrepare = db.prepare;
+  const detailedQueries: string[] = [];
+  db.prepare = (sql) => {
+    if (/id as rowId|ORDER BY timestamp ASC, id ASC/i.test(sql)) detailedQueries.push(sql);
+    return originalPrepare.call(db, sql);
+  };
+  try {
+    close((await getProviderWindowCostBreakdown({ provider: "vercel" })).totalCostUsd, 0.375);
+    assert.equal(detailedQueries.length, 0);
+  } finally {
+    db.prepare = originalPrepare;
+  }
 });
 
 test("analytics totals, breakdowns and presets preserve mixed recorded and NULL costs", async () => {

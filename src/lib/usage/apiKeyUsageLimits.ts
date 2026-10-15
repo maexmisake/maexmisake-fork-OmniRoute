@@ -41,7 +41,7 @@ export interface ApiKeyUsageLimitStatus {
   weeklyExceeded: boolean;
   /**
    * True when at least one usage_history row in the daily/weekly window could not
-   * be priced at all (no pricing row for the provider+model — e.g. a routing
+   * be priced at all (incomplete token counts or no pricing row — e.g. a routing
    * alias such as `auto`, #12341). Enforcement fails closed on this: an unpriced
    * row forces `*Exceeded = true` rather than silently contributing $0 to spend,
    * since a real cost may be hiding behind the alias.
@@ -63,6 +63,7 @@ interface UsageCostRow {
   model: string | null;
   serviceTier: string | null;
   costUsd: number | null;
+  hasUnknownTokens: number;
   promptTokens: number | null;
   completionTokens: number | null;
   cacheReadTokens: number | null;
@@ -453,7 +454,7 @@ function getCalendarWeeklyWindow(
 
 interface ApiKeyUsdSpend {
   totalUsd: number;
-  /** True when at least one (provider, model) group had no pricing row at all (#12341). */
+  /** True when usage has incomplete token counts or no applicable price (#12341). */
   hasUnpricedUsage: boolean;
 }
 
@@ -468,6 +469,7 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
         LOWER(model) as model,
         COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
         SUM(cost_usd) as costUsd,
+        MAX(tokens_input IS NULL OR tokens_output IS NULL) as hasUnknownTokens,
         COALESCE(SUM(tokens_input), 0) as promptTokens,
         COALESCE(SUM(tokens_output), 0) as completionTokens,
         COALESCE(SUM(tokens_cache_read), 0) as cacheReadTokens,
@@ -477,7 +479,8 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
       WHERE api_key_id = @apiKeyId
         AND timestamp >= @sinceIso
         AND success = 1
-      GROUP BY LOWER(provider), LOWER(model), serviceTier, cost_usd IS NULL
+      GROUP BY LOWER(provider), LOWER(model), serviceTier, cost_usd IS NULL,
+        (tokens_input IS NULL OR tokens_output IS NULL)
     `
     )
     .all({ apiKeyId, sinceIso }) as UsageCostRow[];
@@ -487,6 +490,10 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
   for (const row of rows) {
     if (row.costUsd !== null) {
       total += row.costUsd;
+      continue;
+    }
+    if (row.hasUnknownTokens) {
+      hasUnpricedUsage = true;
       continue;
     }
     const provider = typeof row.provider === "string" ? row.provider : "";

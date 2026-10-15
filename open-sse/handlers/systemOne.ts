@@ -272,12 +272,12 @@ function describeCall(options: SystemOneProxyOptions): CallContext {
   };
 }
 
-type Tokens = { prompt_tokens: number; completion_tokens: number };
+type Tokens = { prompt_tokens: number | null; completion_tokens: number | null };
 
 function tokenCounts(inputTokens: number | null, outputTokens: number | null): Tokens {
   return {
-    prompt_tokens: inputTokens !== null && inputTokens >= 0 ? inputTokens : 0,
-    completion_tokens: outputTokens !== null && outputTokens >= 0 ? outputTokens : 0,
+    prompt_tokens: inputTokens,
+    completion_tokens: outputTokens,
   };
 }
 
@@ -353,7 +353,7 @@ async function resolveCost(
   usage: { inputTokens: number | null; outputTokens: number | null; costUsd: number | null }
 ): Promise<number | null> {
   if (usage.costUsd !== null) return usage.costUsd;
-  if (usage.inputTokens === null) return null;
+  if (usage.inputTokens === null || usage.outputTokens === null) return null;
   const tokens = tokenCounts(usage.inputTokens, usage.outputTokens);
   const pricingModel = call.upstreamModel || call.canonicalModel;
   const priced = await deps
@@ -388,6 +388,11 @@ function successResponse(
     usage: tokens,
   });
   if (costUsd === null) headers.delete("X-OmniRoute-Response-Cost");
+  if (tokens.prompt_tokens === null) headers.delete("X-OmniRoute-Tokens-In");
+  if (tokens.completion_tokens === null) {
+    headers.delete("X-OmniRoute-Tokens-Out");
+    headers.delete("X-OmniRoute-Tokens-Per-Second");
+  }
   headers.set("X-OmniRoute-Cost-Status", costUsd === null ? "unknown" : "known");
   return new Response(text, { status: 200, headers });
 }
@@ -461,7 +466,7 @@ async function handleSuccessfulResponse(
   const costUsd = await resolveCost(deps, call, answers.usage);
 
   if (call.apiKeyId) {
-    const billable = tokens.prompt_tokens + tokens.completion_tokens;
+    const billable = (tokens.prompt_tokens ?? 0) + (tokens.completion_tokens ?? 0);
     recordKeyQuotaUsage(call.apiKeyId, billable);
     recordTokenUsage(
       call.apiKeyId,

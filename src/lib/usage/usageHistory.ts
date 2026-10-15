@@ -913,8 +913,18 @@ export async function saveRequestUsage(entry: UsageEntry) {
         ? entry.costUsd
         : null;
 
-    const tokensInput = getLoggedInputTokens(entry.tokens);
-    const tokensOutput = getLoggedOutputTokens(entry.tokens);
+    // Explicit NULL means unreported; omitted historical fields retain their zero default.
+    const tokens = asRecord(entry.tokens);
+    const inputCounts = [tokens.input, tokens.prompt_tokens, tokens.input_tokens];
+    const outputCounts = [tokens.output, tokens.completion_tokens, tokens.output_tokens];
+    const tokensInput =
+      inputCounts.includes(null) && inputCounts.every((value) => value == null)
+        ? null
+        : getLoggedInputTokens(entry.tokens);
+    const tokensOutput =
+      outputCounts.includes(null) && outputCounts.every((value) => value == null)
+        ? null
+        : getLoggedOutputTokens(entry.tokens);
     const connection = entry.connectionId
       ? (db.prepare("SELECT * FROM provider_connections WHERE id = ?").get(entry.connectionId) as
           Record<string, unknown> | undefined)
@@ -941,8 +951,8 @@ export async function saveRequestUsage(entry: UsageEntry) {
              AND COALESCE(model, '')        = COALESCE(?, '')
              AND COALESCE(connection_id, '') = COALESCE(?, '')
              AND COALESCE(api_key_id, '')   = COALESCE(?, '')
-             AND tokens_input  = ?
-             AND tokens_output = ?
+             AND tokens_input IS ?
+             AND tokens_output IS ?
            ORDER BY id DESC LIMIT 1`
         )
         .get(

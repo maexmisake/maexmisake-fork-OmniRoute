@@ -30,6 +30,7 @@ interface UsageHistoryFilter {
 }
 
 interface AggregatedUsageCostRow {
+  costUsd: number | null;
   apiKeyId: string | null;
   apiKeyName: string | null;
   provider: string;
@@ -46,6 +47,7 @@ interface AggregatedUsageCostRow {
 }
 
 interface UsageCostRow {
+  costUsd: number | null;
   id: number;
   apiKeyId: string | null;
   apiKeyName: string | null;
@@ -347,6 +349,7 @@ function fetchAggregatedUsageRows(filter: UsageHistoryFilter): AggregatedUsageCo
         LOWER(model) as model,
         COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
         COUNT(*) as requests,
+        SUM(cost_usd) as costUsd,
         COALESCE(SUM(tokens_input), 0) as promptTokens,
         COALESCE(SUM(tokens_output), 0) as completionTokens,
         COALESCE(SUM(tokens_cache_read), 0) as cacheReadTokens,
@@ -361,7 +364,8 @@ function fetchAggregatedUsageRows(filter: UsageHistoryFilter): AggregatedUsageCo
         COALESCE(NULLIF(api_key_name, ''), ''),
         LOWER(provider),
         LOWER(model),
-        COALESCE(NULLIF(service_tier, ''), 'standard')
+        COALESCE(NULLIF(service_tier, ''), 'standard'),
+        cost_usd IS NULL
       ORDER BY totalTokens DESC
       `
     )
@@ -399,6 +403,7 @@ function fetchDetailedUsageRowsForApiKey(
       `
       SELECT
         id,
+        cost_usd as costUsd,
         NULLIF(api_key_id, '') as apiKeyId,
         NULLIF(api_key_name, '') as apiKeyName,
         LOWER(provider) as provider,
@@ -530,6 +535,7 @@ async function getUsageRowCostUsd(
 ): Promise<number> {
   const usageTimestampMs = Date.parse(row.timestamp ?? "");
   const recordedCost = matcher.takeClosest(usageTimestampMs, RECORDED_COST_MATCH_TOLERANCE_MS);
+  if (row.costUsd !== null) return row.costUsd;
   if (recordedCost) return Math.max(0, toNumber(recordedCost.cost));
 
   return calculateCost(
@@ -547,6 +553,7 @@ async function getUsageRowCostUsd(
 }
 
 async function getAggregatedGroupCostUsd(row: AggregatedUsageCostRow): Promise<number> {
+  if (row.costUsd !== null) return row.costUsd;
   return roundUsd(
     await calculateCost(
       row.provider,
@@ -591,11 +598,16 @@ async function buildApiKeyCostAllocations(args: {
     if (calculatedCosts.length % COST_MATCH_BATCH_SIZE === 0) await yieldToEventLoop();
   }
 
-  if (!args.recordedSummary || args.recordedSummary.entryCount <= 0) {
+  if (
+    args.groups.every((group) => group.costUsd !== null) ||
+    !args.recordedSummary ||
+    args.recordedSummary.entryCount <= 0
+  ) {
     return calculatedCosts;
   }
 
-  if (args.recordedSummary.entryCount === args.usageRequestCount) {
+  const hasRowCosts = args.groups.some((group) => group.costUsd !== null);
+  if (!hasRowCosts && args.recordedSummary.entryCount === args.usageRequestCount) {
     return distributeRecordedCostAcrossGroups(
       args.groups,
       args.recordedSummary.totalCost,
@@ -609,11 +621,29 @@ async function buildApiKeyCostAllocations(args: {
   const matcher = await args.getMatcher(apiKeyId);
   const detailedRows = fetchDetailedUsageRowsForApiKey(args.filter, apiKeyId);
   let total = 0;
+  const fallbackCostsByModel = new Map<string, number>();
   for (let i = 0; i < detailedRows.length; i++) {
-    total += await getUsageRowCostUsd(detailedRows[i], matcher);
+    const row = detailedRows[i];
+    const cost = await getUsageRowCostUsd(row, matcher);
+    total += cost;
+    if (hasRowCosts && row.costUsd === null) {
+      const key = `${row.provider}\0${row.model}\0${row.serviceTier}\0${row.apiKeyName ?? ""}`;
+      fallbackCostsByModel.set(key, (fallbackCostsByModel.get(key) ?? 0) + cost);
+    }
     // Awaiting an already-resolved promise only drains microtasks. A real
     // event-loop yield lets inference, timers and HTTP health probes progress.
     if ((i + 1) % COST_MATCH_BATCH_SIZE === 0) await yieldToEventLoop();
+  }
+  if (hasRowCosts) {
+    return args.groups.map(
+      (group) =>
+        group.costUsd ??
+        roundUsd(
+          fallbackCostsByModel.get(
+            `${group.provider}\0${group.model}\0${group.serviceTier}\0${group.apiKeyName ?? ""}`
+          ) ?? 0
+        )
+    );
   }
   const detailedTotal = roundUsd(total);
   return distributeRecordedCostAcrossGroups(args.groups, detailedTotal, calculatedCosts);
