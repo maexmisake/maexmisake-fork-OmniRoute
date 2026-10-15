@@ -99,9 +99,9 @@ jobs:
             --env OMNIROUTE_API_KEY="$smoke_key" \
             --env OMNIROUTE_MEMORY_MB=512 \
             --env NODE_OPTIONS=--max-old-space-size=512 \
-            --env OMNIROUTE_DISABLE_BACKGROUND_SERVICES=1 \
-            --env OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK=1 \
-            --env OMNIROUTE_ENABLE_LIVE_WS=0 "$IMAGE"
+            --env OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true \
+            --env OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK=true \
+            --env OMNIROUTE_ENABLE_LIVE_WS=false "$IMAGE"
           port=$(docker port "$SMOKE_CONTAINER" 20128/tcp | sed 's/127.0.0.1://')
           base="http://127.0.0.1:$port"
           ready=0

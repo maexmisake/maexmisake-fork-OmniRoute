@@ -392,6 +392,8 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   webpack(config, { dev, webpack }) {
+    // Packing the production cache duplicates this graph and can exceed a 12 GiB build budget.
+    if (!dev) config.cache = false;
     config.ignoreWarnings = [
       ...(config.ignoreWarnings || []),
       isNextIntlExtractorDynamicImportWarning,
