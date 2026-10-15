@@ -161,6 +161,8 @@ export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<
           DATE(timestamp) as date,
           COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
           COUNT(*) as totalRequests,
+          COUNT(*) - COUNT(cost_usd) as unpricedRequests,
+          COALESCE(SUM(cost_usd), 0) as storedCost,
           COALESCE(tokens_input, 0) as requestInputTokens,
           COALESCE(tokens_output, 0) as requestOutputTokens,
           COALESCE(tokens_cache_read, 0) as requestCacheReadTokens,
@@ -185,6 +187,8 @@ export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<
       date: string;
       serviceTier: string;
       totalRequests: number;
+      unpricedRequests: number;
+      storedCost: number;
       requestInputTokens: number;
       requestOutputTokens: number;
       requestCacheReadTokens: number;
@@ -208,25 +212,28 @@ export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<
         // one cache-heavy request's clamped surplus cancel another request's
         // billable input.
         totalCost:
-          (await calculateCost(
-            row.provider,
-            row.model,
-            {
-              input: row.requestInputTokens,
-              output: row.requestOutputTokens,
-              cacheRead: row.requestCacheReadTokens,
-              cacheCreation: row.requestCacheCreationTokens,
-              reasoning: row.requestReasoningTokens,
-            },
-            {
-              provider: row.provider,
-              model: row.model,
-              serviceTier: row.serviceTier,
-              // The archive stores API-equivalent value. Billed-cost consumers
-              // still mask flat-rate providers when they read this value.
-              flatRateAsZero: false,
-            }
-          )) * row.totalRequests,
+          row.storedCost +
+          (row.unpricedRequests === 0
+            ? 0
+            : (await calculateCost(
+                row.provider,
+                row.model,
+                {
+                  input: row.requestInputTokens,
+                  output: row.requestOutputTokens,
+                  cacheRead: row.requestCacheReadTokens,
+                  cacheCreation: row.requestCacheCreationTokens,
+                  reasoning: row.requestReasoningTokens,
+                },
+                {
+                  provider: row.provider,
+                  model: row.model,
+                  serviceTier: row.serviceTier,
+                  // The archive stores API-equivalent value. Billed-cost consumers
+                  // still mask flat-rate providers when they read this value.
+                  flatRateAsZero: false,
+                }
+              )) * row.unpricedRequests),
       }))
     );
 

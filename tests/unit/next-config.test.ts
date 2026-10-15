@@ -10,6 +10,30 @@ async function loadNextConfig(label) {
   return import(`${pathToFileURL(modulePath).href}?case=${label}-${Date.now()}`);
 }
 
+test("production webpack releases persistent caches while development keeps its cache", async () => {
+  const { default: nextConfig } = await loadNextConfig("production-cache");
+  for (const dev of [false, true]) {
+    const cache = { type: "filesystem" };
+    const config = {
+      context: process.cwd(),
+      cache,
+      plugins: [],
+      resolve: { fallback: {} },
+    };
+    const result = nextConfig.webpack(config, {
+      dev,
+      isServer: false,
+      defaultLoaders: { babel: {} },
+      webpack: {
+        IgnorePlugin: class {
+          constructor(readonly options: unknown) {}
+        },
+      },
+    });
+    assert.equal(result.cache, dev ? cache : false);
+  }
+});
+
 test.afterEach(() => {
   if (originalNextDistDir === undefined) {
     delete process.env.NEXT_DIST_DIR;

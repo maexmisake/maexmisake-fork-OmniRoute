@@ -52,6 +52,42 @@ async function enableAuth() {
   await localDb.updateSettings({ requireLogin: true, password: "" });
 }
 
+test("model sync requests the full endpoint surface and retains decision capability evidence", async () => {
+  await resetStorage();
+  const connection = await providersDb.createProviderConnection({
+    provider: "openrouter",
+    authType: "apikey",
+    name: "Decision discovery fixture",
+    apiKey: "fixture-key",
+  });
+  let surface: string | null = null;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("__readiness_probe__")) return new Response(null, { status: 404 });
+    surface = new Headers(init?.headers).get("x-omniroute-model-surface");
+    const chat = { id: "acme/chat-model", supportedEndpoints: ["chat"] };
+    const decision = {
+      id: "typesafe/jev-1.13",
+      architecture: { output_modalities: ["decisions"] },
+    };
+    return Response.json({ models: surface === "chat" ? [chat] : [chat, decision] });
+  };
+
+  const response = await modelSyncRoute.POST(
+    new Request(`http://localhost/api/providers/${connection.id}/sync-models`, {
+      method: "POST",
+      headers: scheduler.buildModelSyncInternalHeaders(),
+    }),
+    { params: { id: connection.id } }
+  );
+  assert.equal(response.status, 200);
+  assert.notEqual(surface, "chat");
+  const synced = await modelsDb.getSyncedAvailableModelsForConnection("openrouter", connection.id);
+  assert.deepEqual(synced.find((model) => model.id === "typesafe/jev-1.13")?.supportedEndpoints, [
+    "systemone",
+  ]);
+  assert.deepEqual(await modelsDb.getCustomModels("openrouter"), []);
+});
+
 test("model sync route skips success log when fetched models do not change stored models", async () => {
   await resetStorage();
 

@@ -10,6 +10,8 @@ import { isObsoleteKiroModelAlias } from "@omniroute/open-sse/services/kiroModel
 import { filterSelectableModels } from "@omniroute/open-sse/services/modelLifecycle.ts";
 import { getEmbeddingProvider } from "@omniroute/open-sse/config/embeddingRegistry.ts";
 import { hasPayloadFreeEvidence } from "@/shared/utils/payloadFreeEvidence";
+import { normalizeModelSupportedEndpoints } from "@/shared/constants/modelSupportedEndpoints";
+import { getDeclaredModelEndpoints } from "@omniroute/open-sse/services/modelEndpointPolicy.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -589,13 +591,12 @@ export function normalizeDiscoveredModels(
           : undefined;
     const explicitInputTypes = Array.isArray(record.supportedInputTypes);
 
-    const supportedEndpoints = Array.isArray(record.supportedEndpoints)
-      ? Array.from(
-          new Set(
-            record.supportedEndpoints
-              .map((endpoint) => toNonEmptyString(endpoint))
-              .filter((endpoint): endpoint is string => Boolean(endpoint))
-          )
+    const declaredEndpoints = getDeclaredModelEndpoints({ ...record, id }, providerId);
+    const supportedEndpoints = declaredEndpoints
+      ? normalizeModelSupportedEndpoints(
+          declaredEndpoints
+            .map((endpoint) => toNonEmptyString(endpoint))
+            .filter((endpoint): endpoint is string => Boolean(endpoint))
         ).sort()
       : modality.isEmbedding
         ? ["embeddings"]

@@ -843,6 +843,8 @@ export interface UsageEntry {
   model?: string | null;
   /** Raw or normalized token usage — see the interface doc above. */
   tokens?: unknown;
+  /** Known request cost in USD; null/absent retains token-pricing fallback. */
+  costUsd?: number | null;
   status?: string | null;
   success?: boolean;
   latencyMs?: number;
@@ -864,6 +866,38 @@ export interface UsageEntry {
   cpaAuthIndex?: string | null;
 }
 
+interface DuplicateUsageRow {
+  id: number;
+  endpoint: string | null;
+  cpa_auth_index: string | null;
+  cost_usd: number | null;
+}
+
+function enrichDuplicateUsage(
+  db: ReturnType<typeof getDbInstance>,
+  existing: DuplicateUsageRow,
+  entry: UsageEntry,
+  costUsd: number | null
+): void {
+  // Back-fill endpoint if the original row missed it.
+  if (!existing.endpoint && entry.endpoint) {
+    db.prepare(`UPDATE usage_history SET endpoint = ? WHERE id = ?`).run(
+      entry.endpoint,
+      existing.id
+    );
+  }
+  // A later completed attempt can carry the trace the first write missed.
+  if (!existing.cpa_auth_index && entry.cpaAuthIndex) {
+    db.prepare(`UPDATE usage_history SET cpa_auth_index = ? WHERE id = ?`).run(
+      entry.cpaAuthIndex,
+      existing.id
+    );
+  }
+  if (existing.cost_usd === null && costUsd !== null) {
+    db.prepare(`UPDATE usage_history SET cost_usd = ? WHERE id = ?`).run(costUsd, existing.id);
+  }
+}
+
 /**
  * Save request usage entry to SQLite.
  */
@@ -874,9 +908,23 @@ export async function saveRequestUsage(entry: UsageEntry) {
     const db = getDbInstance();
     const timestamp = entry.timestamp || new Date().toISOString();
     const serviceTier = normalizeServiceTier(entry.serviceTier ?? entry.service_tier);
+    const costUsd =
+      typeof entry.costUsd === "number" && Number.isFinite(entry.costUsd) && entry.costUsd >= 0
+        ? entry.costUsd
+        : null;
 
-    const tokensInput = getLoggedInputTokens(entry.tokens);
-    const tokensOutput = getLoggedOutputTokens(entry.tokens);
+    // Explicit NULL means unreported; omitted historical fields retain their zero default.
+    const tokens = asRecord(entry.tokens);
+    const inputCounts = [tokens.input, tokens.prompt_tokens, tokens.input_tokens];
+    const outputCounts = [tokens.output, tokens.completion_tokens, tokens.output_tokens];
+    const tokensInput =
+      inputCounts.includes(null) && inputCounts.every((value) => value == null)
+        ? null
+        : getLoggedInputTokens(entry.tokens);
+    const tokensOutput =
+      outputCounts.includes(null) && outputCounts.every((value) => value == null)
+        ? null
+        : getLoggedOutputTokens(entry.tokens);
     const connection = entry.connectionId
       ? (db.prepare("SELECT * FROM provider_connections WHERE id = ?").get(entry.connectionId) as
           Record<string, unknown> | undefined)
@@ -897,14 +945,14 @@ export async function saveRequestUsage(entry: UsageEntry) {
     db.transaction(() => {
       const existing = db
         .prepare(
-          `SELECT id, endpoint, cpa_auth_index FROM usage_history
+          `SELECT id, endpoint, cpa_auth_index, cost_usd FROM usage_history
            WHERE timestamp = ?
              AND COALESCE(provider, '')     = COALESCE(?, '')
              AND COALESCE(model, '')        = COALESCE(?, '')
              AND COALESCE(connection_id, '') = COALESCE(?, '')
              AND COALESCE(api_key_id, '')   = COALESCE(?, '')
-             AND tokens_input  = ?
-             AND tokens_output = ?
+             AND tokens_input IS ?
+             AND tokens_output IS ?
            ORDER BY id DESC LIMIT 1`
         )
         .get(
@@ -915,23 +963,10 @@ export async function saveRequestUsage(entry: UsageEntry) {
           entry.apiKeyId || null,
           tokensInput,
           tokensOutput
-        ) as { id: number; endpoint: string | null; cpa_auth_index: string | null } | undefined;
+        ) as DuplicateUsageRow | undefined;
 
       if (existing) {
-        // Back-fill endpoint if the original row missed it.
-        if (!existing.endpoint && entry.endpoint) {
-          db.prepare(`UPDATE usage_history SET endpoint = ? WHERE id = ?`).run(
-            entry.endpoint,
-            existing.id
-          );
-        }
-        // A later completed attempt can carry the trace the first write missed.
-        if (!existing.cpa_auth_index && entry.cpaAuthIndex) {
-          db.prepare(`UPDATE usage_history SET cpa_auth_index = ? WHERE id = ?`).run(
-            entry.cpaAuthIndex,
-            existing.id
-          );
-        }
+        enrichDuplicateUsage(db, existing, entry, costUsd);
         return; // duplicate — do not insert
       }
 
@@ -940,8 +975,8 @@ export async function saveRequestUsage(entry: UsageEntry) {
         INSERT INTO usage_history (provider, model, connection_id, account_key, account_label,
           account_label_priority, api_key_id, api_key_name, tokens_input, tokens_output,
           tokens_cache_read, tokens_cache_creation, tokens_reasoning, service_tier, status, success,
-          latency_ms, ttft_ms, error_code, combo_strategy, endpoint, cpa_auth_index, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          latency_ms, ttft_ms, error_code, combo_strategy, endpoint, cpa_auth_index, timestamp, cost_usd)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       ).run(
         entry.provider ? resolveProviderId(entry.provider) : null,
@@ -970,7 +1005,8 @@ export async function saveRequestUsage(entry: UsageEntry) {
         entry.comboStrategy || entry.combo_strategy || null,
         entry.endpoint || null,
         entry.cpaAuthIndex || null,
-        timestamp
+        timestamp,
+        costUsd
       );
 
       inserted = true;

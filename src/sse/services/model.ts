@@ -13,6 +13,7 @@ import {
   splitSyncedEffortSuffix,
   stripContextWindowSuffix,
 } from "@omniroute/open-sse/services/model.ts";
+import { getDeclaredModelEndpoints } from "@omniroute/open-sse/services/modelEndpointPolicy.ts";
 import { getLearnedReasoningEffortForModel } from "@omniroute/open-sse/services/learnedReasoningEffortCaps.ts";
 import { REGISTRY } from "@omniroute/open-sse/config/providerRegistry.ts";
 import { ANTIGRAVITY_MODEL_ALIASES } from "@omniroute/open-sse/config/antigravityModelAliases.ts";
@@ -105,6 +106,7 @@ async function getCombinedModelAliases(): Promise<Record<string, unknown>> {
 type RuntimeModelMeta = {
   apiFormat?: string;
   targetFormat?: string;
+  supportedEndpoints?: string[];
   supportsThinking?: boolean;
   alwaysThinking?: boolean;
   supportedThinkingEfforts?: string[];
@@ -329,6 +331,11 @@ function buildRuntimeModelMeta(
   compatOverrideMatch: any
 ): RuntimeModelMeta {
   const metadata = resolveRuntimeFormats(customMatch, syncedMatch, compatOverrideMatch);
+  const supportedEndpoints =
+    getDeclaredModelEndpoints(customMatch ?? {}) ??
+    getDeclaredModelEndpoints(syncedMatch ?? {}) ??
+    getDeclaredModelEndpoints(registryMatch ?? {});
+  if (supportedEndpoints) metadata.supportedEndpoints = supportedEndpoints;
   copyRegistryThinkingMetadata(metadata, registryMatch);
   copySyncedThinkingMetadata(metadata, syncedMatch);
   return metadata;

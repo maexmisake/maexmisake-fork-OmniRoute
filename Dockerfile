@@ -230,6 +230,9 @@ ENV NODE_OPTIONS="--max-old-space-size=${OMNIROUTE_BUILD_MEMORY_MB}"
 ARG OMNIROUTE_BUILD_WORKERS=2
 ENV CIRCLE_NODE_TOTAL=${OMNIROUTE_BUILD_WORKERS}
 
+# Bound module compilation separately from Next's page-data worker pool.
+ENV NEXT_WEBPACK_PARALLELISM=4
+
 COPY . ./
 RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-next-cache,target=/app/.build/next/cache \
   mkdir -p /app/data \

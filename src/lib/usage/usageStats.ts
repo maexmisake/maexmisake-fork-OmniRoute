@@ -65,12 +65,12 @@ function buildUsageSourceSql(aggregationEnabled: boolean) {
         COALESCE(tokens_cache_read, 0) as tokens_cache_read,
         COALESCE(tokens_cache_creation, 0) as tokens_cache_creation,
         COALESCE(tokens_reasoning, 0) as tokens_reasoning,
-        COALESCE(tokens_input, 0) as cost_tokens_input,
-        COALESCE(tokens_output, 0) as cost_tokens_output,
-        COALESCE(tokens_cache_read, 0) as cost_tokens_cache_read,
-        COALESCE(tokens_cache_creation, 0) as cost_tokens_cache_creation,
-        COALESCE(tokens_reasoning, 0) as cost_tokens_reasoning,
-        0.0 as stored_cost,
+        CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_input, 0) ELSE 0 END as cost_tokens_input,
+        CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_output, 0) ELSE 0 END as cost_tokens_output,
+        CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_cache_read, 0) ELSE 0 END as cost_tokens_cache_read,
+        CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_cache_creation, 0) ELSE 0 END as cost_tokens_cache_creation,
+        CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_reasoning, 0) ELSE 0 END as cost_tokens_reasoning,
+        COALESCE(cost_usd, 0.0) as stored_cost,
         COALESCE(service_tier, 'standard') as service_tier,
         1 as request_count
       FROM usage_history
@@ -90,12 +90,12 @@ function buildUsageSourceSql(aggregationEnabled: boolean) {
       COALESCE(tokens_cache_read, 0) as tokens_cache_read,
       COALESCE(tokens_cache_creation, 0) as tokens_cache_creation,
       COALESCE(tokens_reasoning, 0) as tokens_reasoning,
-      COALESCE(tokens_input, 0) as cost_tokens_input,
-      COALESCE(tokens_output, 0) as cost_tokens_output,
-      COALESCE(tokens_cache_read, 0) as cost_tokens_cache_read,
-      COALESCE(tokens_cache_creation, 0) as cost_tokens_cache_creation,
-      COALESCE(tokens_reasoning, 0) as cost_tokens_reasoning,
-      0.0 as stored_cost,
+      CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_input, 0) ELSE 0 END as cost_tokens_input,
+      CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_output, 0) ELSE 0 END as cost_tokens_output,
+      CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_cache_read, 0) ELSE 0 END as cost_tokens_cache_read,
+      CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_cache_creation, 0) ELSE 0 END as cost_tokens_cache_creation,
+      CASE WHEN cost_usd IS NULL THEN COALESCE(tokens_reasoning, 0) ELSE 0 END as cost_tokens_reasoning,
+      COALESCE(cost_usd, 0.0) as stored_cost,
       COALESCE(service_tier, 'standard') as service_tier,
       1 as request_count
     FROM usage_history
@@ -236,11 +236,12 @@ export async function getConnectionSpendUsdSinceAdded(
   const rows = db
     .prepare(
       `SELECT model,
-          COALESCE(SUM(tokens_input), 0) AS input,
-          COALESCE(SUM(tokens_output), 0) AS output,
-          COALESCE(SUM(tokens_cache_read), 0) AS cacheRead,
-          COALESCE(SUM(tokens_cache_creation), 0) AS cacheCreation,
-          COALESCE(SUM(tokens_reasoning), 0) AS reasoning,
+          COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_input ELSE 0 END), 0) AS input,
+          COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_output ELSE 0 END), 0) AS output,
+          COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_cache_read ELSE 0 END), 0) AS cacheRead,
+          COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_cache_creation ELSE 0 END), 0) AS cacheCreation,
+          COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_reasoning ELSE 0 END), 0) AS reasoning,
+          COALESCE(SUM(cost_usd), 0) AS storedCost,
           COUNT(*) AS requests
        FROM usage_history
        WHERE connection_id = ? AND provider = ? AND success = 1
@@ -254,6 +255,7 @@ export async function getConnectionSpendUsdSinceAdded(
     cacheCreation?: number;
     reasoning?: number;
     requests?: number;
+    storedCost?: number;
   }>;
 
   let costUsd = 0;
@@ -268,11 +270,13 @@ export async function getConnectionSpendUsdSinceAdded(
       cacheCreation: Number(row.cacheCreation ?? 0),
       reasoning: Number(row.reasoning ?? 0),
     };
-    costUsd += await calculateCost(provider, model, tokens, {
-      provider,
-      model,
-      flatRateAsZero: true,
-    });
+    costUsd +=
+      (isFlatRateProvider(provider) ? 0 : Number(row.storedCost ?? 0)) +
+      (await calculateCost(provider, model, tokens, {
+        provider,
+        model,
+        flatRateAsZero: true,
+      }));
   }
 
   return { costUsd: Math.max(0, costUsd), requests };
@@ -546,18 +550,14 @@ export async function getUsageStats() {
   const recentRows = db
     .prepare(
       `
+        WITH usage_source AS (${buildUsageSourceSql(false)})
         SELECT
           strftime('%Y-%m-%dT%H:%M:00.000Z', timestamp) as minute,
           provider,
           model,
-          COALESCE(service_tier, 'standard') as service_tier,
-          COUNT(*) as request_count,
-          COALESCE(SUM(tokens_input), 0) as tokens_input,
-          COALESCE(SUM(tokens_output), 0) as tokens_output,
-          COALESCE(SUM(tokens_cache_read), 0) as tokens_cache_read,
-          COALESCE(SUM(tokens_cache_creation), 0) as tokens_cache_creation,
-          COALESCE(SUM(tokens_reasoning), 0) as tokens_reasoning
-        FROM usage_history
+          service_tier,
+          ${AGGREGATE_FIELDS}
+        FROM usage_source
         WHERE timestamp >= ? AND timestamp <= ?
         GROUP BY minute, provider, model, service_tier
       `
