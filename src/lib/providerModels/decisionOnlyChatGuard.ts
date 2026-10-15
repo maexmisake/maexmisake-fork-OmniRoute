@@ -1,6 +1,6 @@
 import { isSystemOneProvider } from "@omniroute/open-sse/config/systemOneRegistry.ts";
 import { getModelEndpointDecision } from "@omniroute/open-sse/services/modelEndpointPolicy.ts";
-import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
+import { createErrorResult } from "@omniroute/open-sse/utils/error.ts";
 
 type ModelInfoLike = {
   provider?: string | null;
@@ -23,7 +23,7 @@ type EndpointAwareRow = { id: string; supportedEndpoints?: readonly string[] | n
 export async function decisionOnlyChatRejection(
   info: ModelInfoLike,
   readModels?: (provider: string) => Promise<EndpointAwareRow[]>
-): Promise<Response | null> {
+): Promise<ReturnType<typeof createErrorResult> | null> {
   const provider = info.provider || "";
   const model = info.model || "";
   if (!model || !isSystemOneProvider(provider)) return null;
@@ -36,7 +36,7 @@ export async function decisionOnlyChatRejection(
   if (getModelEndpointDecision(provider, model, endpoints ?? undefined).kind !== "decision") {
     return null;
   }
-  return errorResponse(
+  return createErrorResult(
     400,
     // Phrased without a slash-path: the error sanitizer redacts those to `<path>`.
     `Model ${provider}/${model} is a decision-only model; use the System One endpoint (POST v1 systemone) instead of chat completions`

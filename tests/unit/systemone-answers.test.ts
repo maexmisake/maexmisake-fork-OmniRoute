@@ -78,7 +78,13 @@ test("a choice answer keeps the chosen option and its probability distribution",
 test("a score answer keeps its numeric level", () => {
   const result = parseSystemOneAnswers({
     answers: {
-      severity: { type: "score", score: 4, probabilities: { "4": 0.5, "5": 0.5 }, confidence: 0.5 },
+      severity: {
+        type: "score",
+        score: 1.5,
+        probabilities: { "0": 0, "1": 0.5, "2": 0.5 },
+        legend: { "0": "low", "1": "medium", "2": "high" },
+        confidence: 0.5,
+      },
     },
   });
   assert.equal(result.ok, true);
@@ -86,8 +92,9 @@ test("a score answer keeps its numeric level", () => {
   assert.equal(result.answers.severity.type, "score");
   assert.deepEqual(result.answers.severity, {
     type: "score",
-    score: 4,
-    probabilities: { "4": 0.5, "5": 0.5 },
+    score: 1.5,
+    probabilities: { "0": 0, "1": 0.5, "2": 0.5 },
+    legend: { "0": "low", "1": "medium", "2": "high" },
     confidence: 0.5,
   });
 });
@@ -96,8 +103,14 @@ test("several typed questions are answered in one response", () => {
   const result = parseSystemOneAnswers({
     answers: {
       urgent: { type: "noul", noul: 0.1 },
-      route: { type: "choice", choice: "a", probabilities: { a: 1 } },
-      severity: { type: "score", score: 2 },
+      route: { type: "choice", choice: "a", probabilities: { a: 1 }, confidence: 1 },
+      severity: {
+        type: "score",
+        score: 2,
+        probabilities: { "0": 0, "1": 0, "2": 1 },
+        legend: { "0": "low", "1": "medium", "2": "high" },
+        confidence: 1,
+      },
     },
     usage: { input_tokens: 10, output_tokens: 1, cost: 0.000042 },
   });
@@ -105,9 +118,9 @@ test("several typed questions are answered in one response", () => {
   if (!result.ok) return;
   assert.deepEqual(Object.keys(result.answers).sort(), ["route", "severity", "urgent"]);
   assert.equal(result.usage.costUsd, 0.000042);
-  // Optional fields stay explicitly absent instead of being invented.
-  assert.equal(result.answers.severity.confidence, null);
-  assert.equal(result.answers.severity.probabilities, null);
+  // Required Choice/Score metadata stays intact.
+  assert.equal(result.answers.severity.confidence, 1);
+  assert.deepEqual(result.answers.severity.probabilities, { "0": 0, "1": 0, "2": 1 });
 });
 
 test("a reported zero cost is preserved as a known zero, not as unknown", () => {
@@ -435,6 +448,7 @@ test("response answers must match every requested question and type", () => {
     severity: {
       type: "score",
       score: 1.5,
+      legend: { "0": "low", "1": "medium", "2": "high" },
       probabilities: { "0": 0, "1": 0.5, "2": 0.5 },
       confidence: 0.5,
     },

@@ -54,6 +54,7 @@ function deps(
   overrides: Partial<SystemOneProxyDeps> = {}
 ): SystemOneProxyDeps {
   return {
+    withCapacity: async (_options, _signal, run) => run(),
     fetchSystemOne: async (url, credentials, init) => {
       recorded.requests.push({ url, init, credentials: credentials as Record<string, unknown> });
       return respond(url, init);
@@ -241,8 +242,8 @@ test("a 403 is surfaced as 403 — a restricted free tier is not reported as suc
   );
   assert.equal(response.status, 403);
   assert.equal(recorded.usage.length, 0);
-  assert.equal(recorded.cooldowns.length, 1);
-  assert.equal(recorded.cooldowns[0].status, 403);
+  assert.equal(recorded.cooldowns.length, 0);
+  assert.equal((await response.json()).error.code, "upstream_request_error");
 });
 
 test("a 402 out-of-credits response cools the connection down", async () => {

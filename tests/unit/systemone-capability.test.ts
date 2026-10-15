@@ -106,7 +106,7 @@ test("a chat request for a decision-only model is rejected before any upstream c
   });
   assert.ok(rejection, "a decision-only model must not reach a chat executor");
   assert.equal(rejection.status, 400);
-  const body = (await rejection.json()) as { error: { message: string } };
+  const body = (await rejection.response.json()) as { error: { message: string } };
   // The sanitizer redacts slash-paths, so the guidance names the endpoint in prose.
   assert.match(body.error.message, /System One endpoint/);
   assert.match(body.error.message, /systemone/);

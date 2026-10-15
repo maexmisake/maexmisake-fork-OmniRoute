@@ -90,13 +90,21 @@ or rewritten.
 
 The success body is returned unchanged, retaining confidence, distributions,
 Score legend, usage, and provider metadata. Before success/accounting, parsing
-checks requested answer IDs and types, probability bounds, selected Choice
-membership, and Score rubric range. Missing or mismatched answers return `502`
+checks requested answer IDs and types, required Choice/Score probabilities and
+confidence, complete normalized distributions (1e-6 rounding tolerance), Choice
+membership and highest-probability selection (ties accepted), and Score rubric
+range plus complete zero-based legend. Fractional scores and structured/null SDK
+legend descriptions remain valid; the score is not recomputed from independently
+rounded probabilities. Missing or mismatched answers return `502`
 with `upstream_protocol_error`; they do not trigger account retries.
 
 Upstream error prose is dropped because it can echo state or credentials. Only
-HTTP status and identifiers from the existing bounded public error vocabulary
-are returned or logged. Caller cancellation does not mark an account unhealthy.
+HTTP status and identifiers from the bounded public error vocabulary are returned
+or logged. Zen FreeTierError/request-contract refusals retain the safe
+`upstream_request_error` classification and neither cool down connections/models
+nor rotate through healthy accounts. Other authentication/quota failures preserve
+the normal fallback policy. Caller cancellation and local admission failures do
+not mark an account unhealthy.
 
 ## Discovery and chat compatibility
 
@@ -139,6 +147,12 @@ are selected. Account faults (`401`, `402`, `403`, `429`) and availability fault
 errors can retry; malformed successful payloads and caller-shape faults cannot.
 A provider-qualified request never crosses providers.
 
+Decision execution acquires the existing global/provider/account/model gates and
+connection rate limiter using the same identity and credential caps as chat. The
+slot remains held through response-body consumption and is released on completion,
+error, cancellation or timeout. Local admission failures retain trusted local
+provenance rather than triggering provider cooldowns or repeated credential spends.
+
 Each upstream attempt produces a call log; each successful decision produces a
 usage row and advances token and TPM/RPM counters. Policy, response metadata, and
 call logs use the canonical provider-qualified ID. Usage pricing and model
@@ -160,7 +174,11 @@ if the limited-time free offering changes.
 
 Migration `206_usage_history_cost_usd.sql` adds nullable `usage_history.cost_usd`.
 Known costs, including zero, persist there so daily/weekly USD quotas use the same
-amount that the response reports. Historical/unknown-cost rows keep token-based
+amount that the response reports. Statistics, account spend, analytics and daily
+archival also retain recorded costs, including explicit zero. Only NULL-cost rows
+are priced from tokens; mixed groups keep recorded and fallback amounts separate.
+An old incorrect archive cannot be reconstructed after its raw rows were deleted.
+Historical/unknown-cost rows keep token-based
 pricing and fail closed under USD quotas if unpriced. Token and request limits
 are independent of USD limits. Tests applied this migration only to disposable
 databases; production migration/rollout remains separate work.
@@ -190,3 +208,33 @@ Not established by this work: sustained/concurrent Zen allowance, shared-IP
 limits, paid Zen inference, real upstream throttling/reset headers, every
 provider/model/optional-input combination, or staging/production readiness.
 Nothing was deployed, merged, or changed in production.
+
+## Integration review corrections (October 14, 2026)
+
+Six reproduced integration defects were corrected after review of `567acb944`:
+recorded-cost propagation, shared capacity admission, the structured chat-handler
+rejection contract, effective custom/mixed endpoint metadata, request-scoped Zen
+refusal handling, and malformed Choice/Score answer validation. Tests exercise
+ordinary chat holding the same account slot, old usage mixed with exact positive
+and zero costs, archival after raw-row deletion, cancellation/body-read lifetimes,
+and malformed successes returning 502 before successful accounting.
+
+The combined focused System One/accounting/chat/Zen/build-config suite passed
+460/460 tests; Vitest passed 500/500; core TypeScript and repository ESLint passed.
+API TypeScript retains the same 266 diagnostic signatures as the reviewed commit,
+with none introduced. Security regressions passed 23/23, the pinned Gitleaks scan
+found zero secrets, and public-credential and OpenAPI security-tier checks passed.
+The nine Windows native-cache failures were reproduced and resolved using a new
+private task cache under the protected user-profile hierarchy; no native guard,
+shared-cache ACL or ancestor permission was weakened.
+
+The [current official JS SDK](https://github.com/typesafe-ai/typesafe-sdk-js/blob/main/src/types.ts)
+requires a usage object but permits null input/output token counts when unreported.
+No documented request option omits usage. Entire-usage omission remains unverified
+against live providers; usage handling was not expanded in this correction pass.
+Response validation follows the [TypeSafe API](https://docs.typesafe.ai/api),
+[OpenCode Console](https://opencode.ai/v2/docs/console/models/#jev),
+[Vercel native integration](https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe)
+and [OpenRouter integration](https://openrouter.ai/docs/guides/community/typesafe-sdk).
+No additional live or paid inference requests were made. Final local image and
+HTTP smoke measurements are recorded in draft PR #1.

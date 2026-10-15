@@ -31,7 +31,11 @@ type AnswerCommon = {
 
 export type SystemOneNoulAnswer = AnswerCommon & { type: "noul"; noul: number };
 export type SystemOneChoiceAnswer = AnswerCommon & { type: "choice"; choice: string };
-export type SystemOneScoreAnswer = AnswerCommon & { type: "score"; score: number };
+export type SystemOneScoreAnswer = AnswerCommon & {
+  type: "score";
+  score: number;
+  legend: Record<string, unknown>;
+};
 export type SystemOneAnswer = SystemOneNoulAnswer | SystemOneChoiceAnswer | SystemOneScoreAnswer;
 
 export type SystemOneUsage = {
@@ -91,17 +95,22 @@ function isContent(value: unknown): boolean {
   );
 }
 
-/** A probability map must contain probabilities between zero and one. */
+// Allow floating-point serialization/rounding without accepting a partial distribution.
+const PROBABILITY_SUM_TOLERANCE = 1e-6;
+
+/** A probability map must contain a normalized distribution between zero and one. */
 function parseProbabilities(value: unknown): SystemOneProbabilities | null | "invalid" {
   if (value === undefined || value === null) return null;
   if (!isRecord(value)) return "invalid";
-  const out: SystemOneProbabilities = {};
-  for (const [key, raw] of Object.entries(value)) {
+  const entries = Object.entries(value);
+  let total = 0;
+  for (const [, raw] of entries) {
     const probability = finiteNumber(raw);
     if (probability === null || probability < 0 || probability > 1) return "invalid";
-    out[key] = probability;
+    total += probability;
   }
-  return out;
+  if (!entries.length || Math.abs(total - 1) > PROBABILITY_SUM_TOLERANCE) return "invalid";
+  return Object.fromEntries(entries) as SystemOneProbabilities;
 }
 
 function parseConfidence(value: unknown): number | null | "invalid" {
@@ -138,14 +147,38 @@ function parseAnswer(raw: unknown): SystemOneAnswer | SystemOneAnswersFailure {
     }
     return { type, noul, ...common };
   }
+  if (probabilities === null || confidence === null) {
+    return invalid("System One choice or score answer missing probabilities or confidence");
+  }
   if (type === "choice") {
     const choice = typeof raw.choice === "string" ? raw.choice : "";
     if (!choice.trim()) return invalid("System One choice answer had an empty choice");
+    if (
+      !Object.hasOwn(probabilities, choice) ||
+      Object.values(probabilities).some((probability) => probability > probabilities[choice])
+    ) {
+      return invalid("System One choice answer did not select a highest-probability option");
+    }
     return { type, choice, ...common };
   }
+  const levels = Object.keys(probabilities);
+  const legend = raw.legend;
+  if (
+    levels.length < 2 ||
+    levels.length > 10 ||
+    levels.some((level, index) => level !== String(index)) ||
+    !isRecord(legend) ||
+    Object.keys(legend).length !== levels.length ||
+    levels.some((level) => !Object.hasOwn(legend, level)) ||
+    !Object.values(legend).every((description) => description === null || isContent(description))
+  ) {
+    return invalid("System One score answer had invalid levels or legend");
+  }
   const score = finiteNumber(raw.score);
-  if (score === null) return invalid("System One score answer had no numeric score");
-  return { type: "score", score, ...common };
+  if (score === null || score < 0 || score > levels.length - 1) {
+    return invalid("System One score answer had no score within its rubric");
+  }
+  return { type: "score", score, legend, ...common };
 }
 
 function parseGatewayCost(value: unknown): number | null {
@@ -178,7 +211,9 @@ function matchesQuestion(answer: SystemOneAnswer, question: unknown): boolean {
   }
   const options = new Set(Object.keys(criteria as object));
   return (
-    !answer.probabilities || Object.keys(answer.probabilities).every((key) => options.has(key))
+    answer.probabilities !== null &&
+    Object.keys(answer.probabilities).length === options.size &&
+    Object.keys(answer.probabilities).every((key) => options.has(key))
   );
 }
 

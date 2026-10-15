@@ -33,6 +33,9 @@ export interface SystemOneCredentials {
   accessToken?: string | null;
   connectionId?: string | null;
   providerSpecificData?: Record<string, unknown> | null;
+  maxConcurrent?: number | null;
+  rateLimitMaxConcurrent?: number | null;
+  modelConcurrency?: Record<string, number> | null;
 }
 
 export type SystemOneEndpointKind = "decision" | "models";

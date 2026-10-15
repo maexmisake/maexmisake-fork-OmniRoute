@@ -33,6 +33,7 @@ import {
   rateLimitedProviderResponse,
 } from "@/app/api/v1/_shared/rateLimit";
 import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
+import { getTrustedLocalRateLimitResponse } from "@omniroute/open-sse/services/rateLimitManager/errors.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import {
   handleSystemOneProxy,
@@ -143,13 +144,14 @@ export function isRetryableSystemOneStatus(status: number): boolean {
 }
 
 async function canRetryResponse(response: Response): Promise<boolean> {
-  if (isRetryableSystemOneStatus(response.status)) return true;
-  if (response.status !== 502) return false;
+  if (getTrustedLocalRateLimitResponse(response)) return false;
+  if (!isRetryableSystemOneStatus(response.status) && response.status !== 502) return false;
   const body = await response
     .clone()
     .json()
     .catch(() => null);
-  return body?.error?.code === "upstream_error";
+  if (body?.error?.code === "upstream_request_error") return false;
+  return isRetryableSystemOneStatus(response.status) || body?.error?.code === "upstream_error";
 }
 
 function validateCandidateTokenBudget(

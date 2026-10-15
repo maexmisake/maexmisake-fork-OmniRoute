@@ -250,15 +250,10 @@ function computeUsageRowCost(
   const model = toStringValue(row.model);
   if (!provider || !model) return 0;
   const serviceTier = normalizeServiceTier(row.serviceTier ?? row.service_tier);
-  const isAggregated = toNumber(row.isAggregated ?? row.is_aggregated) > 0;
-  const storedCost = toNumber(row.storedCost ?? row.stored_cost);
-
-  if (isAggregated) {
+  const storedCost = row.storedCost ?? row.stored_cost;
+  if (storedCost != null) {
     if (flatRateAsZero && isFlatRateProvider(provider)) return 0;
-    // New rollups preserve the exact API-equivalent value calculated before
-    // cache/reasoning token dimensions are discarded. Legacy zero-cost rows
-    // fall through to the best available input/output-token estimate.
-    if (storedCost > 0) return storedCost;
+    return toNumber(storedCost);
   }
 
   const pricing = resolveModelPricing(
@@ -301,8 +296,8 @@ function computeUsageRowStandardCost(
       ...row,
       serviceTier: "standard",
       service_tier: "standard",
-      storedCost: 0,
-      stored_cost: 0,
+      storedCost: null,
+      stored_cost: null,
       isAggregated: 0,
       is_aggregated: 0,
     },
