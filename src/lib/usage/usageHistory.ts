@@ -866,6 +866,38 @@ export interface UsageEntry {
   cpaAuthIndex?: string | null;
 }
 
+interface DuplicateUsageRow {
+  id: number;
+  endpoint: string | null;
+  cpa_auth_index: string | null;
+  cost_usd: number | null;
+}
+
+function enrichDuplicateUsage(
+  db: ReturnType<typeof getDbInstance>,
+  existing: DuplicateUsageRow,
+  entry: UsageEntry,
+  costUsd: number | null
+): void {
+  // Back-fill endpoint if the original row missed it.
+  if (!existing.endpoint && entry.endpoint) {
+    db.prepare(`UPDATE usage_history SET endpoint = ? WHERE id = ?`).run(
+      entry.endpoint,
+      existing.id
+    );
+  }
+  // A later completed attempt can carry the trace the first write missed.
+  if (!existing.cpa_auth_index && entry.cpaAuthIndex) {
+    db.prepare(`UPDATE usage_history SET cpa_auth_index = ? WHERE id = ?`).run(
+      entry.cpaAuthIndex,
+      existing.id
+    );
+  }
+  if (existing.cost_usd === null && costUsd !== null) {
+    db.prepare(`UPDATE usage_history SET cost_usd = ? WHERE id = ?`).run(costUsd, existing.id);
+  }
+}
+
 /**
  * Save request usage entry to SQLite.
  */
@@ -921,36 +953,10 @@ export async function saveRequestUsage(entry: UsageEntry) {
           entry.apiKeyId || null,
           tokensInput,
           tokensOutput
-        ) as
-        | {
-            id: number;
-            endpoint: string | null;
-            cpa_auth_index: string | null;
-            cost_usd: number | null;
-          }
-        | undefined;
+        ) as DuplicateUsageRow | undefined;
 
       if (existing) {
-        // Back-fill endpoint if the original row missed it.
-        if (!existing.endpoint && entry.endpoint) {
-          db.prepare(`UPDATE usage_history SET endpoint = ? WHERE id = ?`).run(
-            entry.endpoint,
-            existing.id
-          );
-        }
-        // A later completed attempt can carry the trace the first write missed.
-        if (!existing.cpa_auth_index && entry.cpaAuthIndex) {
-          db.prepare(`UPDATE usage_history SET cpa_auth_index = ? WHERE id = ?`).run(
-            entry.cpaAuthIndex,
-            existing.id
-          );
-        }
-        if (existing.cost_usd === null && costUsd !== null) {
-          db.prepare(`UPDATE usage_history SET cost_usd = ? WHERE id = ?`).run(
-            costUsd,
-            existing.id
-          );
-        }
+        enrichDuplicateUsage(db, existing, entry, costUsd);
         return; // duplicate — do not insert
       }
 

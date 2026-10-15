@@ -3,9 +3,8 @@
  *
  * Credentials come from the normal provider connection store, so a decision
  * request reuses the same key rotation, cooldown and proxy policy as chat. The
- * endpoint is operator-configurable per connection (vendors move these paths and
- * none of the three contracts is verified from this checkout), but only within
- * the provider's own allowlisted hosts: the request carries the operator's
+ * endpoint is operator-configurable per connection because vendors move these
+ * paths, but only within the provider's own allowlisted hosts: it carries the operator's
  * credential, so an arbitrary host would be a credential-exfiltration path.
  *
  * No URL or header ever comes from the client request body.
