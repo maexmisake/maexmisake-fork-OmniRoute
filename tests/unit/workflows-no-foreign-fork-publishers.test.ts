@@ -30,12 +30,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as yaml from "js-yaml";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const workflowDir = path.join(repoRoot, ".github/workflows");
 
 /** The only owner whose namespaces this repository may publish to or gate on. */
 const OWNER = "diegosouzapw";
+const FORK_VALIDATION_FILE = "systemone-validation.yml";
 
 function workflowFiles(): string[] {
   return fs
@@ -77,7 +79,9 @@ test("no workflow job is gated on a different repository", () => {
     // the workflow was written for a fork.
     for (const m of text.matchAll(/github\.repository\s*[=!]=\s*['"]([^'"]+)['"]/g)) {
       const [owner] = m[1].split("/");
-      if (owner.toLowerCase() !== OWNER) {
+      // Owner-authorized fork validation publishes nothing; its separate guard below pins that scope.
+      const expectedOwner = path.basename(file) === FORK_VALIDATION_FILE ? "maexmisake" : OWNER;
+      if (owner.toLowerCase() !== expectedOwner) {
         offenders.push(`${path.basename(file)} → ${m[0]}`);
       }
     }
@@ -90,4 +94,60 @@ test("no workflow job is gated on a different repository", () => {
       `Note the failure mode: a job-level guard still instantiates a run on every ` +
       `matching trigger, so the workflow shows up as a skipped check forever.`
   );
+});
+
+test("the owner-fork exception stays hosted, read-only and isolated", () => {
+  const source = fs.readFileSync(path.join(workflowDir, FORK_VALIDATION_FILE), "utf8");
+  const workflow = yaml.load(source) as {
+    on: { push: { branches: string[] }; workflow_dispatch: unknown };
+    permissions: Record<string, string>;
+    jobs: Record<
+      string,
+      {
+        if: string;
+        "runs-on": string;
+        permissions?: Record<string, string>;
+        steps: Array<{ uses?: string; run?: string }>;
+      }
+    >;
+  };
+  assert.deepEqual(Object.keys(workflow.on).sort(), ["push", "workflow_dispatch"]);
+  assert.deepEqual(workflow.on.push.branches, ["feat/native-system-one"]);
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  assert.deepEqual(Object.keys(workflow.jobs), ["validate"]);
+  const job = workflow.jobs.validate;
+  assert.equal(job.if, "github.repository == 'maexmisake/maexmisake-fork-OmniRoute'");
+  assert.equal(job["runs-on"], "ubuntu-24.04");
+  assert.equal(job.permissions, undefined);
+  const allowedActions = new Set([
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  ]);
+  for (const step of job.steps) {
+    if (step.uses) assert.ok(allowedActions.has(step.uses), step.uses);
+  }
+  const commands = job.steps.map((step) => step.run || "").join("\n");
+  assert.match(commands, /--target runner-base/);
+  assert.match(commands, /--load/);
+  assert.match(commands, /--publish 127\.0\.0\.1::20128/);
+  assert.match(commands, /smoke_key=systemone-validation-ephemeral-gateway-key/);
+  assert.match(commands, /--env OMNIROUTE_API_KEY="\$smoke_key"/);
+  assert.doesNotMatch(source, /secrets\./i);
+  assert.doesNotMatch(
+    commands,
+    /\bdocker\s+(?:login|push|compose|stack)\b|--push\b|push\s*=\s*true|\b(?:ssh|scp|rsync|kubectl|helm|flyctl)\b|\bdeploy\b/
+  );
+  assert.doesNotMatch(commands, /--(?:mount|volume|env-file)\b|(?:^|\s)-v(?:\s|=)/);
+  const allowedRuntimeEnv = new Set([
+    "DATA_DIR",
+    "OMNIROUTE_API_KEY",
+    "OMNIROUTE_MEMORY_MB",
+    "NODE_OPTIONS",
+    "OMNIROUTE_DISABLE_BACKGROUND_SERVICES",
+    "OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK",
+    "OMNIROUTE_ENABLE_LIVE_WS",
+  ]);
+  for (const match of commands.matchAll(/--env\s+([A-Z][A-Z0-9_]*)=/g)) {
+    assert.ok(allowedRuntimeEnv.has(match[1]), match[1]);
+  }
 });

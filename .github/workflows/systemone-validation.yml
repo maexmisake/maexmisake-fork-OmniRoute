@@ -1,0 +1,148 @@
+name: Validate System One Docker
+
+on:
+  push:
+    branches: [feat/native-system-one]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: systemone-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'maexmisake/maexmisake-fork-OmniRoute'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BUILDER: systemone-validation
+      IMAGE: omniroute-systemone-validation:local
+      SMOKE_CONTAINER: systemone-validation-smoke
+    steps:
+      - name: Checkout final source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require sufficient hosted memory
+        run: |
+          set -euo pipefail
+          memory_kib=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
+          if (( memory_kib < 14 * 1024 * 1024 )); then
+            echo "::error::This production build requires a hosted runner with at least 14 GiB RAM."
+            exit 1
+          fi
+          free -h
+          mkdir -p "$RUNNER_TEMP/systemone-results"
+
+      - name: Create capped isolated builder
+        run: |
+          set -euo pipefail
+          printf '[worker.oci]\n  max-parallelism = 1\n' > "$RUNNER_TEMP/systemone-buildkitd.toml"
+          docker buildx create --name "$BUILDER" --driver docker-container \
+            --driver-opt memory=12g --driver-opt memory-swap=12g \
+            --driver-opt cpu-period=100000 --driver-opt cpu-quota=400000 \
+            --buildkitd-config "$RUNNER_TEMP/systemone-buildkitd.toml" --bootstrap
+
+      - name: Build full production image
+        id: build
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          docker buildx build --builder "$BUILDER" --platform linux/amd64 \
+            --target runner-base --build-arg OMNIROUTE_USE_TURBOPACK=0 \
+            --build-arg OMNIROUTE_BUILD_MEMORY_MB=8192 \
+            --build-arg OMNIROUTE_BUILD_WORKERS=2 \
+            --progress plain --load --tag "$IMAGE" . \
+            2>&1 | tee "$RUNNER_TEMP/systemone-results/build.log"
+          docker image inspect "$IMAGE" --format '{{.Id}}' \
+            | tee "$RUNNER_TEMP/systemone-results/image-id.txt"
+
+      - name: Smoke isolated HTTP routes
+        id: smoke
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          smoke_key=systemone-validation-ephemeral-gateway-key
+          docker run --detach --name "$SMOKE_CONTAINER" \
+            --memory 1g --memory-swap 1g --cpus 2 \
+            --publish 127.0.0.1::20128 \
+            --env DATA_DIR=/tmp/systemone-validation-data \
+            --env OMNIROUTE_API_KEY="$smoke_key" \
+            --env OMNIROUTE_MEMORY_MB=512 \
+            --env NODE_OPTIONS=--max-old-space-size=512 \
+            --env OMNIROUTE_DISABLE_BACKGROUND_SERVICES=1 \
+            --env OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK=1 \
+            --env OMNIROUTE_ENABLE_LIVE_WS=0 "$IMAGE"
+          port=$(docker port "$SMOKE_CONTAINER" 20128/tcp | sed 's/127.0.0.1://')
+          base="http://127.0.0.1:$port"
+          ready=0
+          for attempt in {1..60}; do
+            if curl --silent --show-error --fail --max-time 2 "$base/healthz" \
+              > "$RUNNER_TEMP/systemone-results/healthz.txt"; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = 1
+          check_status() {
+            local name="$1" expected="$2"
+            shift 2
+            local actual
+            actual=$(curl --silent --show-error --max-time 20 \
+              --output "$RUNNER_TEMP/systemone-results/$name.json" \
+              --write-out '%{http_code}' "$@")
+            printf '%s: expected=%s actual=%s\n' "$name" "$expected" "$actual" \
+              | tee -a "$RUNNER_TEMP/systemone-results/http-statuses.txt"
+            test "$actual" = "$expected"
+          }
+          check_status catalog 200 --header "Authorization: Bearer $smoke_key" \
+            "$base/v1/systemone/models"
+          python3 -c 'import json,sys; body=json.load(open(sys.argv[1])); assert body["data"] == [], body' \
+            "$RUNNER_TEMP/systemone-results/catalog.json"
+          check_status malformed 400 --header "Authorization: Bearer $smoke_key" \
+            --header 'Content-Type: application/json' --data '{' "$base/v1/systemone"
+          check_status unauthenticated 401 --header 'Content-Type: application/json' \
+            --data '{"model":"jev","state":"smoke","questions":{"urgent":{"type":"noul","instructions":"Is this urgent?"}}}' \
+            "$base/v1/systemone"
+          check_status unconfigured 400 --header "Authorization: Bearer $smoke_key" \
+            --header 'Content-Type: application/json' \
+            --data '{"model":"jev","state":"smoke","questions":{"urgent":{"type":"noul","instructions":"Is this urgent?"}}}' \
+            "$base/v1/systemone"
+          python3 -c 'import json,sys; body=json.load(open(sys.argv[1])); assert "No configured System One backend" in body["error"]["message"], body' \
+            "$RUNNER_TEMP/systemone-results/unconfigured.json"
+
+      - name: Collect diagnostics and summary
+        if: always()
+        env:
+          BUILD_RESULT: ${{ steps.build.outcome }}
+          SMOKE_RESULT: ${{ steps.smoke.outcome }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/systemone-results"
+          docker logs "$SMOKE_CONTAINER" > "$RUNNER_TEMP/systemone-results/container.log" 2>&1 || true
+          printf 'Source: `%s`\n\nDocker build: %s\n\nHTTP smoke: %s\n' \
+            "$GITHUB_SHA" "$BUILD_RESULT" "$SMOKE_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/systemone-results/image-id.txt" ]; then
+            printf '\nImage: `%s`\n' "$(cat "$RUNNER_TEMP/systemone-results/image-id.txt")" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f "$RUNNER_TEMP/systemone-results/http-statuses.txt" ]; then
+            cat "$RUNNER_TEMP/systemone-results/http-statuses.txt" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: systemone-validation-${{ github.sha }}
+          path: ${{ runner.temp }}/systemone-results
+          retention-days: 7
+
+      - name: Remove isolated verification resources
+        if: always()
+        run: |
+          docker rm --force "$SMOKE_CONTAINER" || true
+          docker buildx rm --force "$BUILDER" || true
