@@ -403,6 +403,7 @@ async function requestFailure(
 ): Promise<Response> {
   if (callerSignal?.aborted) {
     // The client hung up: nothing was learned about the account's health.
+    await logCall(deps, call, 499, tokenCounts(null, null), "System One request aborted by caller");
     return errorResponse(499, "System One request aborted by caller");
   }
   const timedOut = timeoutSignal.aborted;

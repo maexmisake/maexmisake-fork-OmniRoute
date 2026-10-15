@@ -397,6 +397,8 @@ test("a caller cancellation answers 499 and does not blame the connection", asyn
   assert.equal(response.status, 499);
   assert.equal(recorded.cooldowns.length, 0, "the caller hung up; the account is healthy");
   assert.equal(recorded.usage.length, 0);
+  assert.equal(recorded.callLogs.length, 1, "the upstream attempt still needs attribution");
+  assert.equal(recorded.callLogs[0].status, 499);
 });
 
 test("a transport failure answers 502 and cools the connection down", async () => {
