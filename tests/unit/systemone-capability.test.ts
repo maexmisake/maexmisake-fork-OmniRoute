@@ -21,6 +21,8 @@ import {
 } from "../../src/shared/constants/modelSupportedEndpoints.ts";
 import { isUnifiedChatSourceModelSelectable } from "../../src/app/api/v1/models/catalogModelPolicy.ts";
 import { decisionOnlyChatRejection } from "../../src/lib/providerModels/decisionOnlyChatGuard.ts";
+import { normalizeDiscoveredModels } from "../../src/lib/providerModels/modelDiscovery.ts";
+import { filterModelsForRoute } from "../../src/app/api/providers/[id]/models/modelRouteProjection.ts";
 
 test("`systemone` is a persistable supported-endpoint value", () => {
   assert.ok(MODEL_SUPPORTED_ENDPOINT_VALUES.includes("systemone"));
@@ -159,5 +161,98 @@ test("an unknown model on a decision-capable provider is not blocked from chat",
       async () => []
     ),
     null
+  );
+});
+
+test("normal model discovery preserves the upstream decisions output modality", async () => {
+  const [model] = normalizeDiscoveredModels(
+    [
+      {
+        id: "acme/decision-v2",
+        architecture: { input_modalities: ["text"], output_modalities: ["decisions"] },
+      },
+    ],
+    "openrouter"
+  );
+  assert.deepEqual(model.supportedEndpoints, ["systemone"]);
+  assert.equal(isUnifiedChatSourceModelSelectable("openrouter", model), false);
+  const rejection = await decisionOnlyChatRejection(
+    { provider: "openrouter", model: model.id },
+    async () => [model]
+  );
+  assert.equal(rejection?.status, 400);
+});
+
+test("normal model discovery preserves and normalizes snake-case decision endpoints", () => {
+  const [model] = normalizeDiscoveredModels(
+    [{ id: "jev-1.13", supported_endpoints: ["decisions"] }],
+    "opencode-zen"
+  );
+  assert.deepEqual(model.supportedEndpoints, ["systemone"]);
+  assert.equal(isUnifiedChatSourceModelSelectable("opencode-zen", model), false);
+});
+
+test("normal model discovery keeps mixed chat and decision output modalities", async () => {
+  const [model] = normalizeDiscoveredModels(
+    [
+      {
+        id: "acme/mixed-v2",
+        architecture: { output_modalities: ["text", "decisions"] },
+      },
+    ],
+    "openrouter"
+  );
+  assert.deepEqual(model.supportedEndpoints, ["chat", "systemone"]);
+  assert.equal(isUnifiedChatSourceModelSelectable("openrouter", model), true);
+  assert.equal(
+    await decisionOnlyChatRejection({ provider: "openrouter", model: model.id }, async () => [
+      model,
+    ]),
+    null
+  );
+});
+
+test("raw provider chat projections exclude declared decisions while full discovery retains them", () => {
+  const rows = [
+    { id: "typesafe/jev-1.13", architecture: { output_modalities: ["decisions"] } },
+    { id: "acme/decision-model", supported_endpoints: ["systemone"] },
+    { id: "acme/mixed-model", architecture: { output_modalities: ["text", "decisions"] } },
+    { id: "acme/chat-model", supportedEndpoints: ["chat"] },
+  ];
+  assert.deepEqual(
+    filterChatSelectableModels("openrouter", rows).map((model) => model.id),
+    ["acme/mixed-model", "acme/chat-model"]
+  );
+  assert.deepEqual(
+    filterModelsForRoute("openrouter", rows, true).map((model) => model.id),
+    ["acme/mixed-model", "acme/chat-model"]
+  );
+  assert.deepEqual(
+    rows
+      .filter((model) => isUnifiedChatSourceModelSelectable("openrouter", model))
+      .map((model) => model.id),
+    ["acme/mixed-model", "acme/chat-model"]
+  );
+  assert.deepEqual(filterModelsForRoute("openrouter", rows, false), rows);
+});
+
+test("metadata-less Zen Jev rows use the provider's registered decision model pattern", () => {
+  const rows = [{ id: "jev-1.13" }, { id: "jev-1.13-free" }, { id: "claude-sonnet" }];
+  const normalized = normalizeDiscoveredModels(rows, "opencode-zen");
+  assert.deepEqual(normalized[0].supportedEndpoints, ["systemone"]);
+  assert.deepEqual(normalized[1].supportedEndpoints, ["systemone"]);
+  assert.deepEqual(
+    filterModelsForRoute("opencode-zen", rows, true).map((model) => model.id),
+    ["claude-sonnet"]
+  );
+  assert.equal(getModelEndpointDecision("opencode-zen", "jev-1.13").kind, "decision");
+  assert.equal(isUnifiedChatSourceModelSelectable("opencode-zen", rows[0]), false);
+  assert.equal(isChatSelectableModel("another-provider", rows[0]), true);
+  assert.equal(
+    isChatSelectableModel("opencode-zen", {
+      id: "jev-future",
+      supportedEndpoints: ["chat", "systemone"],
+    }),
+    true
   );
 });

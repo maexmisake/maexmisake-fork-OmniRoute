@@ -3,7 +3,7 @@
  *
  * Each backend publishes its models in its own shape — OpenRouter's
  * `architecture.output_modalities` carries the `decisions` tag, OpenCode Zen's
- * `/zen/v1/models` mixes chat and decision models with no modality metadata, and
+ * `/inference/v1/models` mixes chat and decision models with no modality metadata, and
  * the Vercel AI Gateway publishes a dedicated TypeSafe list. This module turns
  * any of them into one gateway-qualified entry per model while keeping the
  * upstream id and the provenance of the price.
@@ -123,8 +123,7 @@ export function toDecisionCatalogModel(
 ): DecisionCatalogModel | null {
   const upstreamId = stringField(row, "id", "name");
   if (!upstreamId) return null;
-  // `~vendor/model` is OpenRouter's own alias spelling, not a provider prefix.
-  const root = upstreamId.replace(/^~/, "");
+  const root = upstreamId;
   const servesChat =
     outputModalities(row).includes("text") ||
     declaredEndpoints(row).some((endpoint) => endpoint === "chat" || endpoint === "responses");

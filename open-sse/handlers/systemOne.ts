@@ -18,7 +18,11 @@
  */
 
 import { CORS_HEADERS } from "../utils/cors.ts";
-import { errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
+import {
+  errorResponse,
+  sanitizeErrorMessage,
+  projectPublicErrorIdentifier,
+} from "../utils/error.ts";
 import {
   nativeSystemOnePricing,
   systemOneBackend,
@@ -40,6 +44,8 @@ import { recordCost } from "@/domain/costRules";
 import { calculateCostDetailed } from "@/lib/usage/costCalculator";
 import { markAccountUnavailable } from "../../src/sse/services/auth.ts";
 import { isCredentialDiagnosticSentinel } from "../../src/sse/services/credentialSentinel.ts";
+import { recordKeyQuotaUsage } from "@/domain/keyQuota";
+import { recordTokenUsage } from "../services/tokenLimitCounter.ts";
 
 export type { SystemOneCredentials } from "./systemOneTransport.ts";
 
@@ -49,7 +55,7 @@ export interface SystemOneProxyOptions {
   provider: string;
   /** Body forwarded upstream, already validated; `model` is the upstream id. */
   body: Record<string, unknown>;
-  /** `<provider>/<model>` — the identity policy, usage and cooldown speak. */
+  /** `<provider>/<model>` — the identity used by policy, metadata and call logs. */
   canonicalModel: string;
   /** What the client asked for, kept for the call log. */
   requestedModel?: string | null;
@@ -118,9 +124,6 @@ function parseUpstreamBody(text: string): UpstreamBody {
   }
 }
 
-/** A short identifier-shaped token cannot carry a sentence of request state. */
-const SAFE_CODE = /^[A-Za-z0-9_.:-]{1,64}$/;
-
 function upstreamErrorCode(parsed: UpstreamBody): string | null {
   const error = parsed?.error;
   const candidates: unknown[] = [
@@ -131,7 +134,8 @@ function upstreamErrorCode(parsed: UpstreamBody): string | null {
     parsed?.type,
   ];
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && SAFE_CODE.test(candidate.trim())) return candidate.trim();
+    const code = projectPublicErrorIdentifier(candidate, "");
+    if (code) return code;
   }
   return null;
 }
@@ -224,6 +228,25 @@ function hasDispatchableCredentials(provider: string, credentials: unknown): boo
   return hasToken || typeof record.connectionId === "string";
 }
 
+function validateProxyCredentials(options: SystemOneProxyOptions): Response | null {
+  if (!hasDispatchableCredentials(options.provider, options.credentials)) {
+    return errorResponse(401, `No usable credentials for provider: ${options.provider}`);
+  }
+
+  const tier: SystemOneTier = options.tier ?? "paid";
+  if (!isConnectionEligibleForTier(tier, options.credentials ?? {}, options.provider)) {
+    // A free model routed through a paid account would bill that account for a
+    // model the caller requested as free.
+    return errorResponse(
+      tier === "free" ? 403 : 401,
+      tier === "free"
+        ? `Model ${options.canonicalModel} is a free-tier model and the selected account is not the free tier`
+        : `The selected ${options.provider} account cannot serve ${options.canonicalModel}`
+    );
+  }
+  return null;
+}
+
 /**
  * Resolve the request's cost. `null` means unknown, which is reported as unknown
  * rather than billed as zero; a reported zero is a known zero.
@@ -287,7 +310,7 @@ async function coolDown(
       status,
       message,
       call.provider,
-      call.canonicalModel,
+      call.upstreamModel,
       null,
       { headers: headers ?? null, correlationId: call.correlationId }
     )
@@ -307,10 +330,91 @@ async function upstreamFailure(
   if (shouldCoolDownConnection(response.status)) {
     await coolDown(deps, call, response.status, message, response.headers);
   }
-  const failure = errorResponse(response.status, message);
+  const failure = errorResponse(response.status, message, {
+    code: response.status === 502 ? "upstream_error" : undefined,
+  });
   const retryAfter = response.headers.get("retry-after");
   if (retryAfter) failure.headers.set("retry-after", retryAfter);
   return failure;
+}
+
+async function handleSuccessfulResponse(
+  deps: SystemOneProxyDeps,
+  call: CallContext,
+  text: string,
+  parsed: UpstreamBody,
+  body: SystemOneProxyOptions["body"]
+): Promise<Response> {
+  const answers = parseSystemOneAnswers(parsed, body);
+  if (answers.ok === false) {
+    const message = `System One upstream returned an invalid response body: ${answers.detail}`;
+    await logCall(deps, call, 502, tokenCounts(null, null), message);
+    return errorResponse(502, message, { code: "upstream_protocol_error" });
+  }
+
+  const tokens = tokenCounts(answers.usage.inputTokens, answers.usage.outputTokens);
+  const costUsd = await resolveCost(deps, call, answers.usage);
+
+  if (call.apiKeyId) {
+    const billable = tokens.prompt_tokens + tokens.completion_tokens;
+    recordKeyQuotaUsage(call.apiKeyId, billable);
+    recordTokenUsage(
+      call.apiKeyId,
+      call.provider,
+      call.upstreamModel || call.canonicalModel,
+      billable
+    );
+  }
+  // Counter initialization must finish before this call enters usage history.
+  await logCall(deps, call, 200, tokens);
+  await deps
+    .saveRequestUsage({
+      provider: call.provider,
+      model: call.upstreamModel || call.canonicalModel,
+      tokens,
+      costUsd,
+      status: "200",
+      success: true,
+      latencyMs: Date.now() - call.startTime,
+      endpoint: SYSTEMONE_ROUTE_PATH,
+      ...(call.connectionId ? { connectionId: call.connectionId } : {}),
+      ...(call.apiKeyId ? { apiKeyId: call.apiKeyId } : {}),
+      ...(call.apiKeyName ? { apiKeyName: call.apiKeyName } : {}),
+    })
+    .catch(() => {});
+  if (call.apiKeyId && costUsd !== null) {
+    deps.recordCost(call.apiKeyId, costUsd, {
+      provider: call.provider,
+      model: call.canonicalModel,
+      tokens: { input: tokens.prompt_tokens, output: tokens.completion_tokens },
+      success: true,
+      requestId: call.correlationId ?? undefined,
+    });
+  }
+  return successResponse(deps, text, call, tokens, costUsd);
+}
+
+async function requestFailure(
+  deps: SystemOneProxyDeps,
+  call: CallContext,
+  error: unknown,
+  callerSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal
+): Promise<Response> {
+  if (callerSignal?.aborted) {
+    // The client hung up: nothing was learned about the account's health.
+    return errorResponse(499, "System One request aborted by caller");
+  }
+  const timedOut = timeoutSignal.aborted;
+  const status = timedOut ? 504 : 502;
+  const message = timedOut
+    ? "System One request timed out"
+    : sanitizeErrorMessage(error) || "System One request failed";
+  await logCall(deps, call, status, tokenCounts(null, null), message);
+  await coolDown(deps, call, status, message);
+  return errorResponse(status, message, {
+    code: timedOut ? "upstream_timeout" : "upstream_error",
+  });
 }
 
 export async function handleSystemOneProxy(
@@ -325,23 +429,9 @@ export async function handleSystemOneProxy(
     return errorResponse(400, sanitizeErrorMessage(error));
   }
 
+  const credentialRejection = validateProxyCredentials(options);
+  if (credentialRejection) return credentialRejection;
   const credentials = options.credentials;
-  if (!hasDispatchableCredentials(options.provider, credentials)) {
-    return errorResponse(401, `No usable credentials for provider: ${options.provider}`);
-  }
-
-  const tier: SystemOneTier = options.tier ?? "paid";
-  if (!isConnectionEligibleForTier(tier, credentials ?? {}, options.provider)) {
-    // A free model routed through a paid account would bill that account for a
-    // model the caller requested as free.
-    return errorResponse(
-      tier === "free" ? 403 : 401,
-      tier === "free"
-        ? `Model ${options.canonicalModel} is a free-tier model and the selected account is not the free tier`
-        : `The selected ${options.provider} account cannot serve ${options.canonicalModel}`
-    );
-  }
-
   const call = describeCall(options);
 
   let url: string;
@@ -368,53 +458,8 @@ export async function handleSystemOneProxy(
 
     if (!response.ok) return upstreamFailure(deps, call, response, parsed);
 
-    const answers = parseSystemOneAnswers(parsed);
-    if (!answers.ok) {
-      const message = `System One upstream returned an invalid response body: ${answers.detail}`;
-      await logCall(deps, call, 502, tokenCounts(null, null), message);
-      return errorResponse(502, message);
-    }
-
-    const tokens = tokenCounts(answers.usage.inputTokens, answers.usage.outputTokens);
-    const costUsd = await resolveCost(deps, call, answers.usage);
-
-    await logCall(deps, call, 200, tokens);
-    await deps
-      .saveRequestUsage({
-        provider: call.provider,
-        model: call.canonicalModel,
-        tokens,
-        status: "200",
-        success: true,
-        latencyMs: Date.now() - call.startTime,
-        endpoint: SYSTEMONE_ROUTE_PATH,
-        ...(call.connectionId ? { connectionId: call.connectionId } : {}),
-        ...(call.apiKeyId ? { apiKeyId: call.apiKeyId } : {}),
-        ...(call.apiKeyName ? { apiKeyName: call.apiKeyName } : {}),
-      })
-      .catch(() => {});
-    if (call.apiKeyId && costUsd !== null) {
-      deps.recordCost(call.apiKeyId, costUsd, {
-        provider: call.provider,
-        model: call.canonicalModel,
-        tokens: { input: tokens.prompt_tokens, output: tokens.completion_tokens },
-        success: true,
-        requestId: call.correlationId ?? undefined,
-      });
-    }
-    return successResponse(deps, text, call, tokens, costUsd);
+    return await handleSuccessfulResponse(deps, call, text, parsed, options.body);
   } catch (error) {
-    if (options.signal?.aborted) {
-      // The client hung up: nothing was learned about the account's health.
-      return errorResponse(499, "System One request aborted by caller");
-    }
-    const timedOut = timeoutSignal.aborted;
-    const status = timedOut ? 504 : 502;
-    const message = timedOut
-      ? "System One request timed out"
-      : sanitizeErrorMessage(error) || "System One request failed";
-    await logCall(deps, call, status, tokenCounts(null, null), message);
-    await coolDown(deps, call, status, message);
-    return errorResponse(status, message);
+    return requestFailure(deps, call, error, options.signal, timeoutSignal);
   }
 }

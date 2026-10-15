@@ -512,7 +512,7 @@ export const v1SystemOneSchema = z
     model: modelIdSchema,
     // Never trimmed or bounded here: `state` is the caller's own data and the
     // backend decides what it accepts.
-    state: z.string(),
+    state: z.union([z.string(), z.record(z.string(), z.unknown()), z.array(z.unknown())]),
     questions: z.record(z.string(), z.unknown()),
   })
   .catchall(z.unknown());

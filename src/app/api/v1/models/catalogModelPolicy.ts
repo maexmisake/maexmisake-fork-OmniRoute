@@ -1,4 +1,7 @@
-import { getModelEndpointDecision } from "@omniroute/open-sse/services/modelEndpointPolicy";
+import {
+  getDeclaredModelEndpoints,
+  getModelEndpointDecision,
+} from "@omniroute/open-sse/services/modelEndpointPolicy";
 import { isModelSelectable } from "@omniroute/open-sse/services/modelLifecycle";
 
 type CatalogModelPolicyInput = {
@@ -10,7 +13,11 @@ export function isUnifiedChatSourceModelSelectable(
   provider: string,
   model: CatalogModelPolicyInput
 ): boolean {
-  const decision = getModelEndpointDecision(provider, model.id, model.supportedEndpoints);
+  const decision = getModelEndpointDecision(
+    provider,
+    model.id,
+    getDeclaredModelEndpoints(model, provider)
+  );
   return (
     isModelSelectable(provider, model.id) &&
     decision.reason !== "provider-policy" &&

@@ -51,7 +51,12 @@ type SystemOneCredentialSelection =
 const STATE = "patient record: Jane Doe, flagged for review";
 
 function requestBody(extra: Record<string, unknown> = {}) {
-  return { model: "jev", state: STATE, questions: { urgent: { type: "noul" } }, ...extra };
+  return {
+    model: "jev",
+    state: STATE,
+    questions: { urgent: { type: "noul", instructions: "Is this urgent?" } },
+    ...extra,
+  };
 }
 
 type FakeConnection = {
@@ -221,7 +226,9 @@ test("a bare alias crosses to the next backend once its connections are exhauste
   const harnessed = harness({
     pools: { "opencode-zen": [freeKey("zen-1")], openrouter: [keyed("or-1")] },
     respond: (attempt) =>
-      attempt.provider === "opencode-zen" ? json(503, { error: "upstream_down" }) : json(200, ANSWER),
+      attempt.provider === "opencode-zen"
+        ? json(503, { error: "upstream_down" })
+        : json(200, ANSWER),
   });
 
   const response = await dispatch("jev", ["opencode-zen", "openrouter"], harnessed);
@@ -245,7 +252,11 @@ test("a provider-qualified id never crosses to another backend", async () => {
     respond: () => json(429, { error: "rate_limited" }, { "retry-after": "30" }),
   });
 
-  const response = await dispatch("opencode-zen/jev-1.13", ["opencode-zen", "openrouter"], harnessed);
+  const response = await dispatch(
+    "opencode-zen/jev-1.13",
+    ["opencode-zen", "openrouter"],
+    harnessed
+  );
 
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("retry-after"), "30");
@@ -257,7 +268,10 @@ test("a free-tier alias rotates within the free backend and never reaches a paid
   // The normal paid account is offered first; the proxy rejects it for a
   // free-tier model, and the loop must find the tagged free account instead.
   const harnessed = harness({
-    pools: { "opencode-zen": [keyed("zen-paid"), freeKey("zen-free")], openrouter: [keyed("or-1")] },
+    pools: {
+      "opencode-zen": [keyed("zen-paid"), freeKey("zen-free")],
+      openrouter: [keyed("or-1")],
+    },
     respond: (attempt) =>
       attempt.connectionId === "zen-paid"
         ? json(403, { error: "FreeTierError" })
@@ -322,7 +336,10 @@ test("each candidate is re-checked against the key's rules by canonical id", asy
   const response = await dispatch("jev", ["opencode-zen", "openrouter"], harnessed);
 
   assert.equal(response.status, 200);
-  assert.deepEqual(harnessed.policyChecks, ["opencode-zen/jev-1.13", "openrouter/typesafe/jev-1.13"]);
+  assert.deepEqual(harnessed.policyChecks, [
+    "opencode-zen/jev-1.13",
+    "openrouter/typesafe/jev-1.13",
+  ]);
   // A rejected candidate must not spend a credential selection at all.
   assert.ok(harnessed.selections.every((selection) => selection.provider === "openrouter"));
   assert.deepEqual(
@@ -438,6 +455,22 @@ test("an ambiguous 502 fails closed instead of rotating accounts", async () => {
   assert.equal(harnessed.recovered.length, 0);
 });
 
+test("a classified gateway failure rotates but a malformed successful payload does not", async () => {
+  const harnessed = harness({
+    pools: { openrouter: [keyed("or-1"), keyed("or-2")] },
+    respond: (attempt) =>
+      attempt.connectionId === "or-1"
+        ? json(502, { error: { code: "upstream_error", message: "Gateway unavailable" } })
+        : json(200, ANSWER),
+  });
+  const response = await dispatch("openrouter/typesafe/jev-1.13", ["openrouter"], harnessed);
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    harnessed.attempts.map((attempt) => attempt.connectionId),
+    ["or-1", "or-2"]
+  );
+});
+
 test("a caller cancellation is not retried", async () => {
   const harnessed = harness({
     pools: { "opencode-zen": [freeKey("zen-1"), freeKey("zen-2")] },
@@ -524,7 +557,7 @@ test("the backend's own request limits reject before any credential is spent", a
       body: {
         model: "opencode-zen/jev-1.13",
         state: "x".repeat(1_100_000),
-        questions: { urgent: { type: "noul" } },
+        questions: { urgent: { type: "noul", instructions: "Is this urgent?" } },
       },
       requestedModel: "opencode-zen/jev-1.13",
     },
@@ -555,6 +588,8 @@ test("the retry classification matches the documented contract", () => {
   }
 });
 
-test.after(() => {
+test.after(async () => {
+  const { resetDbInstance } = await import("../../src/lib/db/core.ts");
+  resetDbInstance();
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });

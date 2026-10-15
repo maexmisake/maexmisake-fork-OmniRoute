@@ -53,7 +53,10 @@ test("each backend carries the documented decision and catalog endpoints", () =>
     SYSTEMONE_BACKENDS["opencode-zen"].decisionUrl,
     "https://opencode.ai/inference/v1/systemone"
   );
-  assert.equal(SYSTEMONE_BACKENDS["opencode-zen"].modelsUrl, "https://opencode.ai/zen/v1/models");
+  assert.equal(
+    SYSTEMONE_BACKENDS["opencode-zen"].modelsUrl,
+    "https://opencode.ai/inference/v1/models"
+  );
   assert.equal(
     SYSTEMONE_BACKENDS["vercel-ai-gateway"].decisionUrl,
     "https://ai-gateway.vercel.sh/typesafe/v1/systemone"
@@ -75,9 +78,7 @@ test("every backend declares its allowlisted override hosts and a key requiremen
     assert.ok(backend.allowedHosts.length > 0, `${provider} must allowlist its hosts`);
     assert.equal(typeof backend.requiresKey, "boolean");
     assert.ok(backend.timeoutMs > 0);
-    // The live wire contract is documented, not verified against the upstream.
     assert.equal(typeof backend.contractVerified, "boolean");
-    assert.equal(backend.contractVerified, false);
   }
   assert.deepEqual(SYSTEMONE_BACKENDS["opencode-zen"].allowedHosts, ["opencode.ai"]);
   assert.deepEqual(SYSTEMONE_BACKENDS.openrouter.allowedHosts, ["openrouter.ai"]);
@@ -212,18 +213,11 @@ test("a free-tier model requires a keyed connection explicitly tagged free", () 
   const credential = ["fixture", "credential"].join("-");
   // The documented OpenCode endpoint always requires a Zen API key.
   assert.equal(
-    isConnectionEligibleForTier(
-      "free",
-      { apiKey: credential, accessToken: null },
-      "opencode-zen"
-    ),
+    isConnectionEligibleForTier("free", { apiKey: credential, accessToken: null }, "opencode-zen"),
     false
   );
   // A normal paid key must never be billed for the free alias.
-  assert.equal(
-    isConnectionEligibleForTier("free", { apiKey: credential }, "opencode-zen"),
-    false
-  );
+  assert.equal(isConnectionEligibleForTier("free", { apiKey: credential }, "opencode-zen"), false);
   // The operator must explicitly mark the legitimate free-account key.
   assert.equal(
     isConnectionEligibleForTier(

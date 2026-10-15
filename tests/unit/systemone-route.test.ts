@@ -89,7 +89,11 @@ async function post(body: unknown, apiKey?: string, raw?: string) {
 }
 
 function noulRequest(model: string) {
-  return { model, state: STATE, questions: { urgent: { type: "noul" } } };
+  return {
+    model,
+    state: STATE,
+    questions: { urgent: { type: "noul", instructions: "Is this urgent?" } },
+  };
 }
 
 test("OPTIONS advertises the methods each System One route serves", async () => {
@@ -109,7 +113,10 @@ test("a body that is not JSON is rejected before anything else runs", async () =
 });
 
 test("the request envelope is validated and the failure names only the field", async () => {
-  const missingState = await post({ model: "jev", questions: { urgent: { type: "noul" } } });
+  const missingState = await post({
+    model: "jev",
+    questions: { urgent: { type: "noul", instructions: "Is this urgent?" } },
+  });
   assert.equal(missingState.response.status, 400);
   assert.match(missingState.body.error.message, /state/i);
 

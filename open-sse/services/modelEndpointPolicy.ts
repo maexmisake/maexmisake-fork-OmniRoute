@@ -7,6 +7,8 @@
  * provider knowledge here so discovery, import, and catalog projection agree.
  */
 
+import { SYSTEMONE_BACKENDS } from "../config/systemOneRegistry.ts";
+
 export type ModelEndpointKind =
   "chat" | "image" | "video" | "embedding" | "rerank" | "decision" | "non-chat" | "unknown";
 
@@ -16,10 +18,44 @@ export type ModelEndpointDecision = {
   reason: "explicit-endpoints" | "provider-policy" | "unclassified";
 };
 
-type EndpointAwareModel = {
-  id: string;
-  supportedEndpoints?: readonly string[];
+type ModelEndpointMetadata = {
+  id?: unknown;
+  supportedEndpoints?: unknown;
+  supported_endpoints?: unknown;
+  architecture?: unknown;
 };
+
+type EndpointAwareModel = ModelEndpointMetadata & { id: string };
+
+export function getDeclaredModelEndpoints(
+  model: ModelEndpointMetadata,
+  provider?: string | null
+): string[] | undefined {
+  const declared = model.supportedEndpoints ?? model.supported_endpoints;
+  if (Array.isArray(declared)) {
+    return declared.filter((endpoint): endpoint is string => typeof endpoint === "string");
+  }
+  const architecture = model.architecture;
+  const rawOutput =
+    architecture && typeof architecture === "object"
+      ? (architecture as { output_modalities?: unknown }).output_modalities
+      : undefined;
+  const output = Array.isArray(rawOutput) ? rawOutput : [];
+  if (output.includes("decisions")) {
+    return output.includes("text") ? ["chat", "systemone"] : ["systemone"];
+  }
+  // Zen's published model list omits endpoint metadata for its Jev models.
+  const knownZenDecision =
+    provider?.trim().toLowerCase() === "opencode-zen" &&
+    typeof model.id === "string" &&
+    SYSTEMONE_BACKENDS["opencode-zen"].decisionModelPattern.test(model.id.trim());
+  if (knownZenDecision && output.length) {
+    return output.includes("text")
+      ? ["chat"]
+      : output.filter((modality): modality is string => typeof modality === "string");
+  }
+  return knownZenDecision ? ["systemone"] : undefined;
+}
 
 const CHAT_ENDPOINTS = new Set([
   "chat",
@@ -121,8 +157,9 @@ export function getModelEndpointDecision(
   modelId: string,
   supportedEndpoints?: readonly string[]
 ): ModelEndpointDecision {
+  const normalizedProvider = provider?.trim().toLowerCase();
   const explicit = classifyExplicitEndpoints(supportedEndpoints);
-  if (provider?.trim().toLowerCase() === "openrouter") {
+  if (normalizedProvider === "openrouter") {
     // Unconditional, unlike the OpenAI branch below: there is no "batch"
     // endpoint name an upstream could declare alongside a chat one, and the
     // rows already stored for these carry the synthetic `["chat"]` default --
@@ -130,7 +167,7 @@ export function getModelEndpointDecision(
     const openRouterDecision = classifyOpenRouterModel(modelId);
     if (openRouterDecision) return openRouterDecision;
   }
-  if (provider?.trim().toLowerCase() === "openai") {
+  if (normalizedProvider === "openai") {
     const openAiDecision = classifyOpenAiModel(modelId);
     if (openAiDecision) {
       // Old imported rows were persisted with `["chat"]` as a synthetic default
@@ -149,6 +186,9 @@ export function getModelEndpointDecision(
   }
 
   if (explicit) return explicit;
+  if (getDeclaredModelEndpoints({ id: modelId }, provider)?.includes("systemone")) {
+    return { kind: "decision", chatSelectable: false, reason: "provider-policy" };
+  }
   return { kind: "unknown", chatSelectable: true, reason: "unclassified" };
 }
 
@@ -170,7 +210,8 @@ export function isChatSelectableModel(
   provider: string | null | undefined,
   model: EndpointAwareModel
 ): boolean {
-  return getModelEndpointDecision(provider, model.id, model.supportedEndpoints).chatSelectable;
+  return getModelEndpointDecision(provider, model.id, getDeclaredModelEndpoints(model, provider))
+    .chatSelectable;
 }
 
 export function filterChatSelectableModels<T extends EndpointAwareModel>(

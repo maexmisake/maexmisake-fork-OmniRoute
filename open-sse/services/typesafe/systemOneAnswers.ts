@@ -77,14 +77,28 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** A probability map must be numeric and non-negative, or the answer is unusable. */
+function isJsonValue(value: unknown, depth = 0): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (depth >= 64) return false;
+  if (Array.isArray(value)) return value.every((entry) => isJsonValue(entry, depth + 1));
+  return isRecord(value) && Object.values(value).every((entry) => isJsonValue(entry, depth + 1));
+}
+
+function isContent(value: unknown): boolean {
+  return (
+    (typeof value === "string" || isRecord(value) || Array.isArray(value)) && isJsonValue(value)
+  );
+}
+
+/** A probability map must contain probabilities between zero and one. */
 function parseProbabilities(value: unknown): SystemOneProbabilities | null | "invalid" {
   if (value === undefined || value === null) return null;
   if (!isRecord(value)) return "invalid";
   const out: SystemOneProbabilities = {};
   for (const [key, raw] of Object.entries(value)) {
     const probability = finiteNumber(raw);
-    if (probability === null || probability < 0) return "invalid";
+    if (probability === null || probability < 0 || probability > 1) return "invalid";
     out[key] = probability;
   }
   return out;
@@ -97,51 +111,75 @@ function parseConfidence(value: unknown): number | null | "invalid" {
   return confidence;
 }
 
-function parseAnswer(name: string, raw: unknown): SystemOneAnswer | SystemOneAnswersFailure {
-  if (!isRecord(raw)) return invalid(`System One answer ${name} was not an object`);
+function parseAnswer(raw: unknown): SystemOneAnswer | SystemOneAnswersFailure {
+  if (!isRecord(raw)) return invalid("System One answer was not an object");
   const type = raw.type;
   if (
     typeof type !== "string" ||
     !SYSTEMONE_QUESTION_TYPES.includes(type as SystemOneQuestionType)
   ) {
-    return invalid(`System One answer ${name} had an unsupported type`);
+    return invalid("System One answer had an unsupported type");
   }
 
   const probabilities = parseProbabilities(raw.probabilities);
   if (probabilities === "invalid") {
-    return invalid(`System One answer ${name} had invalid probabilities`);
+    return invalid("System One answer had invalid probabilities");
   }
   const confidence = parseConfidence(raw.confidence);
   if (confidence === "invalid") {
-    return invalid(`System One answer ${name} had an out-of-range confidence`);
+    return invalid("System One answer had an out-of-range confidence");
   }
   const common = { probabilities, confidence };
 
   if (type === "noul") {
     const noul = finiteNumber(raw.noul);
     if (noul === null || noul < 0 || noul > 1) {
-      return invalid(`System One noul answer ${name} had no probability between 0 and 1`);
+      return invalid("System One noul answer had no probability between 0 and 1");
     }
     return { type, noul, ...common };
   }
   if (type === "choice") {
-    const choice = typeof raw.choice === "string" ? raw.choice.trim() : "";
-    if (!choice) return invalid(`System One choice answer ${name} had an empty choice`);
+    const choice = typeof raw.choice === "string" ? raw.choice : "";
+    if (!choice.trim()) return invalid("System One choice answer had an empty choice");
     return { type, choice, ...common };
   }
   const score = finiteNumber(raw.score);
-  if (score === null) return invalid(`System One score answer ${name} had no numeric score`);
-  return { type, score, ...common };
+  if (score === null) return invalid("System One score answer had no numeric score");
+  return { type: "score", score, ...common };
 }
 
-function parseUsage(raw: unknown): SystemOneUsage {
-  const usage = isRecord(raw) ? raw : null;
-  const cost = usage ? finiteNumber(usage.cost) : null;
+function parseGatewayCost(value: unknown): number | null {
+  if (typeof value !== "string" || !/^\d+(?:\.\d+)?$/.test(value)) return null;
+  const cost = Number(value);
+  return Number.isFinite(cost) ? cost : null;
+}
+
+function parseUsage(body: Record<string, unknown>): SystemOneUsage {
+  const usage = isRecord(body.usage) ? body.usage : null;
+  const reported = usage ? finiteNumber(usage.cost) : null;
+  const metadata = isRecord(body.provider_metadata) ? body.provider_metadata : null;
+  const gateway = metadata && isRecord(metadata.gateway) ? metadata.gateway : null;
+  const cost = reported !== null && reported >= 0 ? reported : parseGatewayCost(gateway?.cost);
   return {
     inputTokens: usage ? finiteNumber(usage.input_tokens) : null,
     outputTokens: usage ? finiteNumber(usage.output_tokens) : null,
-    costUsd: cost !== null && cost >= 0 ? cost : null,
+    costUsd: cost,
   };
+}
+
+function matchesQuestion(answer: SystemOneAnswer, question: unknown): boolean {
+  if (!isRecord(question) || answer.type !== question.type) return false;
+  if (answer.type === "noul") return true;
+  const criteria = question.criteria;
+  if (answer.type === "choice") {
+    if (!isRecord(criteria) || !Object.hasOwn(criteria, answer.choice)) return false;
+  } else if (!Array.isArray(criteria) || answer.score < 0 || answer.score > criteria.length - 1) {
+    return false;
+  }
+  const options = new Set(Object.keys(criteria as object));
+  return (
+    !answer.probabilities || Object.keys(answer.probabilities).every((key) => options.has(key))
+  );
 }
 
 /**
@@ -149,17 +187,27 @@ function parseUsage(raw: unknown): SystemOneUsage {
  * preserved with their probabilities, confidence and usage; a body that answers
  * no question at all is a failure, not an empty success.
  */
-export function parseSystemOneAnswers(body: unknown): SystemOneAnswersResult {
+export function parseSystemOneAnswers(body: unknown, request?: unknown): SystemOneAnswersResult {
   if (!isRecord(body)) return invalid("System One response was not a JSON object");
   if (!isRecord(body.answers)) return invalid("System One response missing answers");
 
   const entries = Object.entries(body.answers);
   if (!entries.length) return invalid("System One response answered no question");
+  const questions = isRecord(request) && isRecord(request.questions) ? request.questions : null;
+  if (questions && entries.length !== Object.keys(questions).length) {
+    return invalid("System One response did not match the requested questions");
+  }
 
   const answers: Record<string, SystemOneAnswer> = {};
   for (const [name, raw] of entries) {
-    const parsed = parseAnswer(name, raw);
+    const parsed = parseAnswer(raw);
     if ("ok" in parsed) return parsed;
+    if (
+      questions &&
+      (!Object.hasOwn(questions, name) || !matchesQuestion(parsed, questions[name]))
+    ) {
+      return invalid("System One answer did not match its requested question");
+    }
     answers[name] = parsed;
   }
 
@@ -167,11 +215,37 @@ export function parseSystemOneAnswers(body: unknown): SystemOneAnswersResult {
     ok: true,
     model: typeof body.model === "string" ? body.model : null,
     answers,
-    usage: parseUsage(body.usage),
+    usage: parseUsage(body),
   };
 }
 
 type Question = Record<string, unknown>;
+
+function validateCriteria(type: SystemOneQuestionType, criteria: unknown): string | null {
+  if (type === "noul") {
+    if (criteria == null) return null;
+    return isRecord(criteria) &&
+      Object.entries(criteria).every(
+        ([key, value]) =>
+          (key === "true" || key === "false") && (value === null || isContent(value))
+      )
+      ? null
+      : "must describe only true or false outcomes";
+  }
+  if (type === "choice") {
+    return isRecord(criteria) &&
+      Object.keys(criteria).length > 0 &&
+      Object.values(criteria).every((value) => value === null || isContent(value))
+      ? null
+      : "must be a non-empty map of text, structured descriptions or null";
+  }
+  return Array.isArray(criteria) &&
+    criteria.length >= 2 &&
+    criteria.length <= 10 &&
+    criteria.every(isContent)
+    ? null
+    : "must contain 2–10 text or structured score levels";
+}
 
 function validateQuestion(name: string, raw: unknown): SystemOneValidation {
   if (!isRecord(raw)) return fail(`questions.${name} must be an object`);
@@ -182,20 +256,17 @@ function validateQuestion(name: string, raw: unknown): SystemOneValidation {
   ) {
     return fail(`questions.${name}.type must be one of ${SYSTEMONE_QUESTION_TYPES.join(", ")}`);
   }
-  if (raw.instructions !== undefined && typeof raw.instructions !== "string") {
-    return fail(`questions.${name}.instructions must be a string`);
+  if (raw.instructions !== undefined && raw.instructions !== null && !isContent(raw.instructions)) {
+    return fail(`questions.${name}.instructions must be a string, object or array`);
   }
-  if (type === "choice") {
-    // Choice criteria are a map of option name → description (description may be null).
-    if (!isRecord(raw.criteria) || !Object.keys(raw.criteria).length) {
-      return fail(`questions.${name}.criteria must be a non-empty object for a choice question`);
-    }
-  }
-  if (type === "score") {
-    // Score criteria are the ordered levels.
-    if (!Array.isArray(raw.criteria) || !raw.criteria.length) {
-      return fail(`questions.${name}.criteria must be a non-empty array for a score question`);
-    }
+  const criteriaError = validateCriteria(type as SystemOneQuestionType, raw.criteria);
+  if (criteriaError) return fail(`questions.${name}.criteria ${criteriaError}`);
+  if (
+    type === "noul" &&
+    raw.instructions == null &&
+    (!isRecord(raw.criteria) || !Object.values(raw.criteria).some(isContent))
+  ) {
+    return fail(`questions.${name} requires instructions or a described true or false outcome`);
   }
   return OK;
 }
@@ -211,7 +282,7 @@ export function validateSystemOneRequestBody(body: unknown): SystemOneValidation
   if (typeof body.model !== "string" || !body.model.trim()) {
     return fail("model is required");
   }
-  if (typeof body.state !== "string") return fail("state must be a string");
+  if (!isContent(body.state)) return fail("state must be a string, object or array");
   if (!isRecord(body.questions)) return fail("questions must be a non-empty object");
   const entries = Object.entries(body.questions);
   if (!entries.length) return fail("questions must be a non-empty object");
@@ -248,9 +319,10 @@ function validateLimits(
     const counted = candidateCount(question);
     if (!counted) continue;
     const max = counted.kind === "choice" ? limits.maxChoiceCriteria : limits.maxScoreLevels;
-    if (counted.count < limits.minCriteria || counted.count > max) {
+    const min = counted.kind === "score" ? 2 : limits.minCriteria;
+    if (counted.count < min || counted.count > max) {
       return fail(
-        `questions.${name}.criteria must contain ${limits.minCriteria}–${max} candidates for ${provider}`
+        `questions.${name}.criteria must contain ${min}–${max} candidates for ${provider}`
       );
     }
   }

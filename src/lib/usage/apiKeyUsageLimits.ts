@@ -62,6 +62,7 @@ interface UsageCostRow {
   provider: string | null;
   model: string | null;
   serviceTier: string | null;
+  costUsd: number | null;
   promptTokens: number | null;
   completionTokens: number | null;
   cacheReadTokens: number | null;
@@ -466,6 +467,7 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
         LOWER(provider) as provider,
         LOWER(model) as model,
         COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
+        SUM(cost_usd) as costUsd,
         COALESCE(SUM(tokens_input), 0) as promptTokens,
         COALESCE(SUM(tokens_output), 0) as completionTokens,
         COALESCE(SUM(tokens_cache_read), 0) as cacheReadTokens,
@@ -475,7 +477,7 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
       WHERE api_key_id = @apiKeyId
         AND timestamp >= @sinceIso
         AND success = 1
-      GROUP BY LOWER(provider), LOWER(model), serviceTier
+      GROUP BY LOWER(provider), LOWER(model), serviceTier, cost_usd IS NULL
     `
     )
     .all({ apiKeyId, sinceIso }) as UsageCostRow[];
@@ -483,6 +485,10 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
   let total = 0;
   let hasUnpricedUsage = false;
   for (const row of rows) {
+    if (row.costUsd !== null) {
+      total += row.costUsd;
+      continue;
+    }
     const provider = typeof row.provider === "string" ? row.provider : "";
     const model = typeof row.model === "string" ? row.model : "";
     if (!provider || !model) continue;

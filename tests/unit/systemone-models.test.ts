@@ -10,6 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { resolveSystemOneCandidates } from "../../open-sse/config/systemOneRegistry.ts";
 
 import {
   handleSystemOneModels,
@@ -147,6 +148,26 @@ test("OpenRouter reads its public decisions filter", async () => {
   assert.deepEqual(urls, ["https://openrouter.ai/api/v1/models?output_modalities=decisions"]);
 });
 
+test("an OpenRouter tilde alias stays callable under its exact upstream id", async () => {
+  const response = await handleSystemOneModels(
+    {},
+    deps([connection("openrouter")], {
+      "openrouter.ai": {
+        data: [
+          {
+            id: "~typesafe/jev-latest",
+            architecture: { output_modalities: ["decisions"] },
+          },
+        ],
+      },
+    })
+  );
+  const models = await listed(response);
+  assert.equal(models[0].id, "openrouter/~typesafe/jev-latest");
+  assert.equal(models[0].root, "~typesafe/jev-latest");
+  assert.equal(resolveSystemOneCandidates(String(models[0].id))[0].model, "~typesafe/jev-latest");
+});
+
 test("OpenCode Zen's shared model list is filtered to its decision models", async () => {
   const response = await handleSystemOneModels(
     {},
@@ -193,6 +214,51 @@ test("the Vercel AI Gateway contributes its TypeSafe model", async () => {
     ["vercel-ai-gateway/typesafe-ai/jev"]
   );
   assert.equal(models[0].root, "typesafe-ai/jev");
+});
+
+test("Vercel's dedicated native catalog retains every model name without modality metadata", async () => {
+  const nativeCatalog = {
+    models: [
+      "convaiinnovations/laya",
+      "convaiinnovations/laya-free",
+      "liquid/d1",
+      "microsoft/microsoft-decision-1",
+      "openai/gpt-6-luna-decisions",
+      "perplexity/pplx-decider-v1.1-27b",
+      "scaledown/scaledown-classify-1",
+      "jev",
+    ].map((name) => ({ name, description: "Native decision model", release_date: "2026-10-14" })),
+  };
+  const response = await handleSystemOneModels(
+    {},
+    deps([connection("vercel-ai-gateway"), freeConnection("vercel-ai-gateway")], {
+      "ai-gateway.vercel.sh": nativeCatalog,
+    })
+  );
+  const models = await listed(response);
+  assert.deepEqual(models.map((model) => model.id).sort(), [
+    "vercel-ai-gateway/convaiinnovations/laya",
+    "vercel-ai-gateway/convaiinnovations/laya-free",
+    "vercel-ai-gateway/jev",
+    "vercel-ai-gateway/liquid/d1",
+    "vercel-ai-gateway/microsoft/microsoft-decision-1",
+    "vercel-ai-gateway/openai/gpt-6-luna-decisions",
+    "vercel-ai-gateway/perplexity/pplx-decider-v1.1-27b",
+    "vercel-ai-gateway/scaledown/scaledown-classify-1",
+  ]);
+  assert.ok(models.every((model) => model.pricing_status === "unknown"));
+});
+
+test("Vercel's dedicated catalog still rejects an explicitly nondecision model", async () => {
+  const response = await handleSystemOneModels(
+    {},
+    deps([connection("vercel-ai-gateway")], {
+      "ai-gateway.vercel.sh": {
+        models: [{ name: "text-model", architecture: { output_modalities: ["text"] } }],
+      },
+    })
+  );
+  assert.deepEqual(await listed(response), []);
 });
 
 test("every configured backend contributes to one aggregated list", async () => {

@@ -37,12 +37,15 @@ import {
 } from "./systemOneTransport.ts";
 import { getProviderConnections } from "@/lib/db/providers";
 import { getPricingForModel } from "@/lib/db/settings";
+import { isModelExcludedByConnection } from "@/domain/connectionModelRules";
+import { isModelLocked } from "../services/accountFallback.ts";
 
 export const SYSTEMONE_MODELS_TIMEOUT_MS = 10_000;
 /** The real decision lists are a few KB; anything this large is not one. */
 const MAX_BODY_CHARS = 2_000_000;
 /** Backends list a handful of decision models; bound the per-model policy work. */
 const MAX_MODELS_PER_BACKEND = 500;
+const MAX_CATALOG_CONNECTION_ATTEMPTS = 3;
 
 /** Terminal connection states never come back on their own. */
 const TERMINAL_STATUSES = new Set(["banned", "expired", "credits_exhausted"]);
@@ -157,7 +160,29 @@ function hasEligibleConnection(
   group: SystemOneCatalogConnection[],
   model: DecisionCatalogModel
 ): boolean {
-  return group.some((connection) => isConnectionEligibleForTier(model.tier, connection, provider));
+  return group.some(
+    (connection) =>
+      isConnectionEligibleForTier(model.tier, connection, provider) &&
+      !isModelExcludedByConnection(model.root, connection.providerSpecificData) &&
+      !isModelLocked(provider, connection.id, model.root)
+  );
+}
+
+async function addEligibleModels(
+  models: DecisionCatalogModel[],
+  provider: SystemOneProviderId,
+  group: SystemOneCatalogConnection[],
+  options: SystemOneModelsOptions,
+  deps: SystemOneModelsDeps,
+  into: Map<string, DecisionCatalogModel>
+): Promise<void> {
+  for (const model of models) {
+    if (into.has(model.id)) continue;
+    if (!hasEligibleConnection(provider, group, model)) continue;
+    if (options.isModelAllowed && !(await options.isModelAllowed(model.id))) continue;
+    const override = await deps.getPricingForModel(provider, model.root).catch(() => null);
+    into.set(model.id, applyOperatorPricing(model, override));
+  }
 }
 
 async function collectProvider(
@@ -168,16 +193,10 @@ async function collectProvider(
   into: Map<string, DecisionCatalogModel>
 ): Promise<void> {
   let lastError: unknown = new Error(`no eligible ${provider} connection`);
-  for (const connection of group) {
+  for (const connection of group.slice(0, MAX_CATALOG_CONNECTION_ATTEMPTS)) {
     try {
       const models = await fetchDecisionCatalog(provider, connection, options, deps);
-      for (const model of models) {
-        if (into.has(model.id)) continue;
-        if (!hasEligibleConnection(provider, group, model)) continue;
-        if (options.isModelAllowed && !(await options.isModelAllowed(model.id))) continue;
-        const override = await deps.getPricingForModel(provider, model.root).catch(() => null);
-        into.set(model.id, applyOperatorPricing(model, override));
-      }
+      await addEligibleModels(models, provider, group, options, deps, into);
       return;
     } catch (error) {
       if (options.signal?.aborted) throw error;

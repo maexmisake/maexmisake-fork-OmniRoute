@@ -18,11 +18,10 @@
  * than a rule this loop has to remember.
  *
  * Fallback is deliberately narrow: only a status that says something about the
- * ACCOUNT (401/402/403/429) or the upstream's availability (408, 5xx except
- * 501/502) is retried. A caller-fault status would repeat on every account, and
- * `handleSystemOneProxy` maps both a contract-violating success body and a
- * transport failure onto 502 — indistinguishable from out here, so 502 fails
- * closed instead of spending more credentials on a request that cannot succeed.
+ * ACCOUNT (401/402/403/429) or the upstream's availability (408, 5xx except 501)
+ * is retried. A 502 must carry the proxy's `upstream_error` code to retry;
+ * malformed success bodies carry `upstream_protocol_error` and fail closed, as
+ * do unclassified 502s and caller-fault statuses that would repeat on every account.
  *
  * Every collaborator is injected: the route binds the real credential selector,
  * proxy and key-policy check, and the tests drive the loop with fakes. Nothing
@@ -41,7 +40,9 @@ import {
 } from "@omniroute/open-sse/handlers/systemOne.ts";
 import {
   SYSTEMONE_MAX_FALLBACK_CANDIDATES,
+  isConnectionEligibleForTier,
   type SystemOneCandidate,
+  type SystemOneTier,
 } from "@omniroute/open-sse/config/systemOneRegistry.ts";
 import {
   validateSystemOneBackendBody,
@@ -52,6 +53,8 @@ import {
   getProviderCredentialsWithQuotaPreflight,
 } from "@/sse/services/auth";
 import * as log from "@/sse/utils/logger";
+import { getProviderConnections } from "@/lib/db/providers";
+import { checkTokenLimits } from "@omniroute/open-sse/services/tokenLimitCounter.ts";
 
 /**
  * Connections tried per candidate before moving on. A decision call is cheap
@@ -62,6 +65,7 @@ export const SYSTEMONE_MAX_CONNECTION_ATTEMPTS = 3;
 
 export type SystemOneCredentialSelection = {
   provider: string;
+  tier: SystemOneTier;
   /** Upstream model id — quota preflight scopes per-model cutoffs by it. */
   model: string;
   /** The calling key's connection allowlist, or null when it has none. */
@@ -80,10 +84,28 @@ export type SystemOneDispatchDeps = {
 };
 
 export const defaultSystemOneDispatchDeps: SystemOneDispatchDeps = {
-  selectCredentials: ({ provider, model, allowedConnections, excludeConnectionIds }) =>
-    getProviderCredentialsWithQuotaPreflight(provider, null, allowedConnections, model, {
+  selectCredentials: async ({
+    provider,
+    model,
+    tier,
+    allowedConnections,
+    excludeConnectionIds,
+  }) => {
+    const connections = await getProviderConnections({ provider, isActive: true });
+    const eligibleIds = connections.flatMap((connection) => {
+      const id = connection.id;
+      if (typeof id !== "string") return [];
+      return (!allowedConnections || allowedConnections.includes(id)) &&
+        isConnectionEligibleForTier(tier, connection, provider)
+        ? [id]
+        : [];
+    });
+    // An empty allowlist means unrestricted to the shared selector.
+    if (!eligibleIds.length) return null;
+    return getProviderCredentialsWithQuotaPreflight(provider, null, eligibleIds, model, {
       excludeConnectionIds,
-    }),
+    });
+  },
   dispatch: (options) => handleSystemOneProxy(options),
   clearRecoveredProviderState: (credentials) => clearRecoveredProviderState(credentials),
   // No key policy by default: a keyless (local/session) request has no rules to
@@ -106,7 +128,7 @@ export type SystemOneDispatchInput = {
 
 /**
  * Whether another account (or another backend) is worth trying after this
- * status. See the module header for why 501/502 are excluded from the 5xx rule.
+ * status alone. A 502 needs the response-code check in `canRetryResponse`.
  */
 export function isRetryableSystemOneStatus(status: number): boolean {
   if (status === 501 || status === 502) return false;
@@ -118,6 +140,34 @@ export function isRetryableSystemOneStatus(status: number): boolean {
     status === HTTP_STATUS.REQUEST_TIMEOUT ||
     status === HTTP_STATUS.RATE_LIMITED
   );
+}
+
+async function canRetryResponse(response: Response): Promise<boolean> {
+  if (isRetryableSystemOneStatus(response.status)) return true;
+  if (response.status !== 502) return false;
+  const body = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  return body?.error?.code === "upstream_error";
+}
+
+function validateCandidateTokenBudget(
+  apiKeyId: string | null | undefined,
+  candidate: SystemOneCandidate
+): Response | null {
+  if (!apiKeyId) return null;
+  try {
+    const breach = checkTokenLimits(apiKeyId, candidate.provider, candidate.model);
+    return breach
+      ? errorResponse(429, "Token limit exceeded for this System One target", {
+          code: "token_limit_exceeded",
+          retryAfter: breach.nextResetAt,
+        })
+      : null;
+  } catch {
+    return errorResponse(503, "System One token limit policy unavailable");
+  }
 }
 
 function connectionIdOf(credentials: unknown): string | null {
@@ -188,6 +238,21 @@ type Outcome = {
   diagnostic: Response | null;
 };
 
+function recordRetryableFailure(
+  candidate: SystemOneCandidate,
+  outcome: Outcome,
+  response: Response,
+  connectionId: string | null
+): void {
+  outcome.upstream = response;
+  log.warn("SYSTEMONE", "Decision attempt failed; considering another account", {
+    provider: candidate.provider,
+    model: candidate.canonicalModel,
+    status: response.status,
+    ...(connectionId ? { connectionId } : {}),
+  });
+}
+
 /**
  * Run one candidate's bounded connection rotation.
  *
@@ -202,7 +267,7 @@ async function attemptCandidate(
 ): Promise<Response | null> {
   const body = { ...input.body, model: candidate.model };
   const limits = deps.validateBackendBody(candidate.provider, body);
-  if (!limits.ok) {
+  if (limits.ok === false) {
     // A request shape this backend refuses is the caller's: another account or
     // backend would refuse the same bytes.
     return errorResponse(limits.status, limits.message);
@@ -212,6 +277,7 @@ async function attemptCandidate(
   for (let attempt = 0; attempt < SYSTEMONE_MAX_CONNECTION_ATTEMPTS; attempt++) {
     const credentials = await deps.selectCredentials({
       provider: candidate.provider,
+      tier: candidate.tier,
       model: candidate.model,
       allowedConnections: input.allowedConnections ?? null,
       excludeConnectionIds: [...attempted],
@@ -247,15 +313,9 @@ async function attemptCandidate(
       });
       return response;
     }
-    if (!isRetryableSystemOneStatus(response.status)) return response;
+    if (!(await canRetryResponse(response))) return response;
 
-    outcome.upstream = response;
-    log.warn("SYSTEMONE", "Decision attempt failed; considering another account", {
-      provider: candidate.provider,
-      model: candidate.canonicalModel,
-      status: response.status,
-      ...(connectionId ? { connectionId } : {}),
-    });
+    recordRetryableFailure(candidate, outcome, response, connectionId);
     // Nothing identifies the account that just failed, so there is nothing to
     // exclude and the selector would return it again.
     if (!connectionId) return null;
@@ -286,6 +346,12 @@ export async function dispatchSystemOne(
     const rejection = await deps.validateRoutingTarget(candidate.canonicalModel);
     if (rejection) {
       outcome.diagnostic = rejection;
+      continue;
+    }
+
+    const budgetRejection = validateCandidateTokenBudget(input.apiKeyInfo?.id, candidate);
+    if (budgetRejection) {
+      outcome.diagnostic = budgetRejection;
       continue;
     }
 

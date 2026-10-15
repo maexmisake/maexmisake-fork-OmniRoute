@@ -124,7 +124,7 @@ export async function POST(request: Request): Promise<Response> {
   // The envelope gate above proves the shape; this proves the typed-decision
   // contract (question types and their criteria) before a credential is spent.
   const envelope = validateSystemOneRequestBody(validation.data);
-  if (!envelope.ok) return errorResponse(envelope.status, envelope.message);
+  if (envelope.ok === false) return errorResponse(envelope.status, envelope.message);
 
   const authRejection = await enforceClientApiRouteAuth(request);
   if (authRejection) return authRejection;

@@ -85,7 +85,11 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
 function options(overrides: Record<string, unknown> = {}) {
   return {
     provider: "openrouter",
-    body: { model: "typesafe/jev-1.13", state: STATE, questions: { urgent: { type: "noul" } } },
+    body: {
+      model: "typesafe/jev-1.13",
+      state: STATE,
+      questions: { urgent: { type: "noul", instructions: "Is this urgent?" } },
+    },
     requestedModel: "jev-1.13",
     canonicalModel: "openrouter/typesafe/jev-1.13",
     tier: "paid" as const,
@@ -125,7 +129,7 @@ test("a successful decision is returned with its answers and accounted once", as
     },
     {
       provider: "openrouter",
-      model: "openrouter/typesafe/jev-1.13",
+      model: "typesafe/jev-1.13",
       connectionId: "conn-1",
       apiKeyId: "key-1",
       endpoint: "/v1/systemone",
@@ -218,7 +222,7 @@ test("a 401 cools down the selected connection and records no usage row", async 
   assert.equal(recorded.cooldowns.length, 1);
   assert.equal(recorded.cooldowns[0].connectionId, "conn-1");
   assert.equal(recorded.cooldowns[0].status, 401);
-  assert.equal(recorded.cooldowns[0].model, "openrouter/typesafe/jev-1.13");
+  assert.equal(recorded.cooldowns[0].model, "typesafe/jev-1.13");
 });
 
 test("a 403 is surfaced as 403 — a restricted free tier is not reported as success", async () => {
@@ -263,6 +267,19 @@ test("a 429 passes the upstream retry-after through and cools the connection dow
   assert.equal(response.headers.get("retry-after"), "37");
   assert.equal(recorded.cooldowns.length, 1);
   assert.equal(recorded.cooldowns[0].status, 429);
+  assert.equal(recorded.cooldowns[0].model, "typesafe/jev-1.13");
+});
+
+test("a missing requested answer is rejected without recording successful usage", async () => {
+  const recorded = recorder();
+  const response = await handleSystemOneProxy(
+    options(),
+    deps(recorded, async () =>
+      jsonResponse({ answers: { unrelated: { type: "noul", noul: 0.9 } } })
+    )
+  );
+  assert.equal(response.status, 502);
+  assert.equal(recorded.usage.length, 0);
 });
 
 test("a 5xx cools the connection down, a 422 request-shape error does not", async () => {
@@ -305,6 +322,17 @@ test("upstream error text never leaks the request state or the operator credenti
   assert.doesNotMatch(message, /\/srv\/app/);
   const logged = String(recorded.callLogs[0].error ?? "");
   assert.doesNotMatch(logged, /sk-live-operator-key/);
+});
+
+test("an identifier-shaped upstream error cannot echo an opaque credential", async () => {
+  const credential = "opaque-provider-credential";
+  const recorded = recorder();
+  const response = await handleSystemOneProxy(
+    options({ credentials: { apiKey: credential, connectionId: "fixture" } }),
+    deps(recorded, async () => jsonResponse({ error: { code: credential } }, 401))
+  );
+  assert.doesNotMatch(await response.text(), new RegExp(credential));
+  assert.doesNotMatch(String(recorded.callLogs[0].error), new RegExp(credential));
 });
 
 test("a success body that answers nothing is a 502, not an empty decision", async () => {
@@ -382,6 +410,7 @@ test("a transport failure answers 502 and cools the connection down", async () =
   assert.equal(response.status, 502);
   const body = (await response.json()) as { error?: { message?: string } };
   assert.doesNotMatch(String(body.error?.message), /\/srv\/app/);
+  assert.equal((body.error as { code?: string }).code, "upstream_error");
   assert.equal(recorded.cooldowns.length, 1);
 });
 
@@ -429,7 +458,11 @@ test("a tagged free-tier OpenCode key authenticates while a keyless connection i
       provider: "opencode-zen",
       tier: "free",
       canonicalModel: "opencode-zen/jev-1.13-free",
-      body: { model: "jev-1.13-free", state: STATE, questions: { urgent: { type: "noul" } } },
+      body: {
+        model: "jev-1.13-free",
+        state: STATE,
+        questions: { urgent: { type: "noul", instructions: "Is this urgent?" } },
+      },
       credentials: {
         connectionId: "conn-free",
         apiKey: credential,
@@ -470,7 +503,11 @@ test("a free-tier model is never dispatched on a paid account", async () => {
       provider: "opencode-zen",
       tier: "free",
       canonicalModel: "opencode-zen/jev-1.13-free",
-      body: { model: "jev-1.13-free", state: STATE, questions: { urgent: { type: "noul" } } },
+      body: {
+        model: "jev-1.13-free",
+        state: STATE,
+        questions: { urgent: { type: "noul", instructions: "Is this urgent?" } },
+      },
       credentials: { connectionId: "conn-paid", apiKey: "sk-paid-zen-account" },
     }),
     deps(recorded, async () => jsonResponse(ANSWER_BODY))

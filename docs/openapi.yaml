@@ -2083,15 +2083,24 @@ paths:
                   type: string
                   example: jev
                 state:
-                  type: string
-                  description: The material the questions are asked about.
+                  oneOf:
+                    - type: string
+                    - type: object
+                    - type: array
+                      items: {}
+                  description: Text or structured JSON to evaluate, preserved without rewriting.
                 questions:
                   type: object
+                  minProperties: 1
+                  maxProperties: 64
                   description: >-
                     One entry per question, keyed by the name the answer comes
                     back under. Each value is `{ type: noul | choice | score,
                     instructions?, criteria? }` — `criteria` is an option map
-                    for `choice` and the ordered levels for `score`.
+                    for `choice` (1–255 options) and 2–10 ordered levels for
+                    `score`. Instructions accept text or structured JSON;
+                    `noul` requires instructions or a described true/false
+                    outcome. Choice/score instructions may be omitted or null.
                   additionalProperties:
                     type: object
                     required: [type]
@@ -2100,13 +2109,24 @@ paths:
                         type: string
                         enum: [noul, choice, score]
                       instructions:
-                        type: string
+                        nullable: true
+                        oneOf:
+                          - type: string
+                          - type: object
+                          - type: array
+                            items: {}
                       criteria:
                         oneOf:
                           - type: object
                           - type: array
+                            minItems: 2
+                            maxItems: 10
                             items:
-                              type: string
+                              oneOf:
+                                - type: string
+                                - type: object
+                                - type: array
+                                  items: {}
       responses:
         "200":
           description: >-
@@ -2126,6 +2146,12 @@ paths:
           description: The request exceeds the backend's body budget.
         "429":
           description: All eligible accounts are rate limited (carries `Retry-After`).
+        "502":
+          description: >-
+            Invalid upstream answers (upstream_protocol_error), or exhausted
+            fallback after a gateway/transport failure (upstream_error).
+        "504":
+          description: Upstream timeout after bounded account/provider fallback.
 
   /api/v1/systemone/models:
     get:

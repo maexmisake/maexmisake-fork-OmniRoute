@@ -14,6 +14,8 @@ const localDb = { getModelAliases, setModelAlias };
 const { importManagedModels } = await import("../../src/lib/providerModels/managedModelImport.ts");
 const { mergeProviderModelListing } =
   await import("../../src/lib/providers/mergeProviderModelListing.ts");
+const { decisionOnlyChatRejection } =
+  await import("../../src/lib/providerModels/decisionOnlyChatGuard.ts");
 
 async function resetStorage() {
   core.resetDbInstance();
@@ -228,6 +230,60 @@ test("OpenAI import excludes image and video generation models from chat selecti
     (await modelsDb.getSyncedAvailableModels("openai")).map((model) => model.id),
     ["gpt-5.6-sol"]
   );
+});
+
+test("managed imports retain decision capability evidence without creating chat imports or aliases", async () => {
+  for (const mode of ["sync", "merge"] as const) {
+    const connectionId = `openrouter-decisions-${mode}`;
+    const result = await importManagedModels({
+      providerId: "openrouter",
+      connectionId,
+      mode,
+      fetchedModels: [
+        { id: "acme/chat-model", supportedEndpoints: ["chat"] },
+        {
+          id: "typesafe/jev-1.13",
+          architecture: { output_modalities: ["decisions"] },
+        },
+      ],
+    });
+    const synced = await modelsDb.getSyncedAvailableModelsForConnection("openrouter", connectionId);
+    const decision = synced.find((model) => model.id === "typesafe/jev-1.13");
+    assert.deepEqual(decision?.supportedEndpoints, ["systemone"]);
+    assert.deepEqual(
+      result.discoveredModels.map((model) => model.id),
+      ["acme/chat-model"]
+    );
+    assert.ok(
+      !(await modelsDb.getCustomModels("openrouter")).some((model) => model.id === decision?.id)
+    );
+    assert.ok(
+      !Object.values(await localDb.getModelAliases()).includes("openrouter/typesafe/jev-1.13")
+    );
+    const rejection = await decisionOnlyChatRejection(
+      { provider: "openrouter", model: "typesafe/jev-1.13" },
+      async () => synced
+    );
+    assert.equal(rejection?.status, 400);
+  }
+});
+
+test("an import containing only a decision model still records its capability", async () => {
+  await importManagedModels({
+    providerId: "openrouter",
+    connectionId: "decision-only",
+    mode: "sync",
+    fetchedModels: [{ id: "typesafe/jev-1.13", supportedEndpoints: ["systemone"] }],
+  });
+  const synced = await modelsDb.getSyncedAvailableModelsForConnection(
+    "openrouter",
+    "decision-only"
+  );
+  assert.deepEqual(
+    synced.map((model) => model.id),
+    ["typesafe/jev-1.13"]
+  );
+  assert.deepEqual(await modelsDb.getCustomModels("openrouter"), []);
 });
 
 test("pruning stale connection available models during import", async () => {

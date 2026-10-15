@@ -843,6 +843,8 @@ export interface UsageEntry {
   model?: string | null;
   /** Raw or normalized token usage — see the interface doc above. */
   tokens?: unknown;
+  /** Known request cost in USD; null/absent retains token-pricing fallback. */
+  costUsd?: number | null;
   status?: string | null;
   success?: boolean;
   latencyMs?: number;
@@ -874,6 +876,10 @@ export async function saveRequestUsage(entry: UsageEntry) {
     const db = getDbInstance();
     const timestamp = entry.timestamp || new Date().toISOString();
     const serviceTier = normalizeServiceTier(entry.serviceTier ?? entry.service_tier);
+    const costUsd =
+      typeof entry.costUsd === "number" && Number.isFinite(entry.costUsd) && entry.costUsd >= 0
+        ? entry.costUsd
+        : null;
 
     const tokensInput = getLoggedInputTokens(entry.tokens);
     const tokensOutput = getLoggedOutputTokens(entry.tokens);
@@ -897,7 +903,7 @@ export async function saveRequestUsage(entry: UsageEntry) {
     db.transaction(() => {
       const existing = db
         .prepare(
-          `SELECT id, endpoint, cpa_auth_index FROM usage_history
+          `SELECT id, endpoint, cpa_auth_index, cost_usd FROM usage_history
            WHERE timestamp = ?
              AND COALESCE(provider, '')     = COALESCE(?, '')
              AND COALESCE(model, '')        = COALESCE(?, '')
@@ -915,7 +921,14 @@ export async function saveRequestUsage(entry: UsageEntry) {
           entry.apiKeyId || null,
           tokensInput,
           tokensOutput
-        ) as { id: number; endpoint: string | null; cpa_auth_index: string | null } | undefined;
+        ) as
+        | {
+            id: number;
+            endpoint: string | null;
+            cpa_auth_index: string | null;
+            cost_usd: number | null;
+          }
+        | undefined;
 
       if (existing) {
         // Back-fill endpoint if the original row missed it.
@@ -932,6 +945,12 @@ export async function saveRequestUsage(entry: UsageEntry) {
             existing.id
           );
         }
+        if (existing.cost_usd === null && costUsd !== null) {
+          db.prepare(`UPDATE usage_history SET cost_usd = ? WHERE id = ?`).run(
+            costUsd,
+            existing.id
+          );
+        }
         return; // duplicate — do not insert
       }
 
@@ -940,8 +959,8 @@ export async function saveRequestUsage(entry: UsageEntry) {
         INSERT INTO usage_history (provider, model, connection_id, account_key, account_label,
           account_label_priority, api_key_id, api_key_name, tokens_input, tokens_output,
           tokens_cache_read, tokens_cache_creation, tokens_reasoning, service_tier, status, success,
-          latency_ms, ttft_ms, error_code, combo_strategy, endpoint, cpa_auth_index, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          latency_ms, ttft_ms, error_code, combo_strategy, endpoint, cpa_auth_index, timestamp, cost_usd)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       ).run(
         entry.provider ? resolveProviderId(entry.provider) : null,
@@ -970,7 +989,8 @@ export async function saveRequestUsage(entry: UsageEntry) {
         entry.comboStrategy || entry.combo_strategy || null,
         entry.endpoint || null,
         entry.cpaAuthIndex || null,
-        timestamp
+        timestamp,
+        costUsd
       );
 
       inserted = true;

@@ -13,10 +13,9 @@
  * bare user-facing alias, add its model id to that alias in
  * `SYSTEMONE_MODEL_ALIASES`. Nothing else in the integration is per-provider.
  *
- * Wire contracts are taken from each vendor's published documentation and are
- * marked `contractVerified: false` — no live call has confirmed them from this
- * checkout, and an operator can override the endpoint per connection within the
- * provider's allowlisted hosts.
+ * Live catalog and typed-operation smoke checks are recorded in
+ * docs/research/systemone-native.md. `contractVerified` covers those tested
+ * models, not every model a backend may later publish.
  */
 
 import { hasUnsafeModelIdSyntax } from "../utils/modelIdSafety.ts";
@@ -37,10 +36,8 @@ export type SystemOneTier = "free" | "paid";
 /**
  * Request-shape limits enforced before a credential is spent.
  *
- * The candidate/question counts are the Jev model family's own documented
- * limits (choice accepts at most 255 options, Score at most 10 levels), so all
- * three backends share them while staying overridable per backend. `maxBodyBytes`
- * is OmniRoute's own guard, not a vendor-published figure.
+ * Choice's 255 options and Score's 10 levels come from the native contract.
+ * Question count and body size are OmniRoute guards, not vendor-published limits.
  */
 export type SystemOneLimits = {
   maxQuestions: number;
@@ -74,30 +71,28 @@ export type SystemOneBackend = {
   limits: SystemOneLimits;
   /**
    * Fallback filter for a catalog that lists chat and decision models together
-   * (OpenCode Zen's `/zen/v1/models`) or carries no modality metadata. A row
+   * (OpenCode Console's `/inference/v1/models`) or carries no modality metadata. A row
    * whose own metadata already declares a decision capability is kept
    * regardless; this only decides the rows that declare nothing.
    */
   decisionModelPattern: RegExp;
   /**
-   * Whether the wire contract has been confirmed against the live upstream from
-   * this repository. Documentation-derived endpoints stay `false`.
+   * Whether catalog and all three operations passed a live smoke check for a
+   * documented model. This is not a sustained-quota or all-model guarantee.
    */
   contractVerified: boolean;
 };
 
 /**
- * OpenCode Zen documents `POST /inference/v1/systemone` while the rest of its
- * API (and this repo's chat registry entry) lives under `/zen/v1`; the model
- * catalog is `/zen/v1/models`. Both paths are on the same allowlisted host, so
- * an operator can re-point either per connection if the docs move.
+ * OpenCode Console documents `/inference/v1` for decisions and model discovery;
+ * its legacy Zen paths use the same allowlisted host.
  */
 export const SYSTEMONE_BACKENDS = {
   "opencode-zen": {
     provider: "opencode-zen",
     label: "OpenCode Zen",
     decisionUrl: "https://opencode.ai/inference/v1/systemone",
-    modelsUrl: "https://opencode.ai/zen/v1/models",
+    modelsUrl: "https://opencode.ai/inference/v1/models",
     allowedHosts: ["opencode.ai"],
     // The documented System One endpoint requires an OpenCode Zen API key for
     // both paid Jev and the limited-time free model.
@@ -106,7 +101,7 @@ export const SYSTEMONE_BACKENDS = {
     limits: JEV_SYSTEMONE_LIMITS,
     // Documented Zen decision ids: `jev-1.13`, `jev-1.13-free`.
     decisionModelPattern: /^jev(?:[-.]|$)/i,
-    contractVerified: false,
+    contractVerified: true,
   },
   "vercel-ai-gateway": {
     provider: "vercel-ai-gateway",
@@ -117,9 +112,9 @@ export const SYSTEMONE_BACKENDS = {
     requiresKey: true,
     timeoutMs: 30_000,
     limits: JEV_SYSTEMONE_LIMITS,
-    // The gateway's own id for the model is `typesafe-ai/jev`.
-    decisionModelPattern: /(?:^|\/)jev(?:[-.]|$)/i,
-    contractVerified: false,
+    // This dedicated native catalog lists decision models without modality metadata.
+    decisionModelPattern: /\S/,
+    contractVerified: true,
   },
   openrouter: {
     provider: "openrouter",
@@ -134,7 +129,7 @@ export const SYSTEMONE_BACKENDS = {
     // OpenRouter tags decision models in `architecture.output_modalities`, so
     // the pattern is only a fallback for a row that carries none.
     decisionModelPattern: /(?:^|\/)jev(?:[-.]|$)/i,
-    contractVerified: false,
+    contractVerified: true,
   },
 } as const satisfies Record<string, SystemOneBackend>;
 
@@ -162,23 +157,22 @@ const SYSTEMONE_MODEL_ALIASES: Readonly<
     { provider: "openrouter", model: "typesafe/jev-1.13" },
     { provider: "vercel-ai-gateway", model: "typesafe-ai/jev" },
   ],
-  // OpenCode Zen's Jev Free is a limited-time free model and the only free-tier
-  // System One model documented on any backend. It must never be served by a
-  // paid account, so the alias resolves to that one candidate.
+  // Keep this Jev free alias on its documented limited-time free model.
   "jev-free": [{ provider: "opencode-zen", model: "jev-1.13-free" }],
   "jev-1.13-free": [{ provider: "opencode-zen", model: "jev-1.13-free" }],
 };
 
 /**
- * Published per-token rates (USD per 1M tokens) for decision models, by
- * provider. Empty on purpose: none of the three backends publishes a per-token
- * System One rate that has been verified from this checkout, so cost comes from
- * the upstream's reported `usage.cost`, an operator pricing row, or is reported
- * as unknown — never silently as free.
+ * Published rates in USD per 1M tokens. Only the exact limited-time Zen free
+ * model has a built-in zero, verified in the provider's pricing table on
+ * 2026-10-14: https://opencode.ai/v2/docs/console/models/#pricing . Reported cost
+ * and operator pricing take precedence; other missing rates remain unknown.
  */
 const PUBLISHED_PRICING: Readonly<
   Record<string, ReadonlyArray<{ match: RegExp; input: number; output: number }>>
-> = {};
+> = {
+  "opencode-zen": [{ match: /^jev-1\.13-free$/i, input: 0, output: 0 }],
+};
 
 export function isSystemOneProvider(value: string): value is SystemOneProviderId {
   return Object.prototype.hasOwnProperty.call(SYSTEMONE_BACKENDS, value);

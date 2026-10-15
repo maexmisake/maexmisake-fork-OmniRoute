@@ -37,7 +37,10 @@ test("each backend resolves its documented decision endpoint by default", () => 
 });
 
 test("each backend resolves its documented catalog endpoint by default", () => {
-  assert.equal(systemOneUrl("opencode-zen", {}, "models"), "https://opencode.ai/zen/v1/models");
+  assert.equal(
+    systemOneUrl("opencode-zen", {}, "models"),
+    "https://opencode.ai/inference/v1/models"
+  );
   assert.equal(
     systemOneUrl("vercel-ai-gateway", {}, "models"),
     "https://ai-gateway.vercel.sh/typesafe/v1/models"
@@ -76,11 +79,17 @@ test("the decision override does not leak into the catalog read, or the reverse"
   const connection = {
     providerSpecificData: { systemOneUrl: "https://opencode.ai/zen/v1/systemone" },
   };
-  assert.equal(systemOneUrl("opencode-zen", connection, "models"), "https://opencode.ai/zen/v1/models");
+  assert.equal(
+    systemOneUrl("opencode-zen", connection, "models"),
+    "https://opencode.ai/inference/v1/models"
+  );
   const catalogOnly = {
     providerSpecificData: { systemOneModelsUrl: "https://opencode.ai/zen/v2/models" },
   };
-  assert.equal(systemOneUrl("opencode-zen", catalogOnly), "https://opencode.ai/inference/v1/systemone");
+  assert.equal(
+    systemOneUrl("opencode-zen", catalogOnly),
+    "https://opencode.ai/inference/v1/systemone"
+  );
 });
 
 test("an override outside the provider's allowlisted hosts is rejected", () => {

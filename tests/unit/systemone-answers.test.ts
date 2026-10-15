@@ -9,6 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { v1SystemOneSchema } from "../../src/shared/validation/schemas/apiV1.ts";
 
 import {
   parseSystemOneAnswers,
@@ -246,4 +247,217 @@ test("a backend body that exceeds the backend byte budget is rejected with 413",
     assert.equal(result.status, 413);
     assert.doesNotMatch(result.message, /yyy/);
   }
+});
+
+test("structured state and instructions survive both request gates unchanged", () => {
+  for (const state of [{ ticket: STATE, priority: 3 }, [STATE, { active: true }]]) {
+    const request = body({
+      state,
+      questions: {
+        urgent: { type: "noul", instructions: { question: "Is this urgent?", facts: [1, null] } },
+        route: {
+          type: "choice",
+          instructions: ["Pick a team", { rule: "Use the ticket" }],
+          criteria: { billing: { description: "Charges" }, support: ["Bugs"], other: null },
+        },
+        severity: {
+          type: "score",
+          instructions: "Rate urgency",
+          criteria: [{ description: "Routine" }, ["Urgent"]],
+        },
+      },
+    });
+    const validated = v1SystemOneSchema.safeParse(request);
+    assert.equal(validated.success, true);
+    if (validated.success) assert.deepEqual(validated.data, request);
+    assert.deepEqual(validateSystemOneRequestBody(request), { ok: true });
+  }
+});
+
+test("a Noul without instructions or a described outcome is rejected", () => {
+  for (const instructions of [undefined, null, 42, false]) {
+    const result = validateSystemOneRequestBody(
+      body({ questions: { urgent: { type: "noul", instructions } } })
+    );
+    assert.equal(result.ok, false, `accepted instructions ${String(instructions)}`);
+  }
+});
+
+test("SDK-compatible criteria can supply the question when instructions are absent or null", () => {
+  for (const instructions of [undefined, null]) {
+    for (const question of [
+      { type: "noul", criteria: { true: "The ticket is urgent" } },
+      { type: "noul", criteria: { false: { description: "The ticket can wait" } } },
+      { type: "choice", criteria: { billing: "Charges", support: "Bugs" } },
+      { type: "score", criteria: ["Routine", "Urgent"] },
+    ]) {
+      assert.deepEqual(
+        validateSystemOneRequestBody(body({ questions: { q: { ...question, instructions } } })),
+        { ok: true }
+      );
+    }
+  }
+  for (const criteria of [undefined, null, {}, { true: null, false: null }]) {
+    assert.equal(
+      validateSystemOneRequestBody(body({ questions: { q: { type: "noul", criteria } } })).ok,
+      false
+    );
+  }
+});
+
+test("question criteria reject unsupported shapes before dispatch", () => {
+  const cases = [
+    { type: "noul", criteria: [] },
+    { type: "noul", criteria: { yes: "Yes", no: "No" } },
+    { type: "noul", criteria: { true: 1, false: "No" } },
+    { type: "choice", criteria: { a: true, b: "B" } },
+    { type: "choice", criteria: { a: 1 } },
+    { type: "score", criteria: ["only one"] },
+    { type: "score", criteria: ["low", null] },
+    { type: "score", criteria: ["low", 1] },
+  ];
+  for (const question of cases) {
+    const result = validateSystemOneRequestBody(
+      body({ questions: { q: { ...question, instructions: "Judge the state" } } })
+    );
+    assert.equal(result.ok, false, `accepted ${JSON.stringify(question)}`);
+  }
+  for (const criteria of [
+    { true: { description: "Time-sensitive" }, false: ["Routine"] },
+    { true: "Yes" },
+    { false: null },
+    null,
+  ]) {
+    assert.deepEqual(
+      validateSystemOneRequestBody(
+        body({
+          questions: { q: { type: "noul", instructions: "Is this urgent?", criteria } },
+        })
+      ),
+      { ok: true }
+    );
+  }
+});
+
+test("non-finite nested JSON content is rejected without echoing its values", () => {
+  for (const request of [
+    body({ state: { amount: Infinity } }),
+    body({ questions: { q: { type: "noul", instructions: { amount: Infinity } } } }),
+    body({
+      questions: { q: { type: "choice", instructions: "Pick", criteria: { a: { amount: NaN } } } },
+    }),
+  ]) {
+    assert.equal(validateSystemOneRequestBody(request).ok, false);
+  }
+});
+
+test("structured input respects the documented 64-level JSON nesting limit", () => {
+  let state: unknown = "ticket";
+  for (let depth = 0; depth < 64; depth++) state = [state];
+  assert.deepEqual(validateSystemOneRequestBody(body({ state })), { ok: true });
+  assert.equal(validateSystemOneRequestBody(body({ state: [state] })).ok, false);
+});
+
+test("probability-map values above one are rejected", () => {
+  const result = parseSystemOneAnswers({
+    answers: { route: { type: "choice", choice: "a", probabilities: { a: 1.1 } } },
+  });
+  assert.equal(result.ok, false);
+});
+
+test("Vercel gateway metadata supplies reported decimal cost including zero", () => {
+  for (const [cost, expected] of [
+    ["0.00001155", 0.00001155],
+    ["0", 0],
+  ] as const) {
+    const result = parseSystemOneAnswers({
+      answers: { q: { type: "noul", noul: 1 } },
+      usage: { input_tokens: 275, output_tokens: 20 },
+      provider_metadata: { gateway: { cost } },
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.usage.costUsd, expected);
+  }
+});
+
+test("numeric usage cost takes precedence over gateway metadata cost", () => {
+  const result = parseSystemOneAnswers({
+    answers: { q: { type: "noul", noul: 1 } },
+    usage: { cost: 0 },
+    provider_metadata: { gateway: { cost: "0.00001155" } },
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.usage.costUsd, 0);
+});
+
+test("invalid gateway costs remain unknown instead of becoming known zero", () => {
+  for (const cost of [
+    "",
+    " ",
+    "-1",
+    "NaN",
+    "Infinity",
+    "0x10",
+    "1e400",
+    "9".repeat(400),
+    null,
+    false,
+  ]) {
+    const result = parseSystemOneAnswers({
+      answers: { q: { type: "noul", noul: 1 } },
+      provider_metadata: { gateway: { cost } },
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.usage.costUsd, null, `accepted cost ${String(cost)}`);
+  }
+});
+
+test("response answers must match every requested question and type", () => {
+  const request = body({
+    questions: {
+      urgent: { type: "noul", instructions: "Is urgent?" },
+      route: {
+        type: "choice",
+        instructions: "Pick",
+        criteria: { billing: "Charges", support: "Bugs" },
+      },
+      severity: { type: "score", instructions: "Rate", criteria: ["low", "medium", "high"] },
+    },
+  });
+  const answers = {
+    urgent: { type: "noul", noul: 0.9 },
+    route: {
+      type: "choice",
+      choice: "billing",
+      probabilities: { billing: 0.8, support: 0.2 },
+      confidence: 0.6,
+    },
+    severity: {
+      type: "score",
+      score: 1.5,
+      probabilities: { "0": 0, "1": 0.5, "2": 0.5 },
+      confidence: 0.5,
+    },
+  };
+  assert.equal(parseSystemOneAnswers({ answers }, request).ok, true);
+  for (const invalidAnswers of [
+    { urgent: answers.urgent },
+    { ...answers, extra: answers.urgent },
+    { ...answers, urgent: { type: "score", score: 1 } },
+    { ...answers, route: { ...answers.route, choice: "sales" } },
+    { ...answers, route: { ...answers.route, probabilities: { billing: 0.8, sales: 0.2 } } },
+    { ...answers, severity: { ...answers.severity, score: 3 } },
+    { ...answers, severity: { ...answers.severity, score: -0.1 } },
+    { ...answers, severity: { ...answers.severity, probabilities: { "3": 1 } } },
+  ]) {
+    assert.equal(parseSystemOneAnswers({ answers: invalidAnswers }, request).ok, false);
+  }
+});
+
+test("parser failures never echo caller-supplied question ids", () => {
+  const result = parseSystemOneAnswers({
+    answers: { [STATE]: { type: "noul", noul: 2 } },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.doesNotMatch(result.detail, /Jane Doe/);
 });
