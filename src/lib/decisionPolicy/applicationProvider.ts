@@ -1,3 +1,9 @@
+import { getProviderValidationGuard } from "@/shared/network/outboundUrlGuardPolicy";
+import {
+  hasAmbientProxyContext,
+  isTlsFingerprintActive,
+  resolveProxyForRequest,
+} from "../../../open-sse/utils/proxyFetch.ts";
 import type { Candidate } from "../../../open-sse/services/decisionPolicy/contract.ts";
 import type { ProviderCredentials } from "../../../open-sse/executors/base/validationDispatch.ts";
 import { parseTokenExpiryMs } from "../tokenHealthCheckExpiry";
@@ -152,4 +158,20 @@ export function claudeReportedUsage(usage: Record<string, unknown>) {
     reasoning: null,
     uncachedInput: input,
   };
+}
+
+export function assertApplicationEgress(provider: string, url: string): void {
+  if (
+    getProviderValidationGuard() === "none" ||
+    hasAmbientProxyContext() ||
+    isTlsFingerprintActive(provider, false) ||
+    process.env.ENABLE_TLS_FINGERPRINT === "true" ||
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0" ||
+    process.env.PROXY_FAIL_OPEN === "true" ||
+    ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].some(
+      (key) => !!process.env[key]
+    ) ||
+    resolveProxyForRequest(url).source !== "direct"
+  )
+    throw new Error("decision_egress_unsupported");
 }

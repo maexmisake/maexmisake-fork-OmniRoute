@@ -1,4 +1,4 @@
-import { getProviderValidationGuard } from "@/shared/network/outboundUrlGuardPolicy";
+import { prepareNativeStage, type NativeStage } from "./applicationSelection";
 import { getExecutor } from "../../../open-sse/executors/index.ts";
 import { createValidationDispatchFence } from "../modelValidation/dispatchFence";
 import { createValidationPluginFence } from "../modelValidation/pluginFence";
@@ -32,13 +32,9 @@ import {
   type AttemptIdentity,
   readDecisionAttemptReceipt,
 } from "../db/decisionAttempts";
-import {
-  hasAmbientProxyContext,
-  isTlsFingerprintActive,
-  resolveProxyForRequest,
-} from "../../../open-sse/utils/proxyFetch.ts";
 import { boundedDecisionEnabled } from "../../../open-sse/services/decisionPolicy/applicationGate.ts";
 import {
+  assertApplicationEgress as assertEgress,
   resolveApplicationProvider,
   assertReadyClaudeOAuth,
   claudeWireFacts,
@@ -72,18 +68,38 @@ function rejectedAttempt(
   if (attempt) response.headers.set("x-omniroute-decision-attempt", attempt.id);
   return response;
 }
+export const nativeSelectionSchema = z
+  .object({
+    mode: z.literal("native"),
+    provider: z.literal("opencode-zen"),
+    model: z.literal("jev-1.13"),
+    connectionId: z.string().min(1),
+    timeoutMs: z.number().int().min(1).max(10000),
+    maxCandidates: z.number().int().min(2).max(255).default(32),
+  })
+  .strict();
 const configuration = z
   .object({
     enabled: z.literal(true),
     applicationMode: z.literal("bounded-v1"),
     policy: policySchema,
+    selection: z
+      .union([z.object({ mode: z.literal("deterministic") }).strict(), nativeSelectionSchema])
+      .optional(),
     connections: z.record(z.string(), z.string().min(1)),
   })
   .strict()
   .refine(
-    (value) => value.policy.maxExecutionAttempts === 1 && value.policy.maxDecisionAttempts === 0
+    (value) =>
+      value.policy.maxExecutionAttempts === 1 &&
+      (value.selection?.mode === "native"
+        ? value.policy.maxDecisionAttempts === 1 &&
+          value.policy.decisionFailure === "stop" &&
+          value.selection.timeoutMs <= value.policy.timeoutMs
+        : value.policy.maxDecisionAttempts === 0)
   );
 export type AutomaticPlan = {
+  sourcePolicy: string;
   comboId: string;
   name: string;
   config: z.infer<typeof configuration>;
@@ -122,7 +138,12 @@ export async function prepareAutomaticCombo(
   if (!keyId) return automaticRejection("authentication_required");
   if (!validTextFacts(body)) return automaticRejection("request_facts_unsupported");
   // Only explicit exact names in this initial lane; aliases/nesting never fall into legacy execution.
-  return { comboId: String(combo.id), name: model, config: parsed.data };
+  return {
+    comboId: String(combo.id),
+    name: model,
+    config: parsed.data,
+    sourcePolicy: JSON.stringify((combo.config as Record<string, unknown>).decisionPolicy),
+  };
 }
 function validTextFacts(raw: unknown) {
   const facts = extractRequestFacts(raw, {
@@ -136,21 +157,7 @@ function validTextFacts(raw: unknown) {
     ? facts
     : null;
 }
-function assertEgress(provider: string, url: string): void {
-  if (
-    getProviderValidationGuard() === "none" ||
-    hasAmbientProxyContext() ||
-    isTlsFingerprintActive(provider, false) ||
-    process.env.ENABLE_TLS_FINGERPRINT === "true" ||
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0" ||
-    process.env.PROXY_FAIL_OPEN === "true" ||
-    ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].some(
-      (key) => !!process.env[key]
-    ) ||
-    resolveProxyForRequest(url).source !== "direct"
-  )
-    throw new Error("decision_egress_unsupported");
-}
+
 function numberOrNull(value: unknown, integer = false): number | null {
   return typeof value === "number" &&
     Number.isFinite(value) &&
@@ -274,7 +281,8 @@ async function buildAttempt(
   keyId: string,
   signal: AbortSignal,
   outputLimit: number,
-  trace: Array<{ phase: string; id?: string; reason: string }>
+  trace: Array<{ phase: string; id?: string; reason: string }>,
+  native?: NativeStage
 ): Promise<ApplicationAttempt> {
   const connectionId = plan.config.connections[candidate.id];
   const connection = await getProviderConnectionById(connectionId);
@@ -306,18 +314,27 @@ async function buildAttempt(
     connectionId,
     effort: candidate.effort.value,
     trace,
+    ...(native
+      ? {
+          lane: "execution" as const,
+          requestId: native.identity.id,
+          parentAttemptId: native.identity.id,
+        }
+      : {}),
   };
-  assertUncappedDecision(keyId, candidate.provider, candidate.model);
-  const stamp = authorityStamp(identity);
+  assertUncappedDecision(keyId, candidate.provider, candidate.model, native?.identity.id);
+  const stamp = authorityStamp(identity, plan.sourcePolicy);
   const endpoint = new URL(contract.endpoint);
   assertEgress(candidate.provider, endpoint.href);
   const plugins = createValidationPluginFence();
   const assertFresh = () => {
     try {
       signal.throwIfAborted();
+      native?.assertFresh();
       plugins.assertIdle();
-      assertUncappedDecision(keyId, candidate.provider, candidate.model);
-      if (authorityStamp(identity) !== stamp) throw new Error("decision_authority_changed");
+      assertUncappedDecision(keyId, candidate.provider, candidate.model, native?.identity.id);
+      if (authorityStamp(identity, plan.sourcePolicy) !== stamp)
+        throw new Error("decision_authority_changed");
       if (contract.claude) {
         assertReadyClaudeOAuth(contract.credentials);
         if (executor.needsRefresh(contract.credentials))
@@ -337,7 +354,8 @@ async function buildAttempt(
     expectedCredentials: contract.credentials,
     allowNativeClaude: contract.claude,
   });
-  reserveDecisionAttempt(identity);
+  if (native) native.handover(identity);
+  else reserveDecisionAttempt(identity);
   return {
     ...identity,
     signal,
@@ -355,7 +373,7 @@ async function buildAttempt(
         const wire = typeof details.body === "string" ? JSON.parse(details.body) : null;
         const headers = new Headers(details.headers);
         if (
-          authorityStamp(identity) !== stamp ||
+          authorityStamp(identity, plan.sourcePolicy) !== stamp ||
           details.provider !== candidate.provider ||
           details.model !== candidate.model ||
           details.credentials.connectionId !== connectionId ||
@@ -449,6 +467,27 @@ async function reportedClaudeClientUsage(
   headers.set("content-type", "application/json");
   return new Response(JSON.stringify(body), { status: response.status, headers });
 }
+async function candidateSnapshot(plan: AutomaticPlan, keyId: string) {
+  const snapshot: Record<string, CandidateState | undefined> = {};
+  for (const candidate of plan.config.policy.candidates) {
+    const allowed = await isModelAllowedForKey(
+      String((await getApiKeyById(keyId))?.key ?? ""),
+      `${candidate.provider}/${candidate.model}`
+    );
+    const conn = await getProviderConnectionById(plan.config.connections[candidate.id]);
+    snapshot[candidate.id] = {
+      authorized: allowed,
+      available: conn?.isActive === true,
+      quota: "unknown",
+    };
+  }
+  return snapshot;
+}
+function failureStatus(signal: AbortSignal, caller: AbortSignal, native?: NativeStage): number {
+  if (caller.aborted) return 499;
+  if (signal.aborted || native?.timedOut()) return 504;
+  return 409;
+}
 export async function executeAutomaticCombo(
   plan: AutomaticPlan,
   body: Record<string, unknown>,
@@ -463,36 +502,30 @@ export async function executeAutomaticCombo(
   const callerSignal = signal;
   signal = AbortSignal.any([signal, AbortSignal.timeout(plan.config.policy.timeoutMs)]);
   let attempt: ApplicationAttempt | undefined;
+  let native: NativeStage | undefined;
   try {
     signal.throwIfAborted();
     if (body.model !== plan.name) return automaticRejection();
     const extracted = validTextFacts(body);
     if (!extracted) return automaticRejection();
-    const snapshot: Record<string, CandidateState | undefined> = {};
-    for (const candidate of plan.config.policy.candidates) {
-      const allowed = await isModelAllowedForKey(
-        String((await getApiKeyById(keyId))?.key ?? ""),
-        `${candidate.provider}/${candidate.model}`
-      );
-      const conn = await getProviderConnectionById(plan.config.connections[candidate.id]);
-      snapshot[candidate.id] = {
-        authorized: allowed,
-        available: conn?.isActive === true,
-        quota: "unknown",
-      };
-    }
+    const snapshot = await candidateSnapshot(plan, keyId);
     const trace: Array<{ phase: string; id?: string; reason: string }> = [];
     const eligible = eligibleCandidates(plan.config.policy, extracted.facts, snapshot, trace);
-    const candidate = eligible[0];
+    let candidate = eligible[0];
+    if (plan.config.selection?.mode === "native") {
+      native = await prepareNativeStage(plan, eligible, keyId, signal);
+      candidate = await native.select(extracted.facts);
+    }
     if (!candidate || (await getComboByName(`${candidate.provider}/${candidate.model}`)))
-      return automaticRejection("no_route");
+      throw new Error("decision_no_route");
     attempt = await buildAttempt(
       plan,
       candidate,
       keyId,
       signal,
       extracted.body.max_completion_tokens,
-      trace
+      trace,
+      native
     );
     let response = await withApplicationAttempt(attempt, () =>
       dispatch(
@@ -516,13 +549,12 @@ export async function executeAutomaticCombo(
     });
     result.headers.set("x-omniroute-decision-attempt", attempt.id);
     result.headers.set("x-omniroute-decision-candidate", candidate.id);
-    return result;
+    return native ? native.annotate(result) : result;
   } catch (error) {
-    return rejectedAttempt(
-      attempt,
-      error,
-      signal.aborted ? (callerSignal.aborted ? 499 : 504) : 409
-    );
+    const status = failureStatus(signal, callerSignal, native);
+    native?.finishFailure(status);
+    const response = rejectedAttempt(attempt, error, status);
+    return native ? native.annotate(response) : response;
   } finally {
     if (attempt) cancelUnstartedDecision(attempt.id);
   }

@@ -15,6 +15,9 @@ import { safeOutboundFetch } from "@/shared/network/safeOutboundFetch";
 import { getProviderOutboundGuard } from "@/shared/network/outboundUrlGuardPolicy";
 import { parseAndValidateNonMetadataUrl } from "@/shared/network/outboundUrlGuard";
 import { resolveProxyForConnection } from "@/lib/db/settings";
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
+import { validationFetch } from "../executors/base/validationDispatch.ts";
+import { dispatchGuarded } from "../executors/dispatchPin.ts";
 
 /** A misconfigured endpoint is an operator/config error, never an account fault. */
 export class SystemOneEndpointError extends Error {
@@ -142,6 +145,30 @@ export async function fetchSystemOne(
   const proxyInfo = credentials.connectionId
     ? await resolveProxyForConnection(credentials.connectionId)
     : null;
+  const automatic = currentApplicationAttempt();
+  if (automatic) {
+    if (
+      automatic.lane !== "decision" ||
+      proxyInfo?.proxy ||
+      init.method !== "POST" ||
+      init.signal !== automatic.signal
+    )
+      automatic.dispatch.reject();
+    automatic.assertFresh();
+    const pinned = {
+      apiKey: credentials.apiKey ?? undefined,
+      accessToken: credentials.accessToken ?? undefined,
+      connectionId: credentials.connectionId ?? undefined,
+      providerSpecificData: credentials.providerSpecificData ?? undefined,
+    };
+    return validationFetch(
+      automatic.dispatch,
+      automatic.provider,
+      automatic.model,
+      pinned,
+      (target, options) => dispatchGuarded(automatic.provider, target, options, pinned)
+    )(url, init);
+  }
   return safeOutboundFetch(url, {
     ...init,
     guard: getProviderOutboundGuard(),

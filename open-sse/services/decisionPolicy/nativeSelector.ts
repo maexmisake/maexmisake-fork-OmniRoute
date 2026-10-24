@@ -7,7 +7,7 @@ const choice = z.object({
   confidence: z.number().min(0).max(1).nullable().optional(),
   probabilities: z.record(z.string(), z.number().min(0).max(1)).nullable().optional(),
 });
-function nativeReportedCost(body: Record<string, unknown>): number | null {
+export function nativeReportedCost(body: Record<string, unknown>): number | null {
   const usage = record.safeParse(body.usage);
   const reported = usage.success ? usage.data.cost : null;
   if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) return reported;
@@ -52,7 +52,11 @@ export function nativeDecisionClient(options: {
                 JSON.stringify({
                   provider: candidate.provider,
                   model: candidate.model,
-                  effort: candidate.effort,
+                  effort: {
+                    mode: candidate.effort.mode,
+                    value: candidate.effort.value,
+                    supported: candidate.effort.supported,
+                  },
                   capabilities: candidate.capabilities,
                   task: request.task,
                 }),

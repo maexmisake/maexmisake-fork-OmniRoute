@@ -8,6 +8,9 @@ export type ApplicationAttempt = {
   model: string;
   connectionId: string;
   effort: string;
+  lane?: "decision" | "execution";
+  requestId?: string;
+  parentAttemptId?: string;
   signal: AbortSignal;
   dispatch: StrictValidationDispatch;
   assertIdle: () => void;
