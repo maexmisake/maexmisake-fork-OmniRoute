@@ -1,6 +1,6 @@
 import "../_setup/isolateDataDir.ts";
 import assert from "node:assert/strict";
-import { test, before, after, beforeEach } from "node:test";
+import { test, before, after, beforeEach, afterEach } from "node:test";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
@@ -28,6 +28,8 @@ const { resolveClaudeCodeCompatibleEffort } =
   await import("../../open-sse/services/claudeCodeCompatible.ts");
 const { DefaultExecutor } = await import("../../open-sse/executors/default.ts");
 const { supportsClaudeMaxEffort } = await import("../../open-sse/config/providerModels.ts");
+const { currentApplicationAttempt } =
+  await import("../../open-sse/services/decisionPolicy/applicationContext.ts");
 
 // Deliberately fake token; no credential store outside the isolated fixture DB is used.
 const access = "sk-ant-oat-synthetic-fixture-not-a-credential";
@@ -40,6 +42,9 @@ let stopReason = "end_turn";
 let gate: Promise<void> | null = null;
 let fixtureUsage: Record<string, unknown>;
 let responseMode = "json";
+let unexpectedFetches = 0;
+let ordinaryControl = false;
+let ordinaryAuxiliaryFetches = 0;
 const server = createServer(async (req, res) => {
   let text = "";
   for await (const chunk of req) text += chunk;
@@ -84,7 +89,26 @@ before(async () => {
   // Only the test's physical fetch maps it to a local mock; no DNS/TLS to Anthropic occurs.
   globalThis.fetch = async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
+    const ordinaryAuxiliary = [
+      "https://api.anthropic.com/api/claude_cli/bootstrap",
+      "https://api.anthropic.com/api/oauth/usage",
+    ].includes(url);
+    if (
+      ordinaryControl &&
+      !currentApplicationAttempt() &&
+      ordinaryAuxiliary &&
+      init?.method === "GET"
+    ) {
+      ordinaryAuxiliaryFetches++;
+      return new Response(
+        JSON.stringify({ error: "synthetic ordinary-control auxiliary denial" }),
+        { status: 503 }
+      );
+    }
+    if (url !== "https://api.anthropic.com/v1/messages?beta=true" || init?.method !== "POST")
+      unexpectedFetches++;
     assert.equal(url, "https://api.anthropic.com/v1/messages?beta=true");
+    assert.equal(init?.method, "POST");
     return proxyFetch(`http://127.0.0.1:${address.port}/v1/messages`, init);
   };
   await updateSettings({
@@ -122,6 +146,8 @@ before(async () => {
   await configure();
 });
 beforeEach(async () => {
+  unexpectedFetches = 0;
+  ordinaryControl = false;
   fixtureStatus = 200;
   stopReason = "end_turn";
   gate = null;
@@ -146,6 +172,13 @@ beforeEach(async () => {
   await resetConnectionBackoff(connectionId);
   clearAllModelLockouts(); // Each fixture outcome starts from independent synthetic health.
   await configure();
+});
+afterEach(() => {
+  assert.equal(
+    unexpectedFetches,
+    0,
+    "no caught refresh/quota/bootstrap fetch may be hidden by a later success"
+  );
 });
 for (const policy of ["connection", "global"]) {
   test(`queued ${policy} quota-policy change cannot dispatch under stale admission`, async () => {
@@ -184,6 +217,7 @@ after(async () => {
           qualityMeasured: false,
           routingMode: "deterministic",
           nativeSelectorCalled: false,
+          ordinaryAuxiliaryFetches,
           dispatches: sent.map((item) => {
             const body = item.body as Record<string, unknown>;
             return {
@@ -617,6 +651,7 @@ test("partial Claude receipt survives reopen and late disclosure settles idempot
 });
 for (const model of ["claude-sonnet-5-5", "claude-haiku-5-5"]) {
   test(`ordinary actual handler preserves documented max through the native OAuth formatter: ${model}`, async () => {
+    ordinaryControl = true;
     const count = sent.length;
     const response = await POST(
       request(key.key, undefined, { model: `claude/${model}`, reasoning_effort: "max" })
