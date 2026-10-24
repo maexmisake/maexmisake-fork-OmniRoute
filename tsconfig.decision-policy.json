@@ -16,7 +16,8 @@
     "open-sse/services/decisionPolicy/nativeSelector.ts",
     "scripts/router-eval/decisionPolicyOffline.ts",
     "tests/fixtures/decision-policy/scenarios.ts",
-    "tests/unit/decision-policy-offline.test.ts"
+    "tests/unit/decision-policy-offline.test.ts",
+    "open-sse/services/decisionPolicy/requestFacts.ts"
   ],
   "exclude": ["node_modules", ".next"]
 }

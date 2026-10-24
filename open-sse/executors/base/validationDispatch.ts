@@ -20,6 +20,10 @@ export type ProviderCredentials = {
 
 /** Trusted request-local observer, supplied only by strict model validation. */
 export type StrictValidationDispatch = {
+  /** Trusted one-shot lane: return the first response before recovery or retry side effects. */
+  singleAttempt?: true;
+  /** Audited request-local transport; never supplied by an HTTP caller. */
+  transport?: (url: string, options: RequestInit) => Promise<Response>;
   beforeFetch(details: {
     provider: string;
     model: string;
@@ -78,7 +82,7 @@ export function validationFetch(
   transport: FetchTransport = (url, options) => fetch(url, options)
 ): FetchTransport {
   return (url, options) =>
-    transport(
+    (observer?.transport ?? transport)(
       url,
       prepareValidationFetch(observer, { provider, model, credentials, url }, options)
     );

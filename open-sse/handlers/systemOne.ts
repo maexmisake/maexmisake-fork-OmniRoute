@@ -538,6 +538,29 @@ async function handleSuccessfulResponse(
   return successResponse(deps, text, call, tokens, costUsd);
 }
 
+function normalizeCapacityFailure(
+  error: unknown,
+  timeoutSignal: AbortSignal,
+  upstreamStarted: boolean
+): unknown {
+  const semaphoreCode = (error as { code?: string })?.code;
+  if (
+    semaphoreCode === "SEMAPHORE_QUEUE_FULL" ||
+    semaphoreCode === "SEMAPHORE_TIMEOUT" ||
+    (!upstreamStarted && timeoutSignal.aborted)
+  ) {
+    error = markLocalRateLimitError(
+      new Error("System One local capacity unavailable"),
+      semaphoreCode === "SEMAPHORE_QUEUE_FULL"
+        ? RATE_LIMIT_QUEUE_FULL_CODE
+        : timeoutSignal.aborted
+          ? RATE_LIMIT_EXECUTION_TIMEOUT_CODE
+          : LEGACY_RATE_LIMIT_QUEUE_TIMEOUT_CODE
+    );
+  }
+  return error;
+}
+
 async function requestFailure(
   deps: SystemOneProxyDeps,
   call: CallContext,
@@ -557,21 +580,7 @@ async function requestFailure(
     await logCall(deps, call, status, tokenCounts(null, null), message);
     return errorResponse(status, message, deadline ? { code: "upstream_timeout" } : undefined);
   }
-  const semaphoreCode = (error as { code?: string })?.code;
-  if (
-    semaphoreCode === "SEMAPHORE_QUEUE_FULL" ||
-    semaphoreCode === "SEMAPHORE_TIMEOUT" ||
-    (!upstreamStarted && timeoutSignal.aborted)
-  ) {
-    error = markLocalRateLimitError(
-      new Error("System One local capacity unavailable"),
-      semaphoreCode === "SEMAPHORE_QUEUE_FULL"
-        ? RATE_LIMIT_QUEUE_FULL_CODE
-        : timeoutSignal.aborted
-          ? RATE_LIMIT_EXECUTION_TIMEOUT_CODE
-          : LEGACY_RATE_LIMIT_QUEUE_TIMEOUT_CODE
-    );
-  }
+  error = normalizeCapacityFailure(error, timeoutSignal, upstreamStarted);
   const local = getClientSafeLocalRateLimitError(error);
   if (local) {
     await logCall(

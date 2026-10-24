@@ -1499,6 +1499,18 @@ export class BaseExecutor {
         }
 
         let response = await fetchWithStartTimeout(url, fetchOptions);
+        // The guarded policy owns fallback and accounting. Return the first
+        // physical response before recovery can rewrite effort, learn caps,
+        // refresh identity, or retry another URL. Default behavior is unchanged.
+        if (input.validationDispatch?.singleAttempt) {
+          return {
+            response,
+            url,
+            headers: finalHeaders,
+            transformedBody: serializedBody,
+            model: (serializedBody as Record<string, unknown> | null)?.model,
+          };
+        }
 
         if (openrouterFreeWindowAccountKey) {
           correctFromRateLimitHeaders(openrouterFreeWindowAccountKey, response.headers);
