@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.typecheck-core.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "files": [
+    "src/types/sqljs.d.ts",
+    "src/lib/decisionPolicy/guardedRequest.ts",
+    "src/lib/decisionPolicy/strictTransport.ts",
+    "tests/unit/decision-policy-dispatch.test.ts"
+  ]
+}

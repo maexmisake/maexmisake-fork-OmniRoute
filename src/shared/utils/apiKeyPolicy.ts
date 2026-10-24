@@ -1,3 +1,5 @@
+import { decisionAdmissionBlocked } from "@/lib/db/decisionAttempts";
+import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
 /**
  * API Key Policy Enforcement — Shared middleware for all /v1/* endpoints.
  *
@@ -937,6 +939,15 @@ async function validateSelfLoopScopedAccess(
   return (await validateQuotaAccess(context)) ?? (await validateModelAccess(context));
 }
 
+function validateDecisionAdmission(apiKeyInfo: ApiKeyMetadata): Response | null {
+  try {
+    return decisionAdmissionBlocked(apiKeyInfo.id, currentApplicationAttempt()?.id)
+      ? errorResponse(429, "An automatic attempt has pending or unaccounted usage")
+      : null;
+  } catch {
+    return errorResponse(503, "Automatic attempt accounting unavailable");
+  }
+}
 export async function enforceApiKeyPolicy(
   request: Request,
   modelStr: string | null,
@@ -974,6 +985,8 @@ export async function enforceApiKeyPolicy(
   const context = { request, apiKey, apiKeyInfo, modelStr };
   const statusRejection = validateKeyStatus(context);
   if (statusRejection) return { apiKey, apiKeyInfo, rejection: statusRejection };
+  const decisionRejection = validateDecisionAdmission(apiKeyInfo);
+  if (decisionRejection) return { apiKey, apiKeyInfo, rejection: decisionRejection };
   if (selfLoopScope.key) {
     return { apiKey, apiKeyInfo, rejection: await validateSelfLoopScopedAccess(context) };
   }

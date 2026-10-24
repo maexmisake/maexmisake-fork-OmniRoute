@@ -403,7 +403,8 @@ export function getModelTimeoutMs(aliasOrId: string, modelId: string): number | 
 const CLAUDE_MODEL_PATTERN = /(?:^|[\/._-])claude(?:[._-]|$)/;
 const CLAUDE_MAX_EFFORT_UNSUPPORTED_FAMILY_PATTERNS = [
   /(?:^|[\/._-])haiku(?:[._-]|$)/,
-  // Sonnet 5.5 caps effort at xhigh; max returns a 400.
+  // Keep unverified suffix/alias spellings excluded. Exact documented 5.5
+  // model identities are handled before these legacy family restrictions.
   /(?:^|[\/._-])claude-sonnet-5-5(?:[._-]|$)/,
 ] as const;
 const ANTHROPIC_COMPATIBLE_PREFIX = "anthropic-compatible-";
@@ -414,6 +415,9 @@ export function supportsClaudeMaxEffort(modelId: string | null | undefined): boo
   const claudeMatch = normalized.match(CLAUDE_MODEL_PATTERN);
   if (!claudeMatch) return false;
   const claudeScopedId = normalized.slice(claudeMatch.index ?? 0);
+  // Current Messages contract: both exact 5.5 models support max with adaptive
+  // thinking. Do not widen the legacy /haiku/ exclusion to unknown generations.
+  if (/(?:^|[\/._-])claude-(?:haiku|sonnet)-5-5$/.test(claudeScopedId)) return true;
   return !CLAUDE_MAX_EFFORT_UNSUPPORTED_FAMILY_PATTERNS.some((pattern) =>
     pattern.test(claudeScopedId)
   );

@@ -1,0 +1,11 @@
+ALTER TABLE decision_application_attempts ADD COLUMN lane TEXT NOT NULL DEFAULT 'execution' CHECK(lane IN ('decision','execution'));
+ALTER TABLE decision_application_attempts ADD COLUMN request_id TEXT;
+ALTER TABLE decision_application_attempts ADD COLUMN parent_attempt_id TEXT;
+ALTER TABLE decision_application_attempts ADD COLUMN logical_counted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE decision_application_attempts ADD COLUMN decision_outcome TEXT;
+ALTER TABLE decision_application_attempts ADD COLUMN selected_binding TEXT;
+UPDATE decision_application_attempts SET request_id=id, logical_counted=CASE WHEN state IN ('started','completed','unknown') THEN 1 ELSE 0 END;
+CREATE UNIQUE INDEX idx_native_execution_child ON decision_application_attempts(parent_attempt_id) WHERE parent_attempt_id IS NOT NULL;
+ALTER TABLE usage_history ADD COLUMN decision_lane TEXT;
+ALTER TABLE usage_history ADD COLUMN decision_request_id TEXT;
+UPDATE usage_history SET decision_lane='execution',decision_request_id=decision_attempt_id WHERE decision_attempt_id IS NOT NULL;

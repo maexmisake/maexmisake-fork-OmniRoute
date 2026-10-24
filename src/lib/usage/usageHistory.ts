@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../../open-sse/services/decisionPolicy/applicationContext.ts";
 /**
  * Usage History — extracted from usageDb.js (T-15)
  *
@@ -849,6 +850,7 @@ export interface SaveRequestUsageOptions {
  * Save request usage entry to SQLite.
  */
 export async function saveRequestUsage(entry: UsageEntry, options: SaveRequestUsageOptions = {}) {
+  if (currentApplicationAttempt()) return; // Physical journal owns the strict row and projections.
   if (!shouldPersistToDisk) return;
 
   // Freeze the timestamp on the first attempt so the deferred retry replays

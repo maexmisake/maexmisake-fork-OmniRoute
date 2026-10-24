@@ -21,6 +21,8 @@ interface DispatchFenceOptions<T extends ValidationExecutor> {
   assertFresh: () => void;
   expectedExecutor: T;
   expectedCredentials?: ExecuteInput["credentials"];
+  /** Trusted automatic-application contract only; ordinary validation stays unchanged. */
+  allowNativeClaude?: boolean;
 }
 
 function assertChosenCredentials(
@@ -48,7 +50,10 @@ function matchesModel(body: unknown, modelId: string): boolean {
   }
 }
 
-function matchesBearer(headers: HeadersInit | undefined, credentials: ExecuteInput["credentials"]) {
+function matchesBearer(
+  headers: HeadersInit | undefined,
+  credentials: ExecuteInput["credentials"] | undefined
+) {
   const actual = new Headers(headers);
   const token = credentials?.apiKey || credentials?.accessToken;
   return (
@@ -59,11 +64,12 @@ function matchesBearer(headers: HeadersInit | undefined, credentials: ExecuteInp
   );
 }
 
-function assertAuditedExecutor(executor: ValidationExecutor): void {
+function assertAuditedExecutor(executor: ValidationExecutor, allowNativeClaude = false): void {
   const execute = executor.execute;
   const prototype = Object.getPrototypeOf(executor);
   const providerSupported =
     executor.provider === "openai" ||
+    (allowNativeClaude && executor.provider === "claude") ||
     (executor.provider.startsWith("openai-compatible-") &&
       isCompatibleProviderConnectionId(executor.provider));
   const audited =
@@ -121,7 +127,7 @@ export function createValidationDispatchFence<T extends ValidationExecutor>(
   return {
     wrap(executor: T): T {
       if (executor !== options.expectedExecutor || executor.provider !== options.provider) reject();
-      assertAuditedExecutor(executor);
+      assertAuditedExecutor(executor, options.allowNativeClaude);
       return new Proxy(executor, {
         get(target, property) {
           if (property === "refreshCredentials") return async () => reject();

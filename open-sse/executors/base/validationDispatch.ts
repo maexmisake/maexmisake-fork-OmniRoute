@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 export type ProviderCredentials = {
   accessToken?: string;
   refreshToken?: string;
@@ -20,6 +21,10 @@ export type ProviderCredentials = {
 
 /** Trusted request-local observer, supplied only by strict model validation. */
 export type StrictValidationDispatch = {
+  /** Trusted one-shot lane: return the first response before recovery or retry side effects. */
+  singleAttempt?: true;
+  /** Audited request-local transport; never supplied by an HTTP caller. */
+  transport?: (url: string, options: RequestInit) => Promise<Response>;
   beforeFetch(details: {
     provider: string;
     model: string;
@@ -77,9 +82,18 @@ export function validationFetch(
   credentials: ProviderCredentials,
   transport: FetchTransport = (url, options) => fetch(url, options)
 ): FetchTransport {
-  return (url, options) =>
-    transport(
-      url,
-      prepareValidationFetch(observer, { provider, model, credentials, url }, options)
+  return (url, options) => {
+    const prepared = prepareValidationFetch(
+      observer,
+      { provider, model, credentials, url },
+      options
     );
+    let sent: Promise<Response>;
+    try {
+      sent = (observer?.transport ?? transport)(url, prepared);
+    } catch (error) {
+      sent = Promise.reject(error);
+    }
+    return currentApplicationAttempt()?.observe(sent) ?? sent;
+  };
 }

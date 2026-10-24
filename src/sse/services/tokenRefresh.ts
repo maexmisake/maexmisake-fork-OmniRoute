@@ -1,3 +1,5 @@
+import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
+import { assertReadyClaudeOAuth } from "@/lib/decisionPolicy/applicationProvider";
 // Re-export from open-sse with local logger
 import * as log from "../utils/logger";
 import { updateProviderConnection } from "@/lib/db/providers";
@@ -248,6 +250,27 @@ export async function updateProviderCredentials(connectionId: string, newCredent
 
 // Local-specific: Check and refresh token proactively
 export async function checkAndRefreshToken(provider: string, credentials: any) {
+  const automatic = currentApplicationAttempt();
+  if (automatic) {
+    automatic.assertFresh();
+    if (
+      provider === "claude" &&
+      provider === automatic.provider &&
+      credentials.connectionId === automatic.connectionId
+    ) {
+      assertReadyClaudeOAuth(credentials);
+      return credentials;
+    }
+    if (
+      provider !== automatic.provider ||
+      credentials.connectionId !== automatic.connectionId ||
+      !credentials.apiKey ||
+      credentials.refreshToken ||
+      credentials.accessToken
+    )
+      throw new Error("decision_refresh_unsupported");
+    return credentials;
+  }
   let updatedCredentials = { ...credentials };
 
   // Check regular token expiry. Use the provider-specific lead time so rotating-

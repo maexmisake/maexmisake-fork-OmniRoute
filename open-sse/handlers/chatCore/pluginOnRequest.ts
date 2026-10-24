@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 /**
  * chatCore plugin onRequest hook (Quality Gate v2 / Fase 9 — chatCore god-file decomposition,
  * #3501).
@@ -27,6 +28,11 @@ export async function runPluginOnRequestHook(args: {
   log?: LoggerLike;
 }): Promise<PluginOnRequestGate> {
   try {
+    const automatic = currentApplicationAttempt();
+    if (automatic) {
+      automatic.assertIdle();
+      return { blocked: false, body: args.body };
+    }
     const { runOnRequest } = await import("@/lib/plugins/hooks");
     const pluginCtx = {
       requestId: args.requestId,

@@ -7,6 +7,7 @@
  * @module lib/usage/costCalculator
  */
 
+import { nativeSystemOnePricing } from "@omniroute/open-sse/config/systemOneRegistry.ts";
 import { toNumber } from "@/shared/utils/numeric";
 import { splitCodexReasoningSuffix } from "@omniroute/open-sse/executors/codex/reasoningSuffix.ts";
 import { isCreditMeteredProvider } from "./creditMeteredProviders";
@@ -144,7 +145,7 @@ async function resolvePricingRow(provider: string, model: string) {
     const pricing = await getPricingForModel(provider, normalized);
     if (pricing) return pricing;
   }
-  if (!isCodexProvider(provider)) return null;
+  if (!isCodexProvider(provider)) return nativeSystemOnePricing(provider, normalized);
   for (const key of getCodexEffortlessPricingKeys(normalized)) {
     const pricing = await getPricingForModel(provider, key);
     if (pricing) return pricing;

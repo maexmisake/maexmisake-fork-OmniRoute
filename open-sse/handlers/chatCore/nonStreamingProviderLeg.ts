@@ -7,6 +7,7 @@
  * Returns usage in both ok and error results.
  */
 
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 import type {
   ProviderLegUsage,
   ProviderLegReceipt,
@@ -982,7 +983,10 @@ export async function runNonStreamingProviderLeg(
   // #14160: pass the provider so first-party APIs (antigravity) keep empty
   // completions with a normal stop reason as valid 200s instead of synthetic
   // 502s feeding model lockout.
+  const boundedRefusal =
+    currentApplicationAttempt()?.provider === "claude" && responseBody.stop_reason === "refusal";
   if (
+    !boundedRefusal &&
     isEmptyContentResponse(responseBody, {
       provider,
       trustedEmptyTurn: hasTrustedEmptyTurn(executorResult.response),

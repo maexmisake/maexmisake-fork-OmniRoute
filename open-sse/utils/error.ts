@@ -47,6 +47,9 @@ export type ErrorBodyClassification = {
 
 const PUBLIC_ERROR_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
+  "decision_policy_application_unvalidated",
+  "decision_application_rejected",
+  "decision_policy_metadata_unavailable",
   "cyber_policy",
   "content_policy_violation",
   "abort",
@@ -340,6 +343,7 @@ const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
   "upstream_empty_response",
   "upstream_error",
   "upstream_protocol_error",
+  "upstream_request_error",
   "upstream_response_error",
   "upstream_response_failed",
   "upstream_server_error",

@@ -1,4 +1,5 @@
 import { fetchLiveProviderLimits } from "@/lib/usage/providerLimits";
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 import { isClaudeExtraUsageBlockEnabled } from "@/lib/providers/claudeExtraUsage";
 
 // #4604 — Lazy backoff for the best-effort live-WS sidecar bridge. In single-port
@@ -65,6 +66,9 @@ export async function maybeSyncClaudeExtraUsageState({
   providerSpecificData: unknown;
   log?: { debug?: (...args: unknown[]) => void; warn?: (...args: unknown[]) => void } | null;
 }) {
+  // Cached blocks still apply and armed live preflight is rejected. Optional
+  // post-call polling is outside a bounded request's physical-attempt budget.
+  if (currentApplicationAttempt()) return;
   if (!connectionId || !isClaudeExtraUsageBlockEnabled(provider, providerSpecificData)) {
     return;
   }

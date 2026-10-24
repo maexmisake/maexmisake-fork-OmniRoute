@@ -1,3 +1,11 @@
+import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
+import {
+  prepareAutomaticCombo,
+  executeAutomaticCombo,
+  assertAutomaticModel,
+  automaticRejection,
+} from "@/lib/decisionPolicy/applicationCombo";
+import { decisionPolicyModelRejection } from "./chat/decisionPolicyGate";
 import { hasQoderCallerTools } from "@omniroute/open-sse/services/qoderCapabilities";
 import { getRequestedModelEndpointMismatch } from "@/lib/providerModels/modelEndpointGuard";
 import { randomUUID } from "crypto";
@@ -801,6 +809,10 @@ async function handleChatImplementation(
     });
   }
   const apiKeyInfo = policy.apiKeyInfo;
+  const decisionRejection = await decisionPolicyModelRejection(modelStr);
+  if (decisionRejection) return decisionRejection;
+  const automaticPlan = await prepareAutomaticCombo(modelStr, body, apiKeyInfo?.id);
+  if (automaticPlan instanceof Response) return automaticPlan;
   let managedLease: ManagedLeaseDispatchContext | null = null;
   if (isExclusiveLeaseManagedKey(apiKeyInfo)) {
     try {
@@ -1127,7 +1139,39 @@ async function handleChatImplementation(
   const virtualCombo = await createVirtualAutoCombo(autoRouting, combo, apiKeyInfo?.id);
   if (virtualCombo instanceof Response) return virtualCombo;
   combo = virtualCombo;
+  if (automaticPlan) {
+    if (!apiKeyInfo?.id) return automaticRejection();
+    if (!combo || combo.name !== automaticPlan.name || managedLease) return automaticRejection();
+    return executeAutomaticCombo(
+      automaticPlan,
+      body,
+      apiKeyInfo.id,
+      request.signal,
+      (prepared, target, connectionId) =>
+        handleSingleModelChat(
+          prepared,
+          target,
+          clientRawRequest,
+          request,
+          combo.name,
+          apiKeyInfo,
+          telemetry,
+          {
+            ...resolvedPolicy.comboAuthorizationOptions(apiKeyInfo, resolvedModelStr),
+            forcedConnectionId: connectionId,
+            modelPinned: true,
+            skipUpstreamRetry: true,
+            emergencyFallbackTried: true,
+            modelAbortSignal: currentApplicationAttempt()?.signal ?? null,
+          },
+          "decision-bounded-v1",
+          true
+        )
+    );
+  }
   if (combo) {
+    const decisionRejection = await decisionPolicyModelRejection(combo.name);
+    if (decisionRejection) return decisionRejection;
     if (reasoningDecision) {
       const filtered = filterReasoningCombo(combo, reasoningDecision);
       if (filtered instanceof Response) return filtered;
@@ -1376,6 +1420,8 @@ async function handleChatImplementation(
       (settings as any).globalFallbackModel.trim()
     ) {
       const fallbackModel = (settings as any).globalFallbackModel.trim();
+      const decisionRejection = await decisionPolicyModelRejection(fallbackModel);
+      if (decisionRejection) return decisionRejection;
       log.info(
         "GLOBAL_FALLBACK",
         `Combo "${combo.name}" exhausted — attempting global fallback: ${fallbackModel}`
@@ -1576,6 +1622,10 @@ async function handleSingleModelChat(
   comboStrategy: string | null = null,
   isCombo: boolean = false
 ): Promise<Response> {
+  assertAutomaticModel(modelStr);
+  // Late retry/emergency tails must not reinterpret a marked combo as a physical model.
+  const decisionRejection = await decisionPolicyModelRejection(modelStr);
+  if (decisionRejection) return decisionRejection;
   // 1. Resolve model → provider/model
   const resolved = await resolveModelOrError(
     modelStr,
@@ -1584,6 +1634,15 @@ async function handleSingleModelChat(
     clientRawRequest?.headers
   );
   if (resolved.error) return resolved.error;
+  const automaticAttempt = currentApplicationAttempt();
+  if (
+    automaticAttempt &&
+    (resolved.provider !== automaticAttempt.provider ||
+      resolved.model !== automaticAttempt.model ||
+      resolved.combo)
+  )
+    return automaticRejection("decision_model_changed");
+  automaticAttempt?.assertFresh();
 
   // Safety net: if auto-combo resolution returned a combo object, redirect
   // to combo flow. This handles the case where the auto-fuzzy match in
@@ -2101,6 +2160,7 @@ async function handleSingleModelChat(
       }
       let refreshedCredentials;
       try {
+        currentApplicationAttempt()?.assertFresh();
         refreshedCredentials = await checkAndRefreshToken(provider, credentials).catch(
           agyLease.releasingRethrow(leaseId)
         );
@@ -2223,6 +2283,10 @@ async function handleSingleModelChat(
       }
       const { result, tlsFingerprintUsed, wasProviderProbe } = execution;
       if (!result.success) releaseOAuthSession();
+      if (currentApplicationAttempt()) {
+        agyLease.release(leaseId);
+        return withSelectedConnectionHeader(result.response, credentials?.connectionId);
+      }
       if (result.success && agyLease.isStreamingAntigravityResponse(result.response))
         result.response = inheritProviderProbeResponse(
           result.response,

@@ -646,9 +646,9 @@ export async function withRateLimit(
   connectionId,
   model,
   fn,
-  signal = null,
-  remainingBudgetMs = undefined,
-  correlationId = undefined,
+  signal: AbortSignal | null = null,
+  remainingBudgetMs: number | undefined = undefined,
+  correlationId: string | null | undefined = undefined,
   opts:
     | { executor?: { getTimeoutMs?: () => unknown }; providerSpecificData?: unknown }
     | undefined = undefined

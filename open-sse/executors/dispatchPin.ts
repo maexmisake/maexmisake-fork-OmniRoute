@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
 import { isLocalProvider, isSelfHostedChatProvider } from "@/shared/constants/providers";
 import {
   parseAndValidateNonMetadataUrl,
@@ -79,6 +80,16 @@ export function dispatchGuarded(
   init: RequestInit,
   credentials?: DispatchCredentials
 ): Promise<Response> {
+  if (currentApplicationAttempt()) {
+    const guard = getProviderValidationGuard();
+    if (guard === "none" || (!canGuardDirectConnection(provider, url) && !isDirectFetchContext()))
+      throw new Error("decision_egress_unsupported");
+    return fetch(url, {
+      ...init,
+      redirect: "error",
+      dispatcher: getGuardedDispatcher(guard, true),
+    } as RequestInit);
+  }
   const override = credentials?.providerSpecificData?.baseUrl;
   const guard = getProviderValidationGuard();
   if (

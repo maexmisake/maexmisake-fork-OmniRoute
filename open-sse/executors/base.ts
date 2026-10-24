@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
 import { HTTP_STATUS, FETCH_TIMEOUT_MS } from "../config/constants.ts";
 import { getApiKeyCodexServiceTier } from "../../src/lib/providers/codexApiKeyServiceMode";
 import { resolveProviderUserAgentOverride } from "./providerUserAgentOverride.ts";
@@ -713,6 +714,14 @@ export class BaseExecutor {
   }
 
   async execute(input: ExecuteInput): Promise<ExecutorExecuteResult> {
+    const automatic = currentApplicationAttempt();
+    if (automatic)
+      input = {
+        ...input,
+        validationDispatch: automatic.dispatch,
+        skipUpstreamRetry: true,
+        signal: input.signal ? AbortSignal.any([input.signal, automatic.signal]) : automatic.signal,
+      };
     const {
       model,
       body,
@@ -1111,7 +1120,10 @@ export class BaseExecutor {
             // Generic OpenAI-compatible clients that route through native Claude OAuth
             // must opt in with x-omniroute-thinking; force-injecting adaptive thinking
             // leaks non-standard reasoning replay fields back into those clients.
-            const isHaiku = typeof tb.model === "string" && tb.model.includes("haiku");
+            const isHaiku =
+              typeof tb.model === "string" &&
+              tb.model.includes("haiku") &&
+              tb.model !== "claude-haiku-5-5";
             // #5312 RC-B: honor the operator's proxy-level Thinking-Budget mode.
             // `auto` means "strip — let the provider decide", so suppress the default
             // adaptive injection. Passthrough/no-config keeps the native Claude Code
@@ -1499,6 +1511,18 @@ export class BaseExecutor {
         }
 
         let response = await fetchWithStartTimeout(url, fetchOptions);
+        // The guarded policy owns fallback and accounting. Return the first
+        // physical response before recovery can rewrite effort, learn caps,
+        // refresh identity, or retry another URL. Default behavior is unchanged.
+        if (input.validationDispatch?.singleAttempt) {
+          return {
+            response,
+            url,
+            headers: finalHeaders,
+            transformedBody: serializedBody,
+            model: (serializedBody as Record<string, unknown> | null)?.model,
+          };
+        }
 
         if (openrouterFreeWindowAccountKey) {
           correctFromRateLimitHeaders(openrouterFreeWindowAccountKey, response.headers);

@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../open-sse/services/decisionPolicy/applicationContext.ts";
 /**
  * Domain Key Quota Enforcement (RIC-741 / M3 D5) — counter + threshold.
  *
@@ -95,7 +96,7 @@ export function recordKeyQuotaUsage(
   billableTokens: number,
   deps: RecordKeyQuotaDeps = {}
 ): void {
-  if (!apiKeyId) return;
+  if (!apiKeyId || currentApplicationAttempt()?.keyId === apiKeyId) return;
   const nowMs = (deps.now ?? Date.now)();
   try {
     if (billableTokens > 0) incrementKeyQuotaCounter(apiKeyId, "tpm", billableTokens, nowMs);

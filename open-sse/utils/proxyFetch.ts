@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
 import "./setupPolyfill.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fetch as undiciFetch, Agent } from "undici";
@@ -713,6 +714,19 @@ async function patchedFetchUnrecorded(
   options: FetchWithDispatcherOptions = {},
   deps: ProxyFetchDeps = {}
 ) {
+  // A trusted bounded application attempt uses the existing guarded HTTP/1 dispatcher once.
+  // The final Base fence already checked resolved proxy/TLS requirements; no fallback/replay.
+  if (currentApplicationAttempt()) {
+    if (
+      !options.dispatcher ||
+      hasAmbientProxyContext() ||
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0"
+    )
+      throw new Error("decision_egress_unsupported");
+    const send =
+      deps.undiciFetch ?? (undiciFetch as unknown as (...args: unknown[]) => Promise<Response>);
+    return send(input, { ...options, redirect: "error" });
+  }
   // #13593: a hop back to this listener carries the process self-hop token
   // so admission does not shed it with public traffic.
   stampOwnListenerSelfHop(input, options);

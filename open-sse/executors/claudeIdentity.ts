@@ -9,6 +9,7 @@
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
 
 import {
   isClaudeOAuthSummarizedThinkingUnredacted,
@@ -157,6 +158,7 @@ export type ClaudeBootstrap = {
 
 /** GET /api/claude_cli/bootstrap with the same headers real CLI uses. */
 export async function fetchClaudeBootstrap(accessToken: string): Promise<ClaudeBootstrap | null> {
+  if (currentApplicationAttempt()) throw new Error("decision_ancillary_fetch_unsupported");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), BOOTSTRAP_FETCH_TIMEOUT_MS);
   try {
@@ -193,6 +195,8 @@ export async function fetchClaudeBootstrap(accessToken: string): Promise<ClaudeB
 }
 
 async function backgroundFetchAccountUUID(accessToken: string, seed: string): Promise<void> {
+  // Optional enrichment cannot create an unjournaled read or change its cache.
+  if (currentApplicationAttempt()) return;
   if (inflightFetches.has(seed)) return;
   const cached = accountUuidCache.get(seed);
   if (cached?.uuid) return;
