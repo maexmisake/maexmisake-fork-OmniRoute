@@ -3,14 +3,16 @@ import assert from "node:assert/strict";
 import { test, before, after } from "node:test";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { fetch as localFetch } from "undici";
+
 import { writeFile } from "node:fs/promises";
 process.env.REQUIRE_API_KEY = "true";
 process.env.PII_REDACTION_ENABLED = "true";
 process.env.APP_LOG_TO_FILE = "false";
 process.env.EXPOSE_CC_DISCOVERY_ALIASES = "true";
-const { createProviderConnection } = await import("../../src/lib/db/providers.ts");
-const { createCombo, deleteCombo } = await import("../../src/lib/db/combos.ts");
+const { createProviderConnection, resetConnectionBackoff } =
+  await import("../../src/lib/db/providers.ts");
+const { createCombo, deleteCombo, updateCombo, getComboByName } =
+  await import("../../src/lib/db/combos.ts");
 const { createApiKey, updateApiKeyPermissions } = await import("../../src/lib/db/apiKeys.ts");
 const { updateSettings } = await import("../../src/lib/db/settings.ts");
 const { resetDbInstance } = await import("../../src/lib/db/core.ts");
@@ -22,11 +24,26 @@ const { invalidateAliasCache } = await import("../../src/lib/modelAliasResolver.
 const { createModelComboMapping } = await import("../../src/lib/db/modelComboMappings.ts");
 const { upsertKeyQuotaLimits, incrementKeyQuotaCounter } =
   await import("../../src/lib/db/keyQuota.ts");
+const { proxyFetch } = await import("../../open-sse/utils/proxyFetch.ts");
+const { readDecisionAttempts, settleDecisionAttempt } =
+  await import("../../src/lib/db/decisionAttempts.ts");
+const { getDbInstance } = await import("../../src/lib/db/core.ts");
+const { upsertTokenLimit } = await import("../../src/lib/db/tokenLimits.ts");
 const { handleChat } = await import("../../src/sse/handlers/chat.ts");
 const observations: Array<{ model: unknown; effort: unknown; emailMasked: boolean }> = [];
 const events: Array<Record<string, unknown>> = [];
 let validKey: string;
 let baseUrl: string;
+let primaryConnectionId: string;
+let fixtureStatus = 200;
+let fixtureCost: number | null = 0.002;
+let fixtureRefusal = false;
+let fixtureReasoning: number | null = null;
+let fixtureInput: number = 8;
+let fixtureOutput: number | null = 4;
+let fixtureMalformed = false;
+let fixtureOversize = false;
+let fixtureGate: Promise<void> | null = null;
 const server = createServer(async (req, res) => {
   let text = "";
   for await (const chunk of req) text += chunk;
@@ -37,20 +54,42 @@ const server = createServer(async (req, res) => {
     effort: body.reasoning_effort ?? body.reasoning?.effort,
     emailMasked: !JSON.stringify(body).includes("synthetic.person@example.invalid"),
   });
-  res.writeHead(200, { "Content-Type": "application/json" });
+  if (fixtureGate) await fixtureGate;
+  res.writeHead(fixtureStatus, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
       id: "fixture-local-response",
       object: "chat.completion",
       model: body.model,
-      choices: [
-        {
-          index: 0,
-          message: { role: "assistant", content: "synthetic local response" },
-          finish_reason: "stop",
-        },
-      ],
-      usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12, cost: 0.002 },
+      choices: fixtureMalformed
+        ? []
+        : [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: fixtureRefusal
+                  ? null
+                  : fixtureOversize
+                    ? "x".repeat(300000)
+                    : "synthetic local response",
+                ...(fixtureRefusal ? { refusal: "synthetic refusal" } : {}),
+              },
+              finish_reason: "stop",
+            },
+          ],
+      usage: {
+        prompt_tokens: fixtureInput,
+        ...(fixtureOutput === null ? {} : { completion_tokens: fixtureOutput }),
+        total_tokens: 12,
+        ...(fixtureReasoning === null
+          ? {}
+          : {
+              completion_tokens_details: { reasoning_tokens: fixtureReasoning },
+              prompt_tokens_details: { cached_tokens: 2 },
+            }),
+        ...(fixtureCost === null ? {} : { cost: fixtureCost }),
+      },
     })
   );
 });
@@ -81,7 +120,7 @@ before(async () => {
       "127.0.0.1",
       "only the local synthetic endpoint is allowed"
     );
-    return (await localFetch(url, init as Parameters<typeof localFetch>[1])) as unknown as Response;
+    return proxyFetch(url, init);
   };
   await updateSettings({
     semanticCacheEnabled: false,
@@ -90,15 +129,19 @@ before(async () => {
     globalFallbackModel: "openai/gpt-5.4",
     streamDefaultMode: "json",
   });
-  await createProviderConnection({
-    provider: "openai",
-    authType: "apikey",
-    name: "synthetic-local-only",
-    apiKey: "synthetic-local-provider-key",
-    isActive: true,
-    testStatus: "active",
-    providerSpecificData: { baseUrl },
-  });
+  primaryConnectionId = String(
+    (
+      await createProviderConnection({
+        provider: "openai",
+        authType: "apikey",
+        name: "synthetic-local-only",
+        apiKey: "synthetic-local-provider-key",
+        isActive: true,
+        testStatus: "active",
+        providerSpecificData: { baseUrl },
+      })
+    ).id
+  );
   await createCombo({
     name: "fixture-ordinary-combo",
     models: ["openai/gpt-5.4"],
@@ -342,7 +385,11 @@ test("direct application handler entry also blocks before provider-capable guard
 test("explicitly disabled decision policy keeps ordinary combo behavior", async () => {
   const count = observations.length;
   const response = await POST(request("fixture-disabled-control"));
-  assert.equal(response.status, 200, await response.text());
+  assert.equal(
+    response.status,
+    200,
+    String(response.headers.get("x-omniroute-decision-reason")) + (await response.text())
+  );
   assert.equal(observations.length, count + 1);
 });
 
@@ -355,7 +402,11 @@ test("ordinary metadata mentioning a disabled feature is not a routing reference
   });
   const count = observations.length;
   const response = await POST(request("fixture-notes-control"));
-  assert.equal(response.status, 200, await response.text());
+  assert.equal(
+    response.status,
+    200,
+    String(response.headers.get("x-omniroute-decision-reason")) + (await response.text())
+  );
   assert.equal(observations.length, count + 1);
 });
 
@@ -367,7 +418,11 @@ test("a bare flagged combo name cannot override a known provider/model pin", asy
   });
   const count = observations.length;
   const response = await POST(request("openai/gpt-5.4"));
-  assert.equal(response.status, 200, await response.text());
+  assert.equal(
+    response.status,
+    200,
+    String(response.headers.get("x-omniroute-decision-reason")) + (await response.text())
+  );
   assert.equal(observations.length, count + 1);
 });
 
@@ -438,5 +493,555 @@ test("global fallback cannot reinterpret an exact marked combo identity as a phy
     events.push({ case: "marked-global-fallback", passed: true, dispatches: 0 });
   } finally {
     await deleteCombo(String(marked.id));
+  }
+});
+
+async function boundedRequest(
+  key = validKey,
+  extra: Record<string, unknown> = {},
+  signal?: AbortSignal
+) {
+  const body = await request("fixture-permitted-combo", key).json();
+  delete body.reasoning_effort;
+  return new Request("http://application.invalid/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+    body: JSON.stringify({ ...body, ...extra }),
+    signal,
+  });
+}
+async function ensurePermittedCombo() {
+  const candidate = (id: string, effort: string) => ({
+    id,
+    provider: "openai",
+    model: "gpt-5.4",
+    endpointKind: "direct",
+    evidence: "synthetic fixture only; no live quality proof",
+    capabilities: {
+      text: true,
+      images: false,
+      tools: false,
+      reasoning: true,
+      contextTokens: 100000,
+    },
+    effort: {
+      mode: "set",
+      value: effort,
+      supported: [effort],
+      evidence: "synthetic protocol profile",
+    },
+  });
+  await createCombo({
+    name: "fixture-permitted-combo",
+    models: ["openai/gpt-5.4"],
+    strategy: "priority",
+    config: {
+      decisionPolicy: {
+        enabled: true,
+        applicationMode: "bounded-v1",
+        connections: {
+          light: primaryConnectionId,
+          deep: primaryConnectionId,
+          unknown: primaryConnectionId,
+        },
+        policy: {
+          version: 1,
+          candidates: [
+            {
+              ...candidate("unknown", "low"),
+              capabilities: {
+                text: null,
+                images: false,
+                tools: false,
+                reasoning: null,
+                contextTokens: null,
+              },
+            },
+            candidate("light", "medium"),
+            candidate("deep", "high"),
+          ],
+          taskOrder: {
+            explanation: ["unknown", "light", "deep"],
+            complex_code: ["deep", "light"],
+            reasoning: ["deep"],
+          },
+          unknownQuota: "allow",
+          decisionFailure: "stop",
+          maxDecisionAttempts: 0,
+          maxExecutionAttempts: 1,
+          timeoutMs: 3000,
+        },
+      },
+    },
+  });
+}
+test("permitted automatic combo selects an eligible model plus effort through the actual application", async () => {
+  await ensurePermittedCombo();
+  const count = observations.length;
+  const response = await POST(await boundedRequest());
+  assert.equal(
+    response.status,
+    200,
+    String(response.headers.get("x-omniroute-decision-reason")) + (await response.text())
+  );
+  assert.equal(response.headers.get("x-omniroute-decision-candidate"), "light");
+  assert.equal(observations.length, count + 1);
+  assert.deepEqual(observations.at(-1), { model: "gpt-5.4", effort: "medium", emailMasked: true });
+  const row = readDecisionAttempts(
+    (await import("../../src/lib/db/apiKeys.ts")).getApiKeyMetadata
+      ? String(
+          (await (await import("../../src/lib/db/apiKeys.ts")).getApiKeyMetadata(validKey))!.id
+        )
+      : ""
+  ).at(-1)!;
+  assert.equal(row.state, "completed");
+  assert.equal(row.cost_usd, 0.002);
+  assert.equal(row.input_tokens, 8);
+  assert.equal(row.output_tokens, 4);
+  const ledger = getDbInstance()
+    .prepare("SELECT COUNT(*) AS n FROM request_cost_ledger WHERE request_id=?")
+    .get(row.id) as { n: number };
+  assert.equal(ledger.n, 1);
+  events.push({
+    case: "permitted-actual-application",
+    candidate: "light",
+    effort: "medium",
+    physicalCalls: 1,
+    qualityMeasured: false,
+  });
+});
+test("automatic reasoning selection sets its supported high effort without a client effort directive", async () => {
+  const count = observations.length;
+  const response = await POST(
+    await boundedRequest(validKey, {
+      messages: [{ role: "user", content: "Debug a complex code invariant" }],
+    })
+  );
+  assert.equal(
+    response.status,
+    200,
+    String(response.headers.get("x-omniroute-decision-reason")) + (await response.text())
+  );
+  assert.equal(response.headers.get("x-omniroute-decision-candidate"), "deep");
+  assert.equal(observations.length, count + 1);
+  assert.equal(observations.at(-1)?.effort, "high");
+});
+test("unsupported text/image/tool/effort inputs and unauthorized client cause zero automatic sends", async () => {
+  const count = observations.length;
+  for (const extra of [
+    { stream: true },
+    { reasoning_effort: "max" },
+    {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "https://fixture.invalid/private" } }],
+        },
+      ],
+    },
+    {
+      tools: [{ type: "function", function: { name: "fixture", parameters: { type: "object" } } }],
+    },
+  ]) {
+    const response = await POST(await boundedRequest(validKey, extra));
+    assert.notEqual(response.status, 200);
+    await response.text();
+  }
+  const denied = await POST(await boundedRequest("synthetic-invalid-key"));
+  assert.equal(denied.status, 401);
+  await denied.text();
+  assert.equal(observations.length, count);
+});
+test("all applicable capped key types reject the unbounded-price lane before dispatch", async () => {
+  const count = observations.length;
+  for (const scope of ["global", "provider", "model"] as const) {
+    const key = await createApiKey("synthetic-capped-" + scope, "synthetic");
+    upsertTokenLimit({
+      apiKeyId: key.id,
+      scopeType: scope,
+      scopeValue: scope === "provider" ? "openai" : scope === "model" ? "gpt-5.4" : "",
+      tokenLimit: 100000,
+    });
+    const response = await POST(await boundedRequest(key.key));
+    assert.notEqual(response.status, 200);
+    await response.text();
+  }
+  for (const limits of [{ tpmLimit: 100000 }, { monthlyAmountUsd: 100 }]) {
+    const key = await createApiKey("synthetic-capped-quota", "synthetic");
+    upsertKeyQuotaLimits(key.id, limits);
+    const response = await POST(await boundedRequest(key.key));
+    assert.notEqual(response.status, 200);
+    await response.text();
+  }
+  const key = await createApiKey("synthetic-capped-budget", "synthetic");
+  (await import("../../src/domain/costRules.ts")).setBudget(key.id, { dailyLimitUsd: 100 });
+  const response = await POST(await boundedRequest(key.key));
+  assert.notEqual(response.status, 200);
+  await response.text();
+  assert.equal(observations.length, count);
+});
+test("first provider error/refusal cannot trigger account/model/global fallback", async () => {
+  const count = observations.length;
+  try {
+    for (const status of [401, 403, 429, 503]) {
+      fixtureStatus = status;
+      const before = observations.length;
+      const response = await POST(await boundedRequest());
+      await response.text();
+      assert.notEqual(response.status, 200);
+      assert.equal(
+        observations.length,
+        before + 1,
+        String(response.status) + ":" + response.headers.get("x-omniroute-decision-reason")
+      );
+      await resetConnectionBackoff(primaryConnectionId);
+      (await import("../../open-sse/services/accountFallback.ts")).clearAllModelLockouts();
+    }
+    fixtureStatus = 200;
+    fixtureRefusal = true;
+    const refusal = await POST(await boundedRequest());
+    await refusal.text();
+    assert.equal(observations.length, count + 5);
+  } finally {
+    fixtureStatus = 200;
+    fixtureRefusal = false;
+  }
+});
+test("unknown provider cost remains null and uncapped requests may proceed; later capped traffic cannot call it free", async () => {
+  const key = await createApiKey("synthetic-unknown-cost", "synthetic");
+  fixtureCost = null;
+  try {
+    const response = await POST(await boundedRequest(key.key));
+    assert.equal(
+      response.status,
+      200,
+      String(response.headers.get("x-omniroute-decision-reason")) + (await response.text())
+    );
+    const row = readDecisionAttempts(key.id).at(-1)!;
+    assert.equal(row.state, "completed");
+    assert.equal(row.cost_usd, null);
+    const second = await POST(await boundedRequest(key.key));
+    assert.equal(second.status, 200, await second.text());
+    upsertKeyQuotaLimits(key.id, { monthlyAmountUsd: 100 });
+    const count = observations.length;
+    const rejected = await POST(request("fixture-ordinary-combo", key.key));
+    assert.equal(rejected.status, 429);
+    await rejected.text();
+    assert.equal(observations.length, count);
+  } finally {
+    fixtureCost = 0.002;
+  }
+});
+test("an active reservation rejects concurrent strict and ordinary requests without an extra physical attempt", async () => {
+  const key = await createApiKey("synthetic-concurrent", "synthetic");
+  let release!: () => void;
+  fixtureGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const count = observations.length;
+  const first = POST(await boundedRequest(key.key));
+  try {
+    for (let i = 0; i < 200 && observations.length === count; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(observations.length, count + 1);
+    const second = await POST(await boundedRequest(key.key));
+    assert.equal(second.status, 429);
+    await second.text();
+    const ordinary = await POST(request("fixture-ordinary-combo", key.key));
+    assert.equal(ordinary.status, 429);
+    await ordinary.text();
+    assert.equal(observations.length, count + 1);
+  } finally {
+    release();
+    fixtureGate = null;
+  }
+  const result = await first;
+  assert.equal(result.status, 200, await result.text());
+  assert.equal(readDecisionAttempts(key.id).at(-1)?.state, "completed");
+});
+
+test("actual application rejects reserve/start failures before any physical send", async () => {
+  for (const stage of ["reserve", "start"]) {
+    const key = await createApiKey("synthetic-fault-" + stage, "synthetic");
+    const count = observations.length;
+    const trigger =
+      stage === "reserve"
+        ? "BEFORE INSERT ON decision_application_attempts"
+        : "BEFORE UPDATE OF state ON decision_application_attempts WHEN NEW.state='started'";
+    getDbInstance().exec(
+      `CREATE TEMP TRIGGER synthetic_attempt_failure ${trigger} BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`
+    );
+    try {
+      const response = await POST(await boundedRequest(key.key));
+      assert.notEqual(response.status, 200);
+      await response.text();
+      assert.equal(observations.length, count);
+    } finally {
+      getDbInstance().exec("DROP TRIGGER synthetic_attempt_failure");
+    }
+    assert.ok(readDecisionAttempts(key.id).every((row) => row.state === "cancelled"));
+  }
+});
+test("actual settlement failure retains pending receipt, blocks another request, and reconciles idempotently after reopen", async () => {
+  const key = await createApiKey("synthetic-settle-failure", "synthetic");
+  const count = observations.length;
+  getDbInstance().exec(
+    "CREATE TEMP TRIGGER synthetic_usage_failure BEFORE INSERT ON usage_history BEGIN SELECT RAISE(ABORT,'synthetic failure'); END"
+  );
+  let row: Record<string, unknown>;
+  try {
+    const response = await POST(await boundedRequest(key.key));
+    assert.notEqual(response.status, 200);
+    await response.text();
+    assert.equal(observations.length, count + 1);
+    row = readDecisionAttempts(key.id)[0];
+    assert.equal(row.state, "started");
+    assert.equal(row.cost_usd, null);
+    const rejected = await POST(await boundedRequest(key.key));
+    assert.equal(rejected.status, 429);
+    await rejected.text();
+    assert.equal(observations.length, count + 1);
+  } finally {
+    getDbInstance().exec("DROP TRIGGER synthetic_usage_failure");
+  }
+  resetDbInstance();
+  row = readDecisionAttempts(key.id)[0];
+  assert.equal(row.state, "started");
+  const identity = {
+    id: String(row.id),
+    keyId: key.id,
+    comboId: String(row.combo_id),
+    candidateId: String(row.candidate_id),
+    provider: String(row.provider),
+    model: String(row.model),
+    connectionId: String(row.connection_id),
+    effort: String(row.effort),
+  };
+  settleDecisionAttempt(identity, { status: 200, input: 8, output: 4, cost: 0.002 });
+  settleDecisionAttempt(identity, { status: 200, input: 8, output: 4, cost: 0.002 });
+  assert.equal(readDecisionAttempts(key.id)[0].state, "completed");
+  const rows = getDbInstance()
+    .prepare("SELECT COUNT(*) AS n FROM usage_history WHERE decision_attempt_id=?")
+    .get(row.id) as { n: number };
+  assert.equal(rows.n, 1);
+});
+test("actual cancellation and configured deadline prevent follow-on attempts and retain unknown started cost", async () => {
+  const prior = await getComboByName("fixture-permitted-combo");
+  assert.ok(prior);
+  for (const kind of ["caller", "deadline"]) {
+    const key = await createApiKey("synthetic-abort-" + kind, "synthetic");
+    const controller = new AbortController();
+    let release!: () => void;
+    fixtureGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    if (kind === "deadline")
+      await updateCombo(String(prior.id), {
+        config: {
+          ...prior.config,
+          decisionPolicy: {
+            ...(prior.config.decisionPolicy as object),
+            policy: {
+              ...(prior.config.decisionPolicy as { policy: object }).policy,
+              timeoutMs: 1000,
+            },
+          },
+        },
+      });
+    const count = observations.length;
+    const began = Date.now();
+    const pending = POST(await boundedRequest(key.key, {}, controller.signal));
+    try {
+      for (let i = 0; i < 200 && observations.length === count; i++)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(observations.length, count + 1);
+      if (kind === "caller") controller.abort();
+      const response = await pending;
+      assert.notEqual(response.status, 200);
+      await response.text();
+      assert.ok(Date.now() - began < 2500);
+      assert.equal(observations.length, count + 1);
+      const row = readDecisionAttempts(key.id)[0];
+      assert.equal(row.state, "unknown");
+      assert.equal(row.cost_usd, null);
+    } finally {
+      release();
+      fixtureGate = null;
+      await updateCombo(String(prior.id), { config: prior.config });
+    }
+  }
+  const count = observations.length;
+  const controller = new AbortController();
+  controller.abort();
+  const response = await POST(await boundedRequest(validKey, {}, controller.signal));
+  await response.text();
+  assert.notEqual(response.status, 200);
+  assert.equal(observations.length, count);
+});
+test("unsupported proxy and TLS policy reject before physical dispatch", async () => {
+  const count = observations.length;
+  for (const [name, value] of [
+    ["HTTPS_PROXY", "http://synthetic-proxy.invalid:8888"],
+    ["NODE_TLS_REJECT_UNAUTHORIZED", "0"],
+    ["ENABLE_TLS_FINGERPRINT", "true"],
+  ]) {
+    const prior = process.env[name];
+    process.env[name] = value;
+    try {
+      const response = await POST(await boundedRequest());
+      assert.notEqual(response.status, 200);
+      await response.text();
+      assert.equal(observations.length, count);
+    } finally {
+      if (prior === undefined) delete process.env[name];
+      else process.env[name] = prior;
+    }
+  }
+});
+test("post-guardrail tool injection cannot widen supported capabilities", async () => {
+  class AddTools extends BaseGuardrail {
+    constructor() {
+      super("synthetic-unsupported-tools", { priority: 998 });
+    }
+    async preCall(payload: unknown) {
+      return {
+        modifiedPayload: {
+          ...(payload as object),
+          tools: [
+            { type: "function", function: { name: "synthetic", parameters: { type: "object" } } },
+          ],
+        },
+      };
+    }
+  }
+  const rule = new AddTools();
+  guardrailRegistry.register(rule);
+  const count = observations.length;
+  try {
+    const response = await POST(await boundedRequest());
+    assert.notEqual(response.status, 200);
+    await response.text();
+    assert.equal(observations.length, count);
+  } finally {
+    rule.enabled = false;
+  }
+});
+test("reasoning/cache breakdown and malformed token components preserve billed cost independently", async () => {
+  const key = await createApiKey("synthetic-breakdown", "synthetic");
+  fixtureReasoning = 3;
+  try {
+    const response = await POST(await boundedRequest(key.key));
+    assert.equal(response.status, 200, await response.text());
+    const row = readDecisionAttempts(key.id)[0];
+    assert.equal(row.reasoning_tokens, 3);
+    assert.equal(row.cache_read_tokens, 2);
+    const usage = getDbInstance()
+      .prepare("SELECT * FROM usage_history WHERE decision_attempt_id=?")
+      .get(row.id) as Record<string, unknown>;
+    assert.equal(usage.tokens_reasoning, 3);
+    assert.equal(usage.tokens_output, 1);
+    assert.equal(usage.tokens_cache_read, 2);
+  } finally {
+    fixtureReasoning = null;
+  }
+  for (const input of [1.5, -1]) {
+    const key = await createApiKey("synthetic-malformed-token", "synthetic");
+    fixtureInput = input;
+    try {
+      const response = await POST(await boundedRequest(key.key));
+      await response.text();
+      const row = readDecisionAttempts(key.id)[0];
+      assert.equal(row.input_tokens, null);
+      assert.equal(row.cost_usd, 0.002);
+    } finally {
+      fixtureInput = 8;
+    }
+  }
+});
+
+test("partial and inconsistent reasoning usage never discard a known billed cost", async () => {
+  for (const output of [null, 2]) {
+    const key = await createApiKey("synthetic-partial-reasoning", "synthetic");
+    fixtureOutput = output;
+    fixtureReasoning = 3;
+    try {
+      const response = await POST(await boundedRequest(key.key));
+      await response.text();
+      const row = readDecisionAttempts(key.id)[0];
+      assert.equal(row.cost_usd, 0.002);
+      assert.equal(row.reasoning_tokens, 3);
+      assert.equal(row.output_tokens, output);
+    } finally {
+      fixtureOutput = 4;
+      fixtureReasoning = null;
+    }
+  }
+});
+test("raw HTTP200 with malformed answer records failed application outcome and retains billed usage", async () => {
+  const key = await createApiKey("synthetic-malformed-answer", "synthetic");
+  fixtureMalformed = true;
+  try {
+    const response = await POST(await boundedRequest(key.key));
+    await response.text();
+    assert.notEqual(response.status, 200);
+    const row = readDecisionAttempts(key.id)[0];
+    assert.equal(row.http_status, 200);
+    assert.equal(row.application_status, response.status);
+    assert.equal(row.cost_usd, 0.002);
+    const usage = getDbInstance()
+      .prepare("SELECT success,status FROM usage_history WHERE decision_attempt_id=?")
+      .get(row.id) as { success: number; status: string };
+    assert.equal(usage.success, 0);
+    assert.equal(Number(usage.status), response.status);
+  } finally {
+    fixtureMalformed = false;
+  }
+});
+test("oversized provider response is cancelled and stays an unknown outcome without a follow-on send", async () => {
+  const key = await createApiKey("synthetic-oversized-answer", "synthetic");
+  fixtureOversize = true;
+  const count = observations.length;
+  try {
+    const response = await POST(await boundedRequest(key.key));
+    await response.text();
+    assert.notEqual(response.status, 200);
+    assert.equal(observations.length, count + 1);
+    const row = readDecisionAttempts(key.id)[0];
+    assert.equal(row.state, "unknown");
+    assert.equal(row.cost_usd, null);
+  } finally {
+    fixtureOversize = false;
+  }
+});
+test("known strict spend is included when a later domain budget is configured", async () => {
+  const key = await createApiKey("synthetic-future-budget", "synthetic");
+  const response = await POST(await boundedRequest(key.key));
+  assert.equal(response.status, 200, await response.text());
+  const { setBudget, checkBudget } = await import("../../src/domain/costRules.ts");
+  setBudget(key.id, { dailyLimitUsd: 0.001 });
+  assert.equal(checkBudget(key.id).allowed, false);
+  const count = observations.length;
+  const denied = await POST(request("fixture-ordinary-combo", key.key));
+  assert.equal(denied.status, 429);
+  await denied.text();
+  assert.equal(observations.length, count);
+});
+test("final system prompt expansion cannot exceed the selected profile's context limit", async () => {
+  const { setSystemPromptConfig, getSystemPromptConfig } =
+    await import("../../open-sse/services/systemPrompt.ts");
+  const prior = getSystemPromptConfig();
+  const count = observations.length;
+  setSystemPromptConfig({
+    enabled: true,
+    prefixPrompt: "synthetic-context ".repeat(20000),
+    suffixPrompt: "",
+  });
+  try {
+    const response = await POST(await boundedRequest());
+    await response.text();
+    assert.notEqual(response.status, 200);
+    assert.equal(observations.length, count);
+  } finally {
+    setSystemPromptConfig(prior);
   }
 });

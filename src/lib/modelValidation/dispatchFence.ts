@@ -48,7 +48,10 @@ function matchesModel(body: unknown, modelId: string): boolean {
   }
 }
 
-function matchesBearer(headers: HeadersInit | undefined, credentials: ExecuteInput["credentials"]) {
+function matchesBearer(
+  headers: HeadersInit | undefined,
+  credentials: ExecuteInput["credentials"] | undefined
+) {
   const actual = new Headers(headers);
   const token = credentials?.apiKey || credentials?.accessToken;
   return (

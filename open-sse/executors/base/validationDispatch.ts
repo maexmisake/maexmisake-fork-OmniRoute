@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 export type ProviderCredentials = {
   accessToken?: string;
   refreshToken?: string;
@@ -81,9 +82,18 @@ export function validationFetch(
   credentials: ProviderCredentials,
   transport: FetchTransport = (url, options) => fetch(url, options)
 ): FetchTransport {
-  return (url, options) =>
-    (observer?.transport ?? transport)(
-      url,
-      prepareValidationFetch(observer, { provider, model, credentials, url }, options)
+  return (url, options) => {
+    const prepared = prepareValidationFetch(
+      observer,
+      { provider, model, credentials, url },
+      options
     );
+    let sent: Promise<Response>;
+    try {
+      sent = (observer?.transport ?? transport)(url, prepared);
+    } catch (error) {
+      sent = Promise.reject(error);
+    }
+    return currentApplicationAttempt()?.observe(sent) ?? sent;
+  };
 }

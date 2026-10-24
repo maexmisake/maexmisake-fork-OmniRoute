@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
 import { HTTP_STATUS, FETCH_TIMEOUT_MS } from "../config/constants.ts";
 import { getApiKeyCodexServiceTier } from "../../src/lib/providers/codexApiKeyServiceMode";
 import { resolveProviderUserAgentOverride } from "./providerUserAgentOverride.ts";
@@ -713,6 +714,14 @@ export class BaseExecutor {
   }
 
   async execute(input: ExecuteInput): Promise<ExecutorExecuteResult> {
+    const automatic = currentApplicationAttempt();
+    if (automatic)
+      input = {
+        ...input,
+        validationDispatch: automatic.dispatch,
+        skipUpstreamRetry: true,
+        signal: input.signal ? AbortSignal.any([input.signal, automatic.signal]) : automatic.signal,
+      };
     const {
       model,
       body,

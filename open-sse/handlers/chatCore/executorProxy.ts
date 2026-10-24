@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 /**
  * chatCore upstream-proxy executor resolver (Quality Gate v2 / Fase 9 — chatCore god-file
  * decomposition, #3501).
@@ -52,6 +53,7 @@ export function createExecutorResolver(
   ) => Awaited<ReturnType<typeof resolveExecutorWithProxy>>
 ) {
   return async (provider: string) => {
+    currentApplicationAttempt()?.assertIdle();
     const executor = await resolveExecutorWithProxy(
       provider,
       log,

@@ -82,7 +82,7 @@ function compatibleGuardedDispatcher(agent: Dispatcher): Dispatcher {
   })(agent);
 }
 
-const guardedDispatchers = new Map<ConnectGuardMode, Dispatcher>();
+const guardedDispatchers = new Map<string, Dispatcher>();
 
 /**
  * Shared direct-egress dispatcher whose connections are validated by {@link createGuardedLookup}.
@@ -90,22 +90,24 @@ const guardedDispatchers = new Map<ConnectGuardMode, Dispatcher>();
  * not kept alive: this dispatcher bypasses the patched fetch's stale-socket retry, and a socket
  * that is never reused cannot be stale.
  */
-export function getGuardedDispatcher(guard: ConnectGuardMode): Dispatcher {
-  let dispatcher = guardedDispatchers.get(guard);
+export function getGuardedDispatcher(guard: ConnectGuardMode, http1Only = false): Dispatcher {
+  let dispatcher = guardedDispatchers.get(`${guard}:${http1Only}`);
   if (!dispatcher) {
     const options = getDispatcherOptions();
     dispatcher = new Agent({
       ...options,
+      ...(http1Only ? { allowH2: false, useH2c: false } : {}),
       keepAliveTimeout: 1,
       keepAliveMaxTimeout: 1,
       pipelining: 0,
       connect: {
         ...(options.connect as object),
+        ...(http1Only ? { allowH2: false, useH2c: false } : {}),
         lookup: createGuardedLookup(guard),
       } as never,
     });
     dispatcher = compatibleGuardedDispatcher(dispatcher);
-    guardedDispatchers.set(guard, dispatcher);
+    guardedDispatchers.set(`${guard}:${http1Only}`, dispatcher);
   }
   return dispatcher;
 }

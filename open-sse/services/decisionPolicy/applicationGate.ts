@@ -18,3 +18,14 @@ export function unavailableDecisionPolicy(): Response {
     { code: "decision_policy_application_unvalidated" }
   );
 }
+
+/** Recognition only: complete policy/permission validation belongs to application admission. */
+export function boundedDecisionEnabled(combo: unknown): boolean {
+  return (
+    record(combo) &&
+    record(combo.config) &&
+    record(combo.config.decisionPolicy) &&
+    combo.config.decisionPolicy.enabled === true &&
+    combo.config.decisionPolicy.applicationMode === "bounded-v1"
+  );
+}

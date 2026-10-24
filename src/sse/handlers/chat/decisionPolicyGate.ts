@@ -1,5 +1,7 @@
+import { isSelfHostedEntryConfigured } from "@omniroute/open-sse/services/selfHostedEntry.ts";
 import {
   decisionPolicyOptedIn,
+  boundedDecisionEnabled,
   unavailableDecisionPolicy,
 } from "@omniroute/open-sse/services/decisionPolicy/applicationGate.ts";
 import { normalizeComboStep } from "@/lib/combos/steps";
@@ -119,6 +121,13 @@ export async function decisionPolicyModelRejection(model: unknown): Promise<Resp
     const name = cc.model;
     // Raw records preserve enabled empty/malformed combos, unlike getCombo().
     const combo = await resolveStoredCombo(name, combos);
+    if (
+      combo &&
+      boundedDecisionEnabled(combo) &&
+      model === combo.name &&
+      !isSelfHostedEntryConfigured()
+    )
+      return null;
     return combo && (await includesDecisionPolicy(combo, combos))
       ? unavailableDecisionPolicy()
       : null;

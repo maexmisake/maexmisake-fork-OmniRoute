@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../open-sse/services/decisionPolicy/applicationContext.ts";
 /**
  * Cost Rules — Domain Layer (T-19)
  *
@@ -405,6 +406,7 @@ export function deleteBudget(apiKeyId: string) {
  * @param {RecordCostDetails} [details] - Optional per-request breakdown.
  */
 export function recordCost(apiKeyId: string, cost: number, details?: RecordCostDetails): void {
+  if (currentApplicationAttempt()?.keyId === apiKeyId) return;
   try {
     spendBatchWriter.increment(apiKeyId, cost, Date.now());
     if (details) {

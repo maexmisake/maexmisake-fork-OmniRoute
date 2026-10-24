@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
 import { finalizeTranslatedRequest } from "./chatCore/translatedRequestFinalize.ts";
 import {
   injectMemoryAndSkills,
@@ -340,7 +341,19 @@ type VideoBridgeLogParam = { observed: boolean; redaction: VideoBridgeLogRedacti
 export async function handleChatCore(args: Parameters<typeof handleChatCoreInner>[0]) {
   // one implicit resilience store per attempt (combo legs each run
   // handleChatCore, so each leg gets its own isolated store).
-  return withResilienceActionsContext([args], (forwarded) => handleChatCoreInner(forwarded));
+  return withResilienceActionsContext([args], (forwarded) =>
+    handleChatCoreInner(
+      currentApplicationAttempt()
+        ? {
+            ...forwarded,
+            validationExecutorFence: currentApplicationAttempt()!.fence as NonNullable<
+              Parameters<typeof createExecutorResolver>[2]
+            >,
+            skipUpstreamRetry: true,
+          }
+        : forwarded
+    )
+  );
 }
 
 async function handleChatCoreInner({
@@ -373,7 +386,7 @@ async function handleChatCoreInner({
   reasoningTransportFallback = "drop",
   managedLease = null,
   // Trusted management validation only; never populated from request body/headers.
-  validationExecutorFence = null,
+  validationExecutorFence = null as Parameters<typeof createExecutorResolver>[2] | null,
   // #12150 P1b: additive, optional video-bridge log/Memory shadow — shape is
   // VideoBridgeLogParam (defined near the top of this file). Built once in chat.ts from
   // preCallGuardrails.results (video-bridge guardrail meta) and threaded here
@@ -2358,7 +2371,7 @@ async function handleChatCoreInner({
   // #6339: pass the resolved connection's providerSpecificData so a per-connection
   // cliproxyapiMode="claude-native" override can deep-route this single connection
   // through CLIProxyAPI regardless of the provider-level upstream_proxy_config mode.
-  const resolveExecutorWithProxy = createExecutorResolver(log, credentials, validationExecutorFence);
+  const resolveExecutorWithProxy = createExecutorResolver(log, credentials, validationExecutorFence ?? undefined);
 
   // === Quota Share enforcement PRE-hook (B/F7) + G2 combo soft penalty ===
   // Extracted to chatCore/quotaSharePreHook.ts (chatCore slice 2). Fail-open per B16; a block

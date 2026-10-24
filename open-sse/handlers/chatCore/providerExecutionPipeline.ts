@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 import type { ChatCoreErrorResult, ProviderLegUsage } from "@/lib/skills/toolLoopTypes.ts";
 import type { getProviderCredentials } from "@/sse/services/auth.ts";
 import type { updateFromHeaders, updateFromResponseBody } from "../../services/rateLimitManager.ts";
@@ -391,6 +392,13 @@ export async function runProviderExecutionPipeline(
     const after = assertLease(policy, connection, wire.currentModel);
     if (after) return after;
 
+    if (currentApplicationAttempt())
+      return toOutcome(
+        attempt,
+        wire.currentModel,
+        currentConnectionId(connection),
+        target.provider
+      );
     const status = attempt.response.status;
     if (status >= 200 && status < 300) {
       return toOutcome(
