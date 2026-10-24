@@ -38,19 +38,30 @@ import {
 } from "../../../open-sse/utils/proxyFetch.ts";
 import { boundedDecisionEnabled } from "../../../open-sse/services/decisionPolicy/applicationGate.ts";
 
-function rejectedAttempt(attempt: ApplicationAttempt | undefined, error: unknown): Response {
+function rejectedAttempt(
+  attempt: ApplicationAttempt | undefined,
+  error: unknown,
+  status = 409
+): Response {
   if (attempt) {
     try {
-      finishDecisionApplication(attempt.id, 409);
+      finishDecisionApplication(attempt.id, status);
     } catch {
       /* The durable pending attempt remains authoritative. */
     }
   }
-  const response = automaticRejection(
-    error instanceof Error && /^decision_[a-z_]+$/.test(error.message)
-      ? error.message
-      : "pipeline_rejected"
-  );
+  const response =
+    status !== 409
+      ? errorResponse(
+          status,
+          status === 504 ? "Automatic routing deadline exceeded" : "Automatic routing cancelled",
+          { code: "decision_application_rejected" }
+        )
+      : automaticRejection(
+          error instanceof Error && /^decision_[a-z_]+$/.test(error.message)
+            ? error.message
+            : "pipeline_rejected"
+        );
   if (attempt) response.headers.set("x-omniroute-decision-attempt", attempt.id);
   return response;
 }
@@ -370,6 +381,7 @@ export async function executeAutomaticCombo(
     connectionId: string
   ) => Promise<Response>
 ): Promise<Response> {
+  const callerSignal = signal;
   signal = AbortSignal.any([signal, AbortSignal.timeout(plan.config.policy.timeoutMs)]);
   let attempt: ApplicationAttempt | undefined;
   try {
@@ -403,13 +415,19 @@ export async function executeAutomaticCombo(
       extracted.body.max_completion_tokens,
       trace
     );
-    const response = await withApplicationAttempt(attempt, () =>
+    let response = await withApplicationAttempt(attempt, () =>
       dispatch(
         { ...extracted.body, stream: false, reasoning_effort: candidate.effort.value },
         `${candidate.provider}/${candidate.model}`,
         attempt!.connectionId
       )
     );
+    if (signal.aborted)
+      response = rejectedAttempt(
+        attempt,
+        new Error("decision_deadline"),
+        callerSignal.aborted ? 499 : 504
+      );
     finishDecisionApplication(attempt.id, response.status);
     const result = new Response(response.body, {
       status: response.status,
@@ -419,7 +437,11 @@ export async function executeAutomaticCombo(
     result.headers.set("x-omniroute-decision-candidate", candidate.id);
     return result;
   } catch (error) {
-    return rejectedAttempt(attempt, error);
+    return rejectedAttempt(
+      attempt,
+      error,
+      signal.aborted ? (callerSignal.aborted ? 499 : 504) : 409
+    );
   } finally {
     if (attempt) cancelUnstartedDecision(attempt.id);
   }

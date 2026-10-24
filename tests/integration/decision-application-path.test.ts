@@ -196,12 +196,33 @@ after(async () => {
   await new Promise<void>((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve()))
   );
+  const journal = process.env.APPLICATION_EVIDENCE_PATH
+    ? getDbInstance()
+        .prepare(
+          "SELECT a.id,a.candidate_id,a.provider,a.model,a.effort,a.state,a.http_status,a.application_status,a.input_tokens,a.output_tokens,a.reasoning_tokens,a.cache_read_tokens,a.cost_usd,a.selection_trace FROM decision_application_attempts a JOIN combos c ON c.id=a.combo_id WHERE c.name='fixture-permitted-combo' ORDER BY a.created_at"
+        )
+        .all()
+        .map((value) => {
+          const row = value as Record<string, unknown>;
+          const { selection_trace, ...metadata } = row;
+          return { ...metadata, trace: JSON.parse(String(selection_trace ?? "[]")) };
+        })
+    : [];
+  assert.ok(!JSON.stringify(journal).includes(validKey));
+  assert.ok(!JSON.stringify(journal).includes("synthetic.person@example.invalid"));
   resetDbInstance();
   if (process.env.APPLICATION_EVIDENCE_PATH)
     await writeFile(
       process.env.APPLICATION_EVIDENCE_PATH,
       JSON.stringify(
-        { schemaVersion: 1, synthetic: true, qualityMeasured: false, observations, events },
+        {
+          schemaVersion: 1,
+          synthetic: true,
+          qualityMeasured: false,
+          observations,
+          events,
+          journal,
+        },
         null,
         2
       ) + "\n"
@@ -1043,5 +1064,46 @@ test("final system prompt expansion cannot exceed the selected profile's context
     assert.equal(observations.length, count);
   } finally {
     setSystemPromptConfig(prior);
+  }
+});
+
+test("bounded application deadline: policy timeout also bounds the actual executor queue", async () => {
+  const { getComboByName, updateCombo } = await import("../../src/lib/db/combos.ts");
+  const combo = await getComboByName("fixture-permitted-combo");
+  assert.ok(combo);
+  const old = structuredClone(combo.config);
+  await updateCombo(String(combo.id), {
+    config: {
+      ...combo.config,
+      decisionPolicy: {
+        ...combo.config.decisionPolicy,
+        policy: { ...combo.config.decisionPolicy.policy, timeoutMs: 1000 },
+      },
+    },
+  });
+
+  const { updateProviderConnection } = await import("../../src/lib/db/providers.ts");
+  const { acquire } = await import("../../open-sse/services/accountSemaphore.ts");
+  await updateProviderConnection(primaryConnectionId, { maxConcurrent: 1 });
+  const release = await acquire(`openai:${primaryConnectionId}`, { maxConcurrency: 1 });
+  const key = await createApiKey("independent-queue-deadline", "synthetic");
+  const count = observations.length;
+  const timer = setTimeout(release, 1600);
+  const started = Date.now();
+  try {
+    const response = await POST(await boundedRequest(key.key));
+    const text = await response.text();
+    const elapsedMs = Date.now() - started;
+    assert.equal(response.status, 504, text);
+    assert.equal(observations.length, count);
+    assert.ok(
+      elapsedMs < 1300,
+      JSON.stringify({ elapsedMs, policyTimeoutMs: 1000, status: response.status })
+    );
+  } finally {
+    clearTimeout(timer);
+    release();
+    await updateProviderConnection(primaryConnectionId, { maxConcurrent: null });
+    await updateCombo(String(combo.id), { config: old });
   }
 });

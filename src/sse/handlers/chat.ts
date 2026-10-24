@@ -1162,6 +1162,7 @@ async function handleChatImplementation(
             modelPinned: true,
             skipUpstreamRetry: true,
             emergencyFallbackTried: true,
+            modelAbortSignal: currentApplicationAttempt()?.signal ?? null,
           },
           "decision-bounded-v1",
           true
