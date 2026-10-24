@@ -313,3 +313,53 @@ test("the total dispatch deadline is logged as timeout without blaming account h
     clearTimeout(keepAlive);
   }
 });
+
+test("already-running ancillary selector finishes after caller abort without later inference or fallback", async () => {
+  const controller = new AbortController();
+  let finishSelection;
+  let signalSelectionStarted;
+  const started = new Promise((resolve) => {
+    signalSelectionStarted = resolve;
+  });
+  let selections = 0,
+    ancillaryCompleted = 0,
+    dispatches = 0;
+  const pending = dispatchSystemOne(
+    {
+      candidates: registry.resolveSystemOneCandidates("jev"),
+      requestedModel: "jev",
+      body: {
+        model: "jev",
+        state: "fixture",
+        questions: { safe: { type: "noul", instructions: "safe?" } },
+      },
+      signal: controller.signal,
+    },
+    {
+      selectCredentials: async () => {
+        selections++;
+        signalSelectionStarted();
+        await new Promise((resolve) => {
+          finishSelection = resolve;
+        });
+        ancillaryCompleted++;
+        return { apiKey: "synthetic-only", connectionId: "fixture" };
+      },
+      dispatch: async () => {
+        dispatches++;
+        return new Response(null, { status: 503 });
+      },
+    }
+  );
+  await started;
+  controller.abort();
+  const response = await pending;
+  assert.equal(response.status, 499);
+  assert.equal(ancillaryCompleted, 0);
+  finishSelection();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ancillaryCompleted, 1);
+  assert.equal(dispatches, 0);
+  assert.equal(selections, 1);
+});
