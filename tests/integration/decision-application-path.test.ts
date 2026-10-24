@@ -1107,3 +1107,24 @@ test("bounded application deadline: policy timeout also bounds the actual execut
     await updateCombo(String(combo.id), { config: old });
   }
 });
+
+test("secondary credential headers introduced by formatting are rejected before physical dispatch", async () => {
+  const { getExecutor } = await import("../../open-sse/executors/index.ts");
+  const executor = await getExecutor("openai");
+  const original = executor.buildHeaders;
+  for (const name of ["x-api-key", "api-key"]) {
+    const count = observations.length;
+    executor.buildHeaders = function (...args: Parameters<typeof original>) {
+      return { ...original.apply(this, args), [name]: "synthetic-secondary-secret" };
+    };
+    try {
+      const response = await POST(await boundedRequest());
+      const text = await response.text();
+      assert.notEqual(response.status, 200);
+      assert.equal(observations.length, count);
+      assert.ok(!text.includes("synthetic-secondary-secret"));
+    } finally {
+      executor.buildHeaders = original;
+    }
+  }
+});

@@ -323,6 +323,8 @@ async function buildAttempt(
           details.credentials.connectionId !== connectionId ||
           details.credentials.apiKey !== connection.apiKey ||
           headers.get("authorization") !== `Bearer ${connection.apiKey}` ||
+          headers.has("x-api-key") ||
+          headers.has("api-key") ||
           details.url !== endpoint.href ||
           wire?.model !== candidate.model ||
           (wire?.reasoning_effort ?? wire?.reasoning?.effort) !== candidate.effort.value ||
