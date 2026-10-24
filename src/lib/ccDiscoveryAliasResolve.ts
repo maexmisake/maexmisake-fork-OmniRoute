@@ -160,7 +160,8 @@ export function isRoutableProviderPrefix(prefix: string): boolean {
  * normal request pays only a single `startsWith` check.
  */
 export async function resolveCcDiscoveryAliasStrip(
-  modelStr: string | null | undefined
+  modelStr: string | null | undefined,
+  options: { recordUsage?: boolean } = {}
 ): Promise<CcDiscoveryStripResult> {
   if (typeof modelStr !== "string" || !modelStr.startsWith(CC_DISCOVERY_PREFIX)) {
     return { model: modelStr ?? "", stripped: false };
@@ -209,7 +210,7 @@ export async function resolveCcDiscoveryAliasStrip(
   // (incrementCcAliasRequestCount already swallows its own errors). Lives in the
   // production wrapper (not the injectable core) so the core's unit tests stay
   // DB-free.
-  if (result.stripped) {
+  if (result.stripped && options.recordUsage !== false) {
     incrementCcAliasRequestCount(result.model);
   }
 

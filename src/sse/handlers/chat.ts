@@ -1,3 +1,4 @@
+import { decisionPolicyModelRejection } from "./chat/decisionPolicyGate";
 import { hasQoderCallerTools } from "@omniroute/open-sse/services/qoderCapabilities";
 import { getRequestedModelEndpointMismatch } from "@/lib/providerModels/modelEndpointGuard";
 import { randomUUID } from "crypto";
@@ -801,6 +802,8 @@ async function handleChatImplementation(
     });
   }
   const apiKeyInfo = policy.apiKeyInfo;
+  const decisionRejection = await decisionPolicyModelRejection(modelStr);
+  if (decisionRejection) return decisionRejection;
   let managedLease: ManagedLeaseDispatchContext | null = null;
   if (isExclusiveLeaseManagedKey(apiKeyInfo)) {
     try {
@@ -1128,6 +1131,8 @@ async function handleChatImplementation(
   if (virtualCombo instanceof Response) return virtualCombo;
   combo = virtualCombo;
   if (combo) {
+    const decisionRejection = await decisionPolicyModelRejection(combo.name);
+    if (decisionRejection) return decisionRejection;
     if (reasoningDecision) {
       const filtered = filterReasoningCombo(combo, reasoningDecision);
       if (filtered instanceof Response) return filtered;
@@ -1376,6 +1381,8 @@ async function handleChatImplementation(
       (settings as any).globalFallbackModel.trim()
     ) {
       const fallbackModel = (settings as any).globalFallbackModel.trim();
+      const decisionRejection = await decisionPolicyModelRejection(fallbackModel);
+      if (decisionRejection) return decisionRejection;
       log.info(
         "GLOBAL_FALLBACK",
         `Combo "${combo.name}" exhausted — attempting global fallback: ${fallbackModel}`
@@ -1576,6 +1583,9 @@ async function handleSingleModelChat(
   comboStrategy: string | null = null,
   isCombo: boolean = false
 ): Promise<Response> {
+  // Late retry/emergency tails must not reinterpret a marked combo as a physical model.
+  const decisionRejection = await decisionPolicyModelRejection(modelStr);
+  if (decisionRejection) return decisionRejection;
   // 1. Resolve model → provider/model
   const resolved = await resolveModelOrError(
     modelStr,

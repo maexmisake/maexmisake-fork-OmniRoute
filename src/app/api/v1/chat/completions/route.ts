@@ -1,3 +1,4 @@
+import { decisionPolicyRouteRejection } from "@/sse/handlers/chat/decisionPolicyGate";
 import { z } from "zod";
 import { CORS_HEADERS, handleCorsOptions } from "@/shared/utils/cors";
 import { callCloudWithMachineId } from "@/shared/utils/cloud";
@@ -186,6 +187,9 @@ export async function POST(request) {
               errorResponse(400, `${field}: ${issue?.message ?? "Invalid request"}`)
             );
           }
+
+          const decisionRejection = await decisionPolicyRouteRejection(request, parsedBody);
+          if (decisionRejection) return finishAdmission(decisionRejection);
 
           // Self-hosted unified entry (D4 — RIC-738): when a provider config is
           // present, divert BEFORE the cloud-only model retirement/alias checks so

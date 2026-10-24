@@ -47,6 +47,8 @@ export type ErrorBodyClassification = {
 
 const PUBLIC_ERROR_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
+  "decision_policy_application_unvalidated",
+  "decision_policy_metadata_unavailable",
   "cyber_policy",
   "content_policy_violation",
   "abort",

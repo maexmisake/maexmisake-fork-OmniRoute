@@ -1,3 +1,7 @@
+import {
+  decisionPolicyOptedIn,
+  unavailableDecisionPolicy,
+} from "./decisionPolicy/applicationGate.ts";
 /**
  * Shared combo (model combo) handling with fallback support
  * Supports: priority, weighted, round-robin, random, least-used, cost-optimized,
@@ -669,6 +673,7 @@ export async function resolveTargetTimeoutMsForTarget(
  * one metadata-only log line for durability across restarts.
  */
 export async function handleComboChat(options: HandleComboChatOptions): Promise<Response> {
+  if (decisionPolicyOptedIn(options.combo)) return unavailableDecisionPolicy();
   const comboInvocationId = (options.combo as { traceInvocationId?: unknown } | null | undefined)
     ?.traceInvocationId;
   const traceInvocationId =
