@@ -23,6 +23,13 @@ export function readDecisionAttempts(keyId: string): Row[] {
     )
     .all(keyId) as Row[];
 }
+export function readDecisionAttemptReceipt(id: string): Row {
+  const row = getDbInstance()
+    .prepare("SELECT * FROM decision_application_attempts WHERE id=?")
+    .get(id) as Row | undefined;
+  if (!row) throw new Error("decision_receipt_missing");
+  return row;
+}
 /** Throwing fresh reads, not getBudget's cached/fail-open absence. */
 export function decisionCapKinds(keyId: string, provider: string, model: string) {
   const db = getDbInstance();
@@ -136,6 +143,7 @@ export type AttemptUsage = {
   reasoning?: number | null;
   cacheRead?: number | null;
   cacheCreation?: number | null;
+  uncachedInput?: number | null;
 };
 /** Terminal outcome and known cost projection commit together. Idempotent, no zero substitution. */
 function mergeReported(old: unknown, value: number | null): number | null {
@@ -144,7 +152,7 @@ function mergeReported(old: unknown, value: number | null): number | null {
   return typeof old === "number" ? old : value;
 }
 function validUsage(usage: AttemptUsage): void {
-  for (const field of ["reasoning", "cacheRead", "cacheCreation"] as const) {
+  for (const field of ["reasoning", "cacheRead", "cacheCreation", "uncachedInput"] as const) {
     const value = usage[field];
     if (value !== null && value !== undefined && (!Number.isSafeInteger(value) || value < 0))
       throw new Error("decision_usage_invalid");
@@ -178,11 +186,15 @@ export function settleDecisionAttempt(identity: AttemptIdentity, usage: AttemptU
     const reasoning = mergeReported(row.reasoning_tokens, usage.reasoning ?? null),
       cacheRead = mergeReported(row.cache_read_tokens, usage.cacheRead ?? null),
       cacheCreation = mergeReported(row.cache_creation_tokens, usage.cacheCreation ?? null);
+    const uncachedInput = mergeReported(row.uncached_input_tokens, usage.uncachedInput ?? null);
     const consistent = reasoning === null || output === null || reasoning <= output;
-    const visibleOutput = output === null || !consistent ? null : output - (reasoning ?? 0);
+    const visibleOutput =
+      output === null || !consistent || (identity.provider === "claude" && reasoning === null)
+        ? null
+        : output - (reasoning ?? 0);
     const state = status === null ? "unknown" : "completed";
     db.prepare(
-      "UPDATE decision_application_attempts SET state=?,http_status=?,input_tokens=?,output_tokens=?,cost_usd=?,updated_at=?,reasoning_tokens=?,cache_read_tokens=?,cache_creation_tokens=? WHERE id=?"
+      "UPDATE decision_application_attempts SET state=?,http_status=?,input_tokens=?,output_tokens=?,cost_usd=?,updated_at=?,reasoning_tokens=?,cache_read_tokens=?,cache_creation_tokens=?,uncached_input_tokens=? WHERE id=?"
     ).run(
       state,
       status,
@@ -193,6 +205,7 @@ export function settleDecisionAttempt(identity: AttemptIdentity, usage: AttemptU
       reasoning,
       cacheRead,
       cacheCreation,
+      uncachedInput,
       identity.id
     );
     if (
@@ -260,7 +273,7 @@ export function decisionAuthorityStamp(identity: AttemptIdentity): string {
     .get(identity.keyId);
   const connection = db
     .prepare(
-      "SELECT provider,auth_type,is_active,api_key,provider_specific_data FROM provider_connections WHERE id=?"
+      "SELECT provider,auth_type,is_active,api_key,access_token,refresh_token,expires_at,token_expires_at,provider_specific_data,quota_window_thresholds_json FROM provider_connections WHERE id=?"
     )
     .get(identity.connectionId);
   const combo = db.prepare("SELECT data FROM combos WHERE id=?").get(identity.comboId);
@@ -269,7 +282,17 @@ export function decisionAuthorityStamp(identity: AttemptIdentity): string {
       "SELECT m.group_id,g.is_active,p.id,p.model_pattern,p.provider,p.access_type FROM key_group_members m JOIN key_groups g ON g.id=m.group_id LEFT JOIN group_model_permissions p ON p.group_id=m.group_id WHERE m.key_id=? ORDER BY m.group_id,p.id"
     )
     .all(identity.keyId);
-  return JSON.stringify([key, connection, combo, groups]);
+  const quotaSettings = db
+    .prepare("SELECT value FROM key_value WHERE namespace='settings' AND key='resilienceSettings'")
+    .get();
+  return JSON.stringify([
+    key,
+    connection,
+    combo,
+    groups,
+    quotaSettings,
+    process.env.QUOTA_PREFLIGHT_CUTOFF_ENABLED,
+  ]);
 }
 
 /** Application success is separate from raw provider HTTP success and possible billing. */

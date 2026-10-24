@@ -30,6 +30,7 @@ import {
   finishDecisionApplication,
   cancelUnstartedDecision,
   type AttemptIdentity,
+  readDecisionAttemptReceipt,
 } from "../db/decisionAttempts";
 import {
   hasAmbientProxyContext,
@@ -37,6 +38,12 @@ import {
   resolveProxyForRequest,
 } from "../../../open-sse/utils/proxyFetch.ts";
 import { boundedDecisionEnabled } from "../../../open-sse/services/decisionPolicy/applicationGate.ts";
+import {
+  resolveApplicationProvider,
+  assertReadyClaudeOAuth,
+  claudeWireFacts,
+  claudeReportedUsage,
+} from "./applicationProvider";
 
 function rejectedAttempt(
   attempt: ApplicationAttempt | undefined,
@@ -198,26 +205,11 @@ async function observeResponse(
     signal.removeEventListener("abort", abort);
     void reader?.cancel().catch(() => {});
   }
-  const usage =
-    data?.usage && typeof data.usage === "object" ? (data.usage as Record<string, unknown>) : {};
+  complete = complete && nativeResponseIsJson(identity.provider, response);
   try {
     settleDecisionAttempt(identity, {
       status: complete && !signal.aborted ? response.status : null,
-      input: numberOrNull(usage.prompt_tokens, true),
-      output: numberOrNull(usage.completion_tokens, true),
-      cost: numberOrNull(usage.cost),
-      reasoning: numberOrNull(
-        (usage.completion_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens,
-        true
-      ),
-      cacheRead: numberOrNull(
-        (usage.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens,
-        true
-      ),
-      cacheCreation: numberOrNull(
-        (usage.prompt_tokens_details as Record<string, unknown> | undefined)?.cache_creation_tokens,
-        true
-      ),
+      ...reportedApplicationUsage(identity.provider, data),
     });
   } catch {
     throw new Error("decision_settlement_pending");
@@ -227,7 +219,54 @@ async function observeResponse(
     throw new Error("decision_response_incomplete");
   }
   signal.throwIfAborted();
+  assertNativeResponse(identity, response, data);
   return response;
+}
+function nativeResponseIsJson(provider: string, response: Response): boolean {
+  return (
+    provider !== "claude" || !response.headers.get("content-type")?.includes("text/event-stream")
+  );
+}
+function assertNativeResponse(
+  identity: AttemptIdentity,
+  response: Response,
+  data: Record<string, unknown> | null
+): void {
+  if (identity.provider !== "claude" || !response.ok) return;
+  if (data?.type !== "message" || data.model !== identity.model || !Array.isArray(data.content))
+    throw new Error("decision_response_invalid");
+  if (
+    ![
+      "end_turn",
+      "max_tokens",
+      "stop_sequence",
+      "refusal",
+      "model_context_window_exceeded",
+    ].includes(String(data.stop_reason))
+  )
+    throw new Error("decision_response_unsupported");
+  if (
+    !data.content.every(
+      (block) => block && ["text", "thinking", "redacted_thinking"].includes(block.type)
+    )
+  )
+    throw new Error("decision_response_unsupported");
+}
+function reportedApplicationUsage(provider: string, data: Record<string, unknown> | null) {
+  const usage =
+    data?.usage && typeof data.usage === "object" ? (data.usage as Record<string, unknown>) : {};
+  const cost = numberOrNull(usage.cost);
+  if (provider === "claude") return { ...claudeReportedUsage(usage), cost };
+  const completion = usage.completion_tokens_details as Record<string, unknown> | undefined;
+  const prompt = usage.prompt_tokens_details as Record<string, unknown> | undefined;
+  return {
+    input: numberOrNull(usage.prompt_tokens, true),
+    output: numberOrNull(usage.completion_tokens, true),
+    cost,
+    reasoning: numberOrNull(completion?.reasoning_tokens, true),
+    cacheRead: numberOrNull(prompt?.cached_tokens, true),
+    cacheCreation: numberOrNull(prompt?.cache_creation_tokens, true),
+  };
 }
 async function buildAttempt(
   plan: AutomaticPlan,
@@ -242,9 +281,7 @@ async function buildAttempt(
   if (
     !connection ||
     connection.provider !== candidate.provider ||
-    connection.authType !== "apikey" ||
     connection.isActive !== true ||
-    candidate.provider !== "openai" ||
     !candidate.effort.value ||
     candidate.effort.mode !== "set"
   )
@@ -257,9 +294,8 @@ async function buildAttempt(
       !key.allowedConnections.includes(connectionId))
   )
     throw new Error("decision_connection_unauthorized");
-  const data = z.record(z.string(), z.unknown()).parse(connection.providerSpecificData ?? {});
-  if (data.extraApiKeys || data.cliproxyapiMode || data.darioMode)
-    throw new Error("decision_connection_unsupported");
+  const contract = resolveApplicationProvider(candidate, connection);
+  const executor = await getExecutor(candidate.provider);
   const identity: AttemptIdentity = {
     id: randomUUID(),
     keyId,
@@ -273,11 +309,7 @@ async function buildAttempt(
   };
   assertUncappedDecision(keyId, candidate.provider, candidate.model);
   const stamp = authorityStamp(identity);
-  const base =
-    typeof data.baseUrl === "string" ? data.baseUrl : "https://api.openai.com/v1/chat/completions";
-  const endpoint = new URL(
-    base.endsWith("/chat/completions") ? base : base.replace(/\/$/, "") + "/chat/completions"
-  );
+  const endpoint = new URL(contract.endpoint);
   assertEgress(candidate.provider, endpoint.href);
   const plugins = createValidationPluginFence();
   const assertFresh = () => {
@@ -286,6 +318,11 @@ async function buildAttempt(
       plugins.assertIdle();
       assertUncappedDecision(keyId, candidate.provider, candidate.model);
       if (authorityStamp(identity) !== stamp) throw new Error("decision_authority_changed");
+      if (contract.claude) {
+        assertReadyClaudeOAuth(contract.credentials);
+        if (executor.needsRefresh(contract.credentials))
+          throw new Error("decision_oauth_unsupported");
+      }
     } catch {
       throw new Error("decision_authority_changed");
     }
@@ -296,8 +333,9 @@ async function buildAttempt(
     connectionId,
     signal,
     assertFresh,
-    expectedExecutor: await getExecutor(candidate.provider),
-    expectedCredentials: { apiKey: String(connection.apiKey), connectionId },
+    expectedExecutor: executor,
+    expectedCredentials: contract.credentials,
+    allowNativeClaude: contract.claude,
   });
   reserveDecisionAttempt(identity);
   return {
@@ -321,32 +359,41 @@ async function buildAttempt(
           details.provider !== candidate.provider ||
           details.model !== candidate.model ||
           details.credentials.connectionId !== connectionId ||
-          details.credentials.apiKey !== connection.apiKey ||
-          headers.get("authorization") !== `Bearer ${connection.apiKey}` ||
+          (["apiKey", "accessToken", "refreshToken"] as const).some(
+            (field) =>
+              (details.credentials[field] ?? null) !== (contract.credentials[field] ?? null)
+          ) ||
+          headers.get("authorization") !==
+            `Bearer ${contract.credentials.apiKey || contract.credentials.accessToken}` ||
           headers.has("x-api-key") ||
           headers.has("api-key") ||
           details.url !== endpoint.href ||
           wire?.model !== candidate.model ||
-          (wire?.reasoning_effort ?? wire?.reasoning?.effort) !== candidate.effort.value ||
+          (!contract.claude &&
+            (wire?.reasoning_effort ?? wire?.reasoning?.effort) !== candidate.effort.value) ||
           wire?.stream === true ||
-          Object.keys(wire ?? {}).some(
-            (key) =>
-              ![
-                "model",
-                "messages",
-                "stream",
-                "reasoning_effort",
-                "reasoning",
-                "max_tokens",
-                "max_completion_tokens",
-                "prompt_cache_key",
-              ].includes(key)
-          )
+          (!contract.claude &&
+            Object.keys(wire ?? {}).some(
+              (key) =>
+                ![
+                  "model",
+                  "messages",
+                  "stream",
+                  "reasoning_effort",
+                  "reasoning",
+                  "max_tokens",
+                  "max_completion_tokens",
+                  "prompt_cache_key",
+                ].includes(key)
+            ))
         )
           throw new Error("decision_identity_changed");
+        const messages = contract.claude
+          ? claudeWireFacts(wire, candidate.effort.value!, outputLimit)
+          : wire.messages;
         const finalFacts = validTextFacts({
           model: plan.name,
-          messages: wire.messages,
+          messages,
           stream: false,
           max_completion_tokens: wire.max_completion_tokens ?? wire.max_tokens,
           ...(wire.tools ? { tools: wire.tools } : {}),
@@ -371,6 +418,36 @@ async function buildAttempt(
     },
     observe: (send) => observeResponse(identity, signal, send),
   };
+}
+async function reportedClaudeClientUsage(
+  response: Response,
+  attempt: ApplicationAttempt
+): Promise<Response> {
+  const receipt = readDecisionAttemptReceipt(attempt.id);
+  if (response.status >= 400 && receipt.state === "reserved") {
+    void response.body?.cancel().catch(() => {});
+    return automaticRejection("pipeline_rejected");
+  }
+  if (attempt.provider !== "claude" || !response.ok) return response;
+  const body = await response.json();
+  const input = receipt.input_tokens as number | null,
+    output = receipt.output_tokens as number | null;
+  body.usage = {
+    prompt_tokens: input,
+    completion_tokens: output,
+    total_tokens: input === null || output === null ? null : input + output,
+    prompt_tokens_details: {
+      cached_tokens: receipt.cache_read_tokens,
+      cache_creation_tokens: receipt.cache_creation_tokens,
+    },
+    completion_tokens_details: { reasoning_tokens: receipt.reasoning_tokens },
+    cost: receipt.cost_usd,
+  };
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.set("content-type", "application/json");
+  return new Response(JSON.stringify(body), { status: response.status, headers });
 }
 export async function executeAutomaticCombo(
   plan: AutomaticPlan,
@@ -430,6 +507,8 @@ export async function executeAutomaticCombo(
         new Error("decision_deadline"),
         callerSignal.aborted ? 499 : 504
       );
+    response = await reportedClaudeClientUsage(response, attempt);
+    signal.throwIfAborted();
     finishDecisionApplication(attempt.id, response.status);
     const result = new Response(response.body, {
       status: response.status,

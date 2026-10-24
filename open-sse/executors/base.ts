@@ -1120,7 +1120,10 @@ export class BaseExecutor {
             // Generic OpenAI-compatible clients that route through native Claude OAuth
             // must opt in with x-omniroute-thinking; force-injecting adaptive thinking
             // leaks non-standard reasoning replay fields back into those clients.
-            const isHaiku = typeof tb.model === "string" && tb.model.includes("haiku");
+            const isHaiku =
+              typeof tb.model === "string" &&
+              tb.model.includes("haiku") &&
+              tb.model !== "claude-haiku-5-5";
             // #5312 RC-B: honor the operator's proxy-level Thinking-Budget mode.
             // `auto` means "strip — let the provider decide", so suppress the default
             // adaptive injection. Passthrough/no-config keeps the native Claude Code

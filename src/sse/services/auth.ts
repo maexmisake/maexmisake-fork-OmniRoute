@@ -10,6 +10,7 @@ import { describeUpstreamFailure } from "@/shared/utils/upstreamError";
 import { buildAllExpiredCredentials } from "./authExpiredCredentials.ts";
 import { pickExpiryFirstConnection } from "./expiryFirstAccountSelection.ts";
 import { isModelScopedFailure, isQuotaExhaustedSignal } from "./modelScopedQuotaFailure.ts"; // #13548
+import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
 import {
   getCachedRawProviderConnections,
   getCachedProviderNodes,
@@ -2295,6 +2296,8 @@ export async function getProviderCredentialsWithQuotaPreflight(
       return committed;
     }
 
+    // Reject an armed ancillary usage fetch; do not skip the configured quota policy.
+    if (currentApplicationAttempt()) throw new Error("decision_quota_preflight_unsupported");
     // Returns the minimum-remaining cutoff for a window — matches the
     // dashboard's quota bars so the number the user types in the modal
     // means the same thing as the percentage rendered on the bar.

@@ -1,4 +1,5 @@
 import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
+import { assertReadyClaudeOAuth } from "@/lib/decisionPolicy/applicationProvider";
 // Re-export from open-sse with local logger
 import * as log from "../utils/logger";
 import { updateProviderConnection } from "@/lib/db/providers";
@@ -252,6 +253,14 @@ export async function checkAndRefreshToken(provider: string, credentials: any) {
   const automatic = currentApplicationAttempt();
   if (automatic) {
     automatic.assertFresh();
+    if (
+      provider === "claude" &&
+      provider === automatic.provider &&
+      credentials.connectionId === automatic.connectionId
+    ) {
+      assertReadyClaudeOAuth(credentials);
+      return credentials;
+    }
     if (
       provider !== automatic.provider ||
       credentials.connectionId !== automatic.connectionId ||
