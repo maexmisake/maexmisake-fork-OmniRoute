@@ -2,6 +2,16 @@
 
 This branch contains an opt-in, text/JSON automatic-routing prototype. The actual chat handler can make one native System One selection over eligible model-and-effort pairs, then make at most one guarded execution of the valid chosen pair. Ordinary defaults and existing combo strategies are unchanged. It is not production-ready or evidence of improved model-selection quality.
 
+## 25 October follow-up: native access diagnostics
+
+Local branch `feat/decision-provider-diagnostics-v1` starts from preserved delivery head `49cf693908abc613c215c620a6ebc80241265b3c`. It adds a fixed truthful `OmniRoute-SystemOne/1.0` identifier to the native transport, bounded sanitized provider-error causes, terminal handling of native 401/402/403/429/451 without account/provider/deterministic fallback, and retention of explicitly reported failed-call usage. A presented credential does not establish its validity or the scope of a quota. No automatic selector provider or model has been added.
+
+The original delivery tree was published as managed snapshot `7d396a43294f06a5996c5d01f88d56bf3578c1d5` on the delivery branch. This follow-up remains local and unpublished. Direct endpoint successes reported by a separate tester for TypeSafe, OpenRouter and Vercel are not tests of these application adapters. Zen returned 429 with both credential-free and keyed controls; free entitlement, key validity and quota scope remain unresolved.
+
+Failure diagnostics retain bounded semantic RFC9457 fields and nested messages after canonical sanitization and caller-owned value redaction; raw bodies/HTML are never returned. This is not universal detection of every unidentified private value. A reported error cost, including zero, is retained; a missing receipt stays unknown. The ordinary standalone history/cost writers remain best effort with inherited natural-key deduplication. This does not upgrade them to the automatic lane's per-attempt journal or crash-proof accounting.
+
+The actual-handler regression suite is `tests/integration/decision-native-selector.test.ts`; diagnostics and failure-receipt fixtures are `tests/unit/systemone-{diagnostics,proxy,cost-accounting}.test.ts`. Use the offline command below with those explicit files. Detailed dated source, test, accounting and build evidence is saved in the private Gravewire research repository. No credentials or provider calls are required.
+
 ## Branch and ancestry
 
 - Delivery branch: `feat/native-router-delivery-20261024`.
@@ -75,4 +85,4 @@ To unblock release validation, use a cloud build image where the installed verif
 
 This proposed public-fork delivery contains code, synthetic tests and sanitized operator documentation. Private research, manual assets, screenshots, actual configuration and build captures stay in the separate private research repository. A local scan/manual diff review found no real credentials or private endpoints introduced by this delivery; the repository gitleaks check was unavailable and reported SKIP, not a clean scan.
 
-An authorized push would create only `feat/native-router-delivery-20261024` in `maexmisake/maexmisake-fork-OmniRoute`. No draft PR is proposed as part of that push while the release target is divergent and the build remains blocked. No upstream submission, target-branch update or deployment is included. Nothing has been pushed.
+An authorized push would create only `feat/native-router-delivery-20261024` in `maexmisake/maexmisake-fork-OmniRoute`. No draft PR is proposed as part of that push while the release target is divergent and the build remains blocked. No upstream submission, target-branch update or deployment is included. The original delivery was subsequently published to that new fork branch as snapshot `7d396a43294f06a5996c5d01f88d56bf3578c1d5`; the original local commit/history remain intact. The 25 October follow-up is local only. No PR, merge or deployment was performed.

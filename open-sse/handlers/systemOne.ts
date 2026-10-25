@@ -13,10 +13,15 @@
  *
  * Upstream error bodies are never passed through: a decision request carries the
  * caller's `state` (frequently the operator's own data) and some upstreams echo
- * it, or the request key, back in the error. Only the status and a short, safe
- * upstream error code reach the client.
+ * it, or the request key, back in the error. Bounded sanitized diagnostic fields may reach the client after credential,
+ * account and request-echo projection; raw error bodies never do.
  */
 
+import {
+  projectSystemOneFailure,
+  systemOneSensitiveValues,
+  systemOneRetryAfter,
+} from "./systemOneDiagnostics.ts";
 import { updateFromHeaders } from "../services/rateLimitManager.ts";
 import { runWithSharedCapacity } from "./systemOneCapacity.ts";
 import {
@@ -29,11 +34,7 @@ import {
 } from "../services/rateLimitManager/errors.ts";
 import { isOpencodeFreeTierRefusalForProvider } from "../executors/opencodeGeoBlock.ts";
 import { CORS_HEADERS } from "../utils/cors.ts";
-import {
-  errorResponse,
-  sanitizeErrorMessage,
-  projectPublicErrorIdentifier,
-} from "../utils/error.ts";
+import { errorResponse, sanitizeErrorMessage, buildErrorBody } from "../utils/error.ts";
 import {
   nativeSystemOnePricing,
   systemOneBackend,
@@ -129,7 +130,7 @@ const CALLER_FAULT_STATUSES = new Set([400, 404, 405, 409, 413, 415, 422]);
 
 function shouldCoolDownConnection(status: number): boolean {
   if (CALLER_FAULT_STATUSES.has(status)) return false;
-  return status === 401 || status === 402 || status === 403 || status === 429 || status >= 500;
+  return status === 401 || status === 402 || status >= 500;
 }
 
 type UpstreamBody = Record<string, unknown> | null;
@@ -143,31 +144,6 @@ function parseUpstreamBody(text: string): UpstreamBody {
   } catch {
     return null;
   }
-}
-
-function upstreamErrorCode(parsed: UpstreamBody): string | null {
-  const error = parsed?.error;
-  const candidates: unknown[] = [
-    typeof error === "string" ? error : null,
-    error && typeof error === "object" ? (error as Record<string, unknown>).code : null,
-    error && typeof error === "object" ? (error as Record<string, unknown>).type : null,
-    parsed?.code,
-    parsed?.type,
-  ];
-  for (const candidate of candidates) {
-    const code = projectPublicErrorIdentifier(candidate, "");
-    if (code) return code;
-  }
-  return null;
-}
-
-/**
- * Status-derived message plus, when present, the upstream's own short error code
- * (`FreeTierError`, `insufficient_quota`, …). The upstream's prose is dropped.
- */
-function upstreamFailureMessage(parsed: UpstreamBody, status: number): string {
-  const code = upstreamErrorCode(parsed);
-  return code ? `Provider returned HTTP ${status} (${code})` : `Provider returned HTTP ${status}`;
 }
 
 type CallContext = {
@@ -349,28 +325,90 @@ async function upstreamFailure(
   deps: SystemOneProxyDeps,
   call: CallContext,
   response: Response,
-  parsed: UpstreamBody
+  parsed: UpstreamBody,
+  text: string,
+  options: SystemOneProxyOptions
 ): Promise<Response> {
   const requestScoped = isOpencodeFreeTierRefusalForProvider(
     call.provider,
     response.status,
     JSON.stringify(parsed)
   );
-  const message = sanitizeErrorMessage(upstreamFailureMessage(parsed, response.status));
-  await logCall(deps, call, response.status, tokenCounts(null, null), message);
+  const diagnostic = projectSystemOneFailure({
+    status: response.status,
+    body: parsed,
+    bodyText: text,
+    authenticated: true,
+    sensitiveValues: systemOneSensitiveValues([
+      options.credentials?.apiKey,
+      options.credentials?.accessToken,
+      options.credentials?.connectionId,
+      options.apiKeyInfo?.id,
+      options.apiKeyInfo?.name,
+      options.correlationId,
+      options.body,
+    ]),
+  });
+  const message = diagnostic.message;
+  const usage = parseSystemOneUsage(parsed ?? {});
+  const tokens = tokenCounts(usage.inputTokens, usage.outputTokens);
+  await logCall(deps, call, response.status, tokens, message);
+  await recordFailedUsage(deps, call, response.status, usage, tokens);
   if (!requestScoped && shouldCoolDownConnection(response.status)) {
     await coolDown(deps, call, response.status, message, response.headers);
   }
-  const failure = errorResponse(response.status, message, {
+  const body = buildErrorBody(response.status, message, diagnostic.details, {
     code: requestScoped
       ? "upstream_request_error"
       : response.status === 502
         ? "upstream_error"
         : undefined,
   });
-  const retryAfter = response.headers.get("retry-after");
+  const failure = new Response(JSON.stringify(body), {
+    status: response.status,
+    headers: { "content-type": "application/json" },
+  });
+  failure.headers.set("x-omniroute-cost-status", usage.costUsd === null ? "unknown" : "known");
+  if (usage.costUsd !== null)
+    failure.headers.set("x-omniroute-response-cost", String(usage.costUsd));
+  failure.headers.set("x-omniroute-provider-error-kind", diagnostic.kind);
+  failure.headers.set("x-omniroute-provider-auth-scope", diagnostic.authScope);
+  const retryAfter = systemOneRetryAfter(response.headers.get("retry-after"));
   if (retryAfter) failure.headers.set("retry-after", retryAfter);
   return failure;
+}
+
+/** Non-2xx may still report a charge. Preserve exact receipts through the existing
+ * writers; never estimate an error charge from a catalog or turn missing into zero. */
+async function recordFailedUsage(
+  deps: SystemOneProxyDeps,
+  call: CallContext,
+  status: number,
+  usage: { inputTokens: number | null; outputTokens: number | null; costUsd: number | null },
+  tokens: Tokens
+): Promise<void> {
+  if (usage.inputTokens === null && usage.outputTokens === null && usage.costUsd === null) return;
+  recordDecisionTokenUsage(call, tokens);
+  await deps
+    .saveRequestUsage({
+      provider: call.provider,
+      model: call.upstreamModel || call.canonicalModel,
+      tokens: { ...tokens, cost_usd: usage.costUsd ?? undefined },
+      status: String(status),
+      success: false,
+      endpoint: SYSTEMONE_ROUTE_PATH,
+      connectionId: call.connectionId,
+      apiKeyId: call.apiKeyId,
+      apiKeyName: call.apiKeyName,
+    })
+    .catch(() => {});
+  if (call.apiKeyId && usage.costUsd !== null)
+    deps.recordCost(call.apiKeyId, usage.costUsd, {
+      provider: call.provider,
+      model: call.canonicalModel,
+      success: false,
+      requestId: call.correlationId ?? undefined,
+    });
 }
 
 function recordDecisionTokenUsage(call: CallContext, tokens: Tokens): void {
@@ -578,7 +616,7 @@ export async function handleSystemOneProxy(
       const text = await response.text();
       const parsed = parseUpstreamBody(text);
 
-      if (!response.ok) return upstreamFailure(deps, call, response, parsed);
+      if (!response.ok) return upstreamFailure(deps, call, response, parsed, text, options);
 
       return await handleSuccessfulResponse(deps, call, text, parsed, options.body);
     });

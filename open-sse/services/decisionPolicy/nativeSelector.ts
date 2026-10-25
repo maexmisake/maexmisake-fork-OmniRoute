@@ -67,8 +67,10 @@ export function nativeDecisionClient(options: {
       };
       const response = await options.call(body, signal);
       const costUsd = nativeReportedCost(response.body);
-      if ([401, 402, 403].includes(response.status)) return { status: "auth", costUsd };
-      if ([408, 429, 500, 502, 503, 504].includes(response.status))
+      if (response.status === 401) return { status: "auth", costUsd };
+      // Access, billing and rate/quota restrictions never authorize identity rotation.
+      if ([402, 403, 429, 451].includes(response.status)) return { status: "denied", costUsd };
+      if ([408, 500, 502, 503, 504].includes(response.status))
         return { status: "retryable", costUsd };
       if (response.status !== 200) return { status: "invalid", costUsd };
       return parseNativeChoice(response.body, candidates, costUsd);

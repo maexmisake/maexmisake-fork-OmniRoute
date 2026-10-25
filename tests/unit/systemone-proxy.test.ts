@@ -256,7 +256,7 @@ test("a 402 out-of-credits response cools the connection down", async () => {
   assert.equal(recorded.cooldowns.length, 1);
 });
 
-test("a 429 passes the upstream retry-after through and cools the connection down", async () => {
+test("a 429 preserves retry-after without inferring account-specific quota", async () => {
   const recorded = recorder();
   const response = await handleSystemOneProxy(
     options(),
@@ -266,9 +266,7 @@ test("a 429 passes the upstream retry-after through and cools the connection dow
   );
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("retry-after"), "37");
-  assert.equal(recorded.cooldowns.length, 1);
-  assert.equal(recorded.cooldowns[0].status, 429);
-  assert.equal(recorded.cooldowns[0].model, "typesafe/jev-1.13");
+  assert.equal(recorded.cooldowns.length, 0);
 });
 
 test("a missing requested answer is rejected without recording successful usage", async () => {
@@ -520,4 +518,106 @@ test("a free-tier model is never dispatched on a paid account", async () => {
   assert.equal(response.status, 403);
   assert.equal(recorded.requests.length, 0, "the free alias must not bill a paid account");
   assert.equal(recorded.cooldowns.length, 0);
+});
+
+test("RFC9457 native diagnostics preserve the cause while redacting request/account values", async () => {
+  const r = recorder();
+  const response = await handleSystemOneProxy(
+    options(),
+    deps(r, async () =>
+      jsonResponse(
+        {
+          title: "FreeUsageLimitError",
+          detail: `Free usage limit reached. key=${UPSTREAM_KEY}; account=conn-1; request=${STATE}`,
+          type: "https://errors.example.invalid/problems/free-usage-limit?account=private-user",
+        },
+        429
+      )
+    )
+  );
+  const body = await response.json();
+  assert.match(body.error.message, /FreeUsageLimitError/);
+  assert.match(body.error.message, /Free usage limit reached/);
+  const text = JSON.stringify(body);
+  assert.doesNotMatch(text, /sk-live-operator-key|conn-1|Jane Doe|private-user/);
+  assert.equal(response.headers.get("x-omniroute-provider-error-kind"), "quota");
+  assert.equal(response.headers.get("x-omniroute-provider-auth-scope"), "unknown");
+});
+
+test("Cloudflare1010 native denial is useful and never marks a credential invalid", async () => {
+  const r = recorder();
+  const response = await handleSystemOneProxy(
+    options(),
+    deps(
+      r,
+      async () =>
+        new Response(
+          "<html><title>Access denied</title><h1>Cloudflare error 1010</h1><p>private edge trace</p></html>",
+          { status: 403, headers: { "content-type": "text/html" } }
+        )
+    )
+  );
+  assert.equal(response.status, 403);
+  const text = await response.text();
+  assert.match(text, /Cloudflare|1010/);
+  assert.doesNotMatch(text, /<html>|private edge trace|invalid key/i);
+  assert.equal(r.cooldowns.length, 0);
+  assert.equal(r.requests.length, 1);
+  assert.equal(response.headers.get("x-omniroute-provider-error-kind"), "edge");
+});
+
+for (const reportedCost of [0, 0.00012, null]) {
+  test(`failed native response preserves explicit usage and cost ${reportedCost}`, async () => {
+    const r = recorder();
+    const response = await handleSystemOneProxy(
+      options(),
+      deps(r, async () =>
+        jsonResponse(
+          {
+            title: "FreeUsageLimitError",
+            detail: "Free usage limit reached.",
+            usage: {
+              input_tokens: 4,
+              output_tokens: 0,
+              ...(reportedCost === null ? {} : { cost: reportedCost }),
+            },
+          },
+          429
+        )
+      )
+    );
+    assert.equal(response.status, 429);
+    assert.equal(r.requests.length, 1);
+    assert.equal(r.callLogs.length, 1);
+    assert.equal(r.usage.length, 1);
+    assert.equal(r.usage[0].success, false);
+    const tokens = r.usage[0].tokens as Record<string, unknown>;
+    assert.equal(tokens.prompt_tokens, 4);
+    assert.equal(tokens.completion_tokens, 0);
+    assert.equal(tokens.cost_usd, reportedCost ?? undefined);
+    assert.equal(r.costs.length, reportedCost === null ? 0 : 1);
+    if (reportedCost !== null) assert.equal(r.costs[0].costUsd, reportedCost);
+  });
+}
+
+test("a zero failure charge remains known even when token counts are absent", async () => {
+  const r = recorder();
+  const response = await handleSystemOneProxy(
+    options(),
+    deps(r, async () =>
+      jsonResponse(
+        {
+          error: { message: "Free usage limit reached." },
+          usage: { cost: 0 },
+        },
+        429
+      )
+    )
+  );
+  assert.equal(response.headers.get("x-omniroute-cost-status"), "known");
+  assert.equal(response.headers.get("x-omniroute-response-cost"), "0");
+  assert.equal(r.usage.length, 1);
+  assert.equal((r.usage[0].tokens as Record<string, unknown>).prompt_tokens, null);
+  assert.equal((r.usage[0].tokens as Record<string, unknown>).completion_tokens, null);
+  assert.equal(r.costs[0].costUsd, 0);
 });

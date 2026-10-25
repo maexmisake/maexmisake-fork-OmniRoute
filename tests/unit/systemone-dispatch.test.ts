@@ -198,7 +198,7 @@ test("a retryable failure rotates to the next connection of the same provider", 
     pools: { openrouter: [keyed("conn-1"), keyed("conn-2")] },
     respond: (attempt) =>
       attempt.connectionId === "conn-1"
-        ? json(429, { error: { code: "rate_limit" } }, { "retry-after": "7" })
+        ? json(503, { error: { code: "upstream_unavailable" } })
         : json(200, ANSWER),
   });
 
@@ -517,14 +517,14 @@ test("connection rotation and the candidate chain are both bounded", async () =>
 test("the last upstream failure is preserved over a later selector diagnostic", async () => {
   const harnessed = harness({
     pools: { "opencode-zen": [freeKey("zen-1")] },
-    respond: () => json(429, { error: "rate_limited" }, { "retry-after": "11" }),
+    respond: () => json(503, { error: "upstream_unavailable" }, { "retry-after": "11" }),
   });
 
   // openrouter is a configured candidate for the alias but has no pool here, so
-  // its selection returns null AFTER opencode already answered 429.
+  // its selection returns null AFTER opencode already answered 503.
   const response = await dispatch("jev", ["opencode-zen", "openrouter"], harnessed);
 
-  assert.equal(response.status, 429);
+  assert.equal(response.status, 503);
   assert.equal(response.headers.get("retry-after"), "11");
 });
 
@@ -579,10 +579,12 @@ test("the upstream body carries the backend's own model id, not the client alias
 });
 
 test("the retry classification matches the documented contract", () => {
-  for (const status of [408, 429, 500, 503, 504, 529]) {
+  for (const status of [408, 500, 503, 504, 529]) {
     assert.equal(isRetryableSystemOneStatus(status), true, `${status} should be retryable`);
   }
-  for (const status of [200, 400, 401, 402, 403, 404, 409, 413, 415, 422, 499, 501, 502]) {
+  for (const status of [
+    200, 400, 401, 402, 403, 404, 409, 413, 415, 422, 429, 451, 499, 501, 502,
+  ]) {
     assert.equal(isRetryableSystemOneStatus(status), false, `${status} must not be retryable`);
   }
 });
@@ -592,3 +594,22 @@ test.after(async () => {
   resetDbInstance();
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
+
+for (const [status, payload] of [
+  [403, { title: "Access denied", detail: "Cloudflare error 1010" }],
+  [401, { error: { message: "Authentication required" } }],
+  [429, { error: { name: "FreeUsageLimitError", message: "Free usage limit reached." } }],
+] as const) {
+  test(`native access restriction HTTP${status} stops before identity/provider rotation`, async () => {
+    const h = harness({
+      pools: { "opencode-zen": [freeKey("zen-1"), freeKey("zen-2")], openrouter: [keyed("or-1")] },
+      respond: () => json(status, payload, { "retry-after": "17" }),
+    });
+    const response = await dispatch("jev", ["opencode-zen", "openrouter"], h);
+    assert.equal(response.status, status);
+    assert.equal(h.attempts.length, 1);
+    assert.equal(h.selections.length, 1);
+    assert.equal(response.headers.get("retry-after"), "17");
+    assert.equal(h.recovered.length, 0);
+  });
+}

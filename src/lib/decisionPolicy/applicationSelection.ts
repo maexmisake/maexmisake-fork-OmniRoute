@@ -1,4 +1,11 @@
 import { z } from "zod";
+import { buildErrorBody } from "../../../open-sse/utils/error.ts";
+import {
+  projectSystemOneFailure,
+  systemOneSensitiveValues,
+  systemOneRetryAfter,
+  type SystemOneFailureDiagnostic,
+} from "../../../open-sse/handlers/systemOneDiagnostics.ts";
 import { randomUUID } from "node:crypto";
 import type {
   Candidate,
@@ -14,6 +21,7 @@ import {
 } from "../../../open-sse/services/decisionPolicy/applicationContext.ts";
 import {
   fetchSystemOne,
+  hasExactSystemOneHeaders,
   systemOneHeaders,
   systemOneUrl,
 } from "../../../open-sse/handlers/systemOneTransport.ts";
@@ -52,13 +60,7 @@ export type NativeStage = {
   annotate: (response: Response) => Response;
 };
 function validNativeHeaders(headers: HeadersInit | undefined, authorization: string): boolean {
-  const wire = new Headers(headers);
-  return (
-    wire.get("authorization") === authorization &&
-    wire.get("accept") === "application/json" &&
-    wire.get("content-type") === "application/json" &&
-    [...wire.keys()].every((key) => ["authorization", "accept", "content-type"].includes(key))
-  );
+  return hasExactSystemOneHeaders(headers, authorization);
 }
 
 const nativeCredentials = z.object({
@@ -220,6 +222,8 @@ export async function prepareNativeStage(
     outcome = "unknown",
     handedOver = false,
     started = false;
+  let failureDiagnostic: SystemOneFailureDiagnostic | null = null;
+  let failureRetryAfter: string | null = null;
   let selectedCandidate: Candidate | undefined;
   let expectedBody = "",
     decoded: Record<string, unknown> | null = null;
@@ -269,6 +273,22 @@ export async function prepareNativeStage(
           decoded = parsed as Record<string, unknown>;
       } catch {
         /* Invalid JSON still records the physical HTTP outcome. */
+      }
+      if (!response.ok) {
+        failureDiagnostic = projectSystemOneFailure({
+          status: response.status,
+          body: decoded,
+          bodyText: text,
+          authenticated: true,
+          sensitiveValues: systemOneSensitiveValues([
+            credentials.apiKey,
+            selection.connectionId,
+            keyId,
+            identity.id,
+            JSON.parse(expectedBody),
+          ]),
+        });
+        failureRetryAfter = systemOneRetryAfter(response.headers.get("retry-after"));
       }
       const raw = decoded?.usage as Record<string, unknown> | undefined;
       usage = {
@@ -372,10 +392,31 @@ export async function prepareNativeStage(
       }
     },
     annotate: (response) => {
-      const result = new Response(response.body, {
-        status: response.status,
-        headers: response.headers,
-      });
+      const diagnostic =
+        response.status === 409 &&
+        ["decision_auth", "decision_denied", "decision_retryable", "decision_invalid"].includes(
+          response.headers.get("x-omniroute-decision-reason") ?? ""
+        )
+          ? failureDiagnostic
+          : null;
+      const result = new Response(
+        diagnostic
+          ? JSON.stringify(
+              buildErrorBody(response.status, diagnostic.message, diagnostic.details, {
+                code: "decision_application_rejected",
+              })
+            )
+          : response.body,
+        {
+          status: response.status,
+          headers: response.headers,
+        }
+      );
+      if (diagnostic) {
+        result.headers.set("x-omniroute-provider-error-kind", diagnostic.kind);
+        result.headers.set("x-omniroute-provider-auth-scope", diagnostic.authScope);
+        if (failureRetryAfter) result.headers.set("retry-after", failureRetryAfter);
+      }
       result.headers.set("x-omniroute-selection-mode", "native");
       result.headers.set("x-omniroute-decision-request", identity.id);
       result.headers.set(

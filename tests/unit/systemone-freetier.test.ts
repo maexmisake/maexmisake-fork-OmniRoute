@@ -65,7 +65,7 @@ test("Zen request-specific refusal preserves safe classification without account
   assert.ok(!text.includes(state) && !text.includes(key));
   assert.equal(JSON.parse(text).error.code, "upstream_request_error");
 });
-test("the same upstream name on another provider retains account-failure behavior", async () => {
+test("the same upstream name on another provider remains a denial of unknown account scope", async () => {
   const cooldowns: unknown[] = [];
   const response = await handleSystemOneProxy(
     {
@@ -77,7 +77,10 @@ test("the same upstream name on another provider retains account-failure behavio
     fake(cooldowns)
   );
   assert.equal(response.status, 403);
-  assert.equal(cooldowns.length, 1);
+  assert.equal(cooldowns.length, 0);
+  assert.equal(response.headers.get("x-omniroute-provider-error-kind"), "access");
+  assert.equal(response.headers.get("x-omniroute-provider-auth-scope"), "unknown");
+  assert.notEqual((await response.json()).error.code, "upstream_request_error");
 });
 test("request-specific refusal is terminal rather than rotating through healthy credentials", async () => {
   let selections = 0,

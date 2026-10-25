@@ -43,6 +43,26 @@ export interface SystemOneCredentials {
 
 export type SystemOneEndpointKind = "decision" | "models";
 
+/** Identifies this native transport, without claiming a browser or another client. */
+export const SYSTEMONE_USER_AGENT = "OmniRoute-SystemOne/1.0";
+
+/** The automatic decision lane permits only its immutable native header contract. */
+export function hasExactSystemOneHeaders(
+  headers: HeadersInit | undefined,
+  authorization: string
+): boolean {
+  const wire = new Headers(headers);
+  return (
+    wire.get("authorization") === authorization &&
+    wire.get("accept") === "application/json" &&
+    wire.get("content-type") === "application/json" &&
+    wire.get("user-agent") === SYSTEMONE_USER_AGENT &&
+    [...wire.keys()].every((key) =>
+      ["authorization", "accept", "content-type", "user-agent"].includes(key)
+    )
+  );
+}
+
 const OVERRIDE_FIELDS: Record<SystemOneEndpointKind, string> = {
   decision: "systemOneUrl",
   models: "systemOneModelsUrl",
@@ -132,6 +152,7 @@ export function systemOneHeaders(
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
+    "User-Agent": SYSTEMONE_USER_AGENT,
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }

@@ -182,7 +182,7 @@ class PolicyRun {
       const outcome = await this.decisionAttempt(client, eligible);
       this.checkAbort();
       const chosen = this.recordDecision(client, outcome, eligible);
-      if (outcome.status === "auth" || outcome.status === "refused") return null;
+      if (["auth", "denied", "refused"].includes(outcome.status)) return null;
       if (chosen) return [chosen, ...eligible.filter((candidate) => candidate.id !== chosen.id)];
       if (outcome.status !== "retryable") break;
     }

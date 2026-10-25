@@ -19,6 +19,9 @@ const { proxyFetch } = await import("../../open-sse/utils/proxyFetch.ts");
 const { clearAllModelLockouts } = await import("../../open-sse/services/accountFallback.ts");
 const access = "sk-ant-oat-synthetic-fixture-not-a-credential";
 const decisionKey = "synthetic-native-decision-key";
+const { SYSTEMONE_USER_AGENT } = await import("../../open-sse/handlers/systemOneTransport.ts");
+let failurePayload: Record<string, unknown> | string | null = null;
+const decisionUserAgents: string[] = [];
 let key: { id: string; key: string };
 let executionConnection: string, decisionConnection: string, comboId: string;
 let openaiConnection: string;
@@ -43,7 +46,14 @@ const server = createServer(async (req, res) => {
   if (req.url === "/decision") {
     assert.equal(req.headers.authorization, `Bearer ${decisionKey}`);
     assert.equal(req.headers["x-api-key"], undefined);
+    assert.equal(req.headers["user-agent"], SYSTEMONE_USER_AGENT);
+    decisionUserAgents.push(String(req.headers["user-agent"]));
     decisionCalls.push(body);
+    if (failurePayload !== null) {
+      res.statusCode = decisionStatus;
+      res.end(typeof failurePayload === "string" ? failurePayload : JSON.stringify(failurePayload));
+      return;
+    }
     if (decisionGate) await decisionGate;
     const probabilities = chosen === "deep" ? { light: 0.2, deep: 0.8 } : { light: 0.8, deep: 0.2 };
     const answer =
@@ -205,6 +215,7 @@ beforeEach(async () => {
   chosen = "deep";
   decisionStatus = 200;
   answerMode = "valid";
+  failurePayload = null;
   decisionGate = null;
   decisionCost = 0.001;
   unexpected = 0;
@@ -693,4 +704,68 @@ test("a concurrent request cannot enter the key slot while native decision is pe
     release();
     decisionGate = null;
   }
+});
+
+for (const sample of [
+  {
+    status: 403,
+    kind: "edge",
+    outcome: "denied",
+    body: "<html><title>Cloudflare error 1010</title><p>synthetic-private-account</p></html>",
+    cause: /Cloudflare 1010/,
+  },
+  {
+    status: 401,
+    kind: "authentication",
+    outcome: "auth",
+    body: { error: { message: "Authentication required", code: "authentication_error" } },
+    cause: /Authentication required/,
+  },
+  {
+    status: 429,
+    kind: "quota",
+    outcome: "denied",
+    body: {
+      title: "FreeUsageLimitError",
+      detail: "Free usage limit reached.",
+      type: "https://errors.example.invalid/free-usage-limit?account=synthetic-private-account",
+    },
+    cause: /Free usage limit reached/,
+  },
+]) {
+  test(`actual handler preserves sanitized ${sample.kind} diagnostics with zero follow-on calls`, async () => {
+    decisionStatus = sample.status;
+    failurePayload = sample.body;
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    const response = await POST(request());
+    const text = await response.text();
+    assert.equal(response.status, 409);
+    assert.equal(decisionCalls.length, d + 1);
+    assert.equal(executionCalls.length, e);
+    assert.equal(decisionUserAgents.at(-1), SYSTEMONE_USER_AGENT);
+    assert.equal(response.headers.get("x-omniroute-provider-error-kind"), sample.kind);
+    assert.equal(response.headers.get("x-omniroute-provider-auth-scope"), "unknown");
+    assert.match(text, sample.cause);
+    assert.doesNotMatch(text, /synthetic-private-account|<html>|synthetic-native-decision-key/);
+    const rows = readDecisionAttempts(key.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].decision_outcome, sample.outcome);
+    assert.equal(rows[0].cost_usd, null);
+  });
+}
+
+test("native account header overrides cannot replace truthful identity or dispatch", async () => {
+  await updateProviderConnection(decisionConnection, {
+    providerSpecificData: {
+      headers: { "User-Agent": "Mozilla/5.0", "X-OpenCode-Identity": "fabricated" },
+    },
+  });
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  const response = await POST(request());
+  await response.text();
+  assert.equal(response.status, 409);
+  assert.equal(decisionCalls.length, d);
+  assert.equal(executionCalls.length, e);
 });

@@ -90,7 +90,7 @@ export type LedgerEntry = {
   costUsd: number | null;
 };
 export type DecisionOutcome = {
-  status: "selected" | "refused" | "unknown" | "invalid" | "retryable" | "auth";
+  status: "selected" | "refused" | "unknown" | "invalid" | "retryable" | "auth" | "denied";
   optionId?: string;
   confidence?: number | null;
   probabilities?: Record<string, number> | null;
