@@ -19,6 +19,38 @@ const { proxyFetch } = await import("../../open-sse/utils/proxyFetch.ts");
 const { clearAllModelLockouts } = await import("../../open-sse/services/accountFallback.ts");
 const access = "sk-ant-oat-synthetic-fixture-not-a-credential";
 const decisionKey = "synthetic-native-decision-key";
+// Official-contract synthetic envelopes; no raw observed provider response is replayed.
+const decisionBindings = {
+  zen: {
+    provider: "opencode-zen",
+    model: "jev-1.13",
+    endpoint: "https://opencode.ai/inference/systemone/v1/systemone",
+    credential: decisionKey,
+  },
+  typesafe: {
+    provider: "typesafe",
+    model: "jev-1.14.0",
+    endpoint: "https://api.typesafe.ai/v1/systemone",
+    credential: "synthetic-typesafe-decision-key",
+  },
+  openrouter: {
+    provider: "openrouter",
+    model: "typesafe/jev-1.14-20261014",
+    endpoint: "https://openrouter.ai/api/v1/systemone",
+    credential: "synthetic-openrouter-decision-key",
+  },
+  vercel: {
+    provider: "vercel-ai-gateway",
+    model: "typesafe-ai/jev",
+    endpoint: "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+    credential: "synthetic-vercel-decision-key",
+  },
+} as const;
+type DecisionBindingName = keyof typeof decisionBindings;
+const paidBindings: DecisionBindingName[] = ["typesafe", "openrouter", "vercel"];
+const decisionConnections = {} as Record<DecisionBindingName, string>;
+let decisionBindingName: DecisionBindingName = "zen";
+const currentDecisionBinding = () => decisionBindings[decisionBindingName];
 const { SYSTEMONE_USER_AGENT } = await import("../../open-sse/handlers/systemOneTransport.ts");
 let failurePayload: Record<string, unknown> | string | null = null;
 const decisionUserAgents: string[] = [];
@@ -44,9 +76,11 @@ const server = createServer(async (req, res) => {
   const body = JSON.parse(text);
   res.setHeader("content-type", "application/json");
   if (req.url === "/decision") {
-    assert.equal(req.headers.authorization, `Bearer ${decisionKey}`);
+    const binding = currentDecisionBinding();
+    assert.equal(req.headers.authorization, `Bearer ${binding.credential}`);
     assert.equal(req.headers["x-api-key"], undefined);
     assert.equal(req.headers["user-agent"], SYSTEMONE_USER_AGENT);
+    assert.equal(body.model, binding.model);
     decisionUserAgents.push(String(req.headers["user-agent"]));
     decisionCalls.push(body);
     if (failurePayload !== null) {
@@ -79,8 +113,13 @@ const server = createServer(async (req, res) => {
         usage: {
           input_tokens: 7,
           output_tokens: 2,
-          ...(decisionCost === null ? {} : { cost: decisionCost }),
+          ...(decisionCost === null || ["typesafe", "vercel"].includes(decisionBindingName)
+            ? {}
+            : { cost: decisionCost }),
         },
+        ...(decisionBindingName === "vercel" && decisionCost !== null
+          ? { provider_metadata: { gateway: { cost: String(decisionCost) } } }
+          : {}),
       })
     );
     return;
@@ -135,8 +174,7 @@ before(async () => {
   globalThis.fetch = async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     let path: string;
-    if (url === "https://opencode.ai/inference/systemone/v1/systemone" && init?.method === "POST")
-      path = "/decision";
+    if (url === currentDecisionBinding().endpoint && init?.method === "POST") path = "/decision";
     else if (url === "https://api.anthropic.com/v1/messages?beta=true" && init?.method === "POST")
       path = "/execution";
     else if (
@@ -173,19 +211,33 @@ before(async () => {
       })
     ).id
   );
-  decisionConnection = String(
-    (
+  for (const name of Object.keys(decisionBindings) as DecisionBindingName[]) {
+    const binding = decisionBindings[name];
+    decisionConnections[name] = String(
+      (
+        await createProviderConnection({
+          provider: binding.provider,
+          authType: "apikey",
+          name: `synthetic-native-selection-${name}`,
+          apiKey: binding.credential,
+          isActive: true,
+          testStatus: "active",
+          providerSpecificData: {},
+        })
+      ).id
+    );
+    if (name !== "zen")
       await createProviderConnection({
-        provider: "opencode-zen",
+        provider: binding.provider,
         authType: "apikey",
-        name: "synthetic-native-selection",
-        apiKey: decisionKey,
+        name: `synthetic-unselected-account-${name}`,
+        apiKey: `synthetic-unselected-credential-${name}`,
         isActive: true,
         testStatus: "active",
         providerSpecificData: {},
-      })
-    ).id
-  );
+      });
+  }
+  decisionConnection = decisionConnections.zen;
   openaiConnection = String(
     (
       await createProviderConnection({
@@ -222,12 +274,14 @@ beforeEach(async () => {
   afterDecision = null;
   largeResponse = false;
   responseModel = "jev-1.13";
-  await updateProviderConnection(decisionConnection, {
-    isActive: true,
-    testStatus: "active",
-    providerSpecificData: {},
-  });
-  await resetConnectionBackoff(decisionConnection);
+  for (const connection of Object.values(decisionConnections)) {
+    await updateProviderConnection(connection, {
+      isActive: true,
+      testStatus: "active",
+      providerSpecificData: {},
+    });
+    await resetConnectionBackoff(connection);
+  }
   await updateProviderConnection(executionConnection, {
     isActive: true,
     testStatus: "active",
@@ -244,6 +298,9 @@ afterEach((context) => {
   evidence.push({
     test: context.name,
     synthetic: true,
+    fixtureProvenance: "official-contract-synthetic",
+    decisionProvider: currentDecisionBinding().provider,
+    decisionModel: currentDecisionBinding().model,
     qualityMeasured: false,
     receipts: readDecisionAttempts(key.id),
   });
@@ -256,7 +313,11 @@ after(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   resetDbInstance();
 });
-async function configure(mode = "native") {
+async function configure(mode = "native", bindingName: DecisionBindingName = "zen") {
+  decisionBindingName = bindingName;
+  decisionConnection = decisionConnections[bindingName];
+  const binding = currentDecisionBinding();
+  responseModel = binding.model;
   const candidate = (id: string, effort: string) => ({
     id,
     provider: "claude",
@@ -281,8 +342,8 @@ async function configure(mode = "native") {
           mode === "native"
             ? {
                 mode: "native",
-                provider: "opencode-zen",
-                model: "jev-1.13",
+                provider: binding.provider,
+                model: binding.model,
                 connectionId: decisionConnection,
                 timeoutMs: 500,
               }
@@ -769,3 +830,175 @@ test("native account header overrides cannot replace truthful identity or dispat
   assert.equal(decisionCalls.length, d);
   assert.equal(executionCalls.length, e);
 });
+
+for (const bindingName of paidBindings) {
+  for (const selected of ["deep", "light"]) {
+    test(`paid native ${bindingName} honors explicit ${selected} model-and-effort selection`, async () => {
+      await configure("native", bindingName);
+      chosen = selected;
+      if (selected === "light")
+        await mutateConfig((config) => {
+          config.policy.candidates[0].provider = "openai";
+          config.policy.candidates[0].model = "gpt-5.4";
+          config.connections.light = openaiConnection;
+        });
+      const d = decisionCalls.length,
+        e = executionCalls.length;
+      const response = await POST(request());
+      const text = await response.text();
+      assert.equal(response.status, 200, text);
+      assert.equal(decisionCalls.length, d + 1);
+      assert.equal(executionCalls.length, e + 1);
+      assert.equal(decisionCalls.at(-1)!.model, currentDecisionBinding().model);
+      assert.equal(decisionUserAgents.at(-1), SYSTEMONE_USER_AGENT);
+      assert.equal(response.headers.get("x-omniroute-decision-candidate"), selected);
+      const executed = executionCalls.at(-1)!;
+      assert.equal(executed.model, selected === "light" ? "gpt-5.4" : "claude-opus-5-5");
+      assert.equal(
+        selected === "light"
+          ? executed.reasoning_effort
+          : (executed.output_config as Record<string, unknown>).effort,
+        selected === "light" ? "medium" : "high"
+      );
+      const rows = readDecisionAttempts(key.id);
+      assert.equal(rows.length, 2);
+      const decision = rows.find((row) => row.lane === "decision")!;
+      const execution = rows.find((row) => row.lane === "execution")!;
+      assert.equal(decision.provider, currentDecisionBinding().provider);
+      assert.equal(decision.model, currentDecisionBinding().model);
+      assert.equal(decision.connection_id, decisionConnection);
+      assert.equal(decision.cost_usd, bindingName === "typesafe" ? null : 0.001);
+      assert.equal(execution.provider, selected === "light" ? "openai" : "claude");
+      assert.equal(
+        execution.connection_id,
+        selected === "light" ? openaiConnection : executionConnection
+      );
+      assert.equal(execution.cost_usd, 0.002);
+      assert.equal(decision.request_id, execution.request_id);
+      const serialized = JSON.stringify(decisionCalls.at(-1));
+      assert.doesNotMatch(
+        serialized,
+        /private-profile-note|synthetic-private-config-note|person@example.invalid/
+      );
+      for (const binding of Object.values(decisionBindings))
+        assert.ok(!serialized.includes(binding.credential));
+    });
+  }
+
+  for (const outcome of ["401", "403", "429", "refused", "badidentity", "missingidentity"]) {
+    test(`paid native ${bindingName} ${outcome} stops after one selected account and zero executions`, async () => {
+      await configure("native", bindingName);
+      if (outcome === "refused") answerMode = "refused";
+      else if (outcome === "badidentity") responseModel = "unoffered-decision-model";
+      else if (outcome === "missingidentity") responseModel = null;
+      else {
+        decisionStatus = Number(outcome);
+        failurePayload = {
+          error: {
+            message:
+              outcome === "429" ? "Free usage limit reached." : "Synthetic access restriction",
+            code: outcome === "429" ? "FreeUsageLimitError" : "authentication_error",
+          },
+        };
+      }
+      const d = decisionCalls.length,
+        e = executionCalls.length;
+      const response = await POST(request());
+      const text = await response.text();
+      assert.equal(response.status, 409);
+      assert.equal(decisionCalls.length, d + 1);
+      assert.equal(executionCalls.length, e);
+      const rows = readDecisionAttempts(key.id);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].provider, currentDecisionBinding().provider);
+      assert.equal(rows[0].model, currentDecisionBinding().model);
+      assert.equal(rows[0].connection_id, decisionConnection);
+      assert.equal(
+        rows[0].cost_usd,
+        ["401", "403", "429"].includes(outcome) || bindingName === "typesafe" ? null : 0.001
+      );
+      if (["401", "403", "429"].includes(outcome)) {
+        assert.equal(rows[0].decision_outcome, outcome === "401" ? "auth" : "denied");
+        assert.equal(response.headers.get("x-omniroute-provider-auth-scope"), "unknown");
+      }
+      assert.doesNotMatch(
+        text,
+        /synthetic-native-decision-key|synthetic-typesafe-decision-key|synthetic-openrouter-decision-key|synthetic-vercel-decision-key/
+      );
+    });
+  }
+
+  test(`paid native ${bindingName} missing reported cost remains unknown after one execution`, async () => {
+    await configure("native", bindingName);
+    decisionCost = null;
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    const response = await POST(request());
+    await response.text();
+    assert.equal(response.status, 200);
+    assert.equal(decisionCalls.length, d + 1);
+    assert.equal(executionCalls.length, e + 1);
+    const decision = readDecisionAttempts(key.id).find((row) => row.lane === "decision")!;
+    assert.equal(decision.cost_usd, null);
+    assert.equal(decision.input_tokens, 7);
+    assert.equal(decision.output_tokens, 2);
+    assert.deepEqual(JSON.parse(response.headers.get("x-omniroute-routing-cost")!), {
+      knownUsd: 0.002,
+      unknownStages: 1,
+      totalUsd: null,
+    });
+  });
+
+  if (bindingName !== "typesafe")
+    test(`paid native ${bindingName} reported zero remains known zero in its provider-specific receipt`, async () => {
+      await configure("native", bindingName);
+      decisionCost = 0;
+      const response = await POST(request());
+      await response.text();
+      assert.equal(response.status, 200);
+      assert.equal(
+        readDecisionAttempts(key.id).find((row) => row.lane === "decision")!.cost_usd,
+        0
+      );
+      assert.deepEqual(JSON.parse(response.headers.get("x-omniroute-routing-cost")!), {
+        knownUsd: 0.002,
+        unknownStages: 0,
+        totalUsd: 0.002,
+      });
+    });
+
+  test(`paid native ${bindingName} cancellation after decision headers prevents execution`, async () => {
+    await configure("native", bindingName);
+    const abort = new AbortController(),
+      d = decisionCalls.length,
+      e = executionCalls.length;
+    afterDecision = async () => {
+      abort.abort();
+    };
+    const response = await POST(request(key.key, abort.signal));
+    await response.text();
+    assert.equal(response.status, 499);
+    assert.equal(decisionCalls.length, d + 1);
+    assert.equal(executionCalls.length, e);
+    const decision = readDecisionAttempts(key.id)[0];
+    assert.equal(decision.provider, currentDecisionBinding().provider);
+    assert.equal(decision.cost_usd, null);
+  });
+
+  test(`paid native ${bindingName} queued authority change after decision prevents execution`, async () => {
+    await configure("native", bindingName);
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    afterDecision = async () => {
+      await updateApiKeyPermissions(key.id, { allowedConnections: [decisionConnection] });
+    };
+    const response = await POST(request());
+    await response.text();
+    assert.equal(response.status, 409);
+    assert.equal(decisionCalls.length, d + 1);
+    assert.equal(executionCalls.length, e);
+    const decision = readDecisionAttempts(key.id)[0];
+    assert.equal(decision.provider, currentDecisionBinding().provider);
+    assert.equal(decision.cost_usd, bindingName === "typesafe" ? null : 0.001);
+  });
+}

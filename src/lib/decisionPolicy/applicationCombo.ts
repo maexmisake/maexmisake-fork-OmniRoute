@@ -68,16 +68,34 @@ function rejectedAttempt(
   if (attempt) response.headers.set("x-omniroute-decision-attempt", attempt.id);
   return response;
 }
-export const nativeSelectionSchema = z
+const nativeSelectionOptions = z
   .object({
     mode: z.literal("native"),
-    provider: z.literal("opencode-zen"),
-    model: z.literal("jev-1.13"),
     connectionId: z.string().min(1),
     timeoutMs: z.number().int().min(1).max(10000),
     maxCandidates: z.number().int().min(2).max(255).default(32),
   })
   .strict();
+// Exact provider/model pairs: neither aliases, catalogs nor client fields may
+// widen these operator-stored bindings or relax the returned identity check.
+export const nativeSelectionSchema = z.discriminatedUnion("provider", [
+  nativeSelectionOptions.extend({
+    provider: z.literal("opencode-zen"),
+    model: z.literal("jev-1.13"),
+  }),
+  nativeSelectionOptions.extend({
+    provider: z.literal("typesafe"),
+    model: z.literal("jev-1.14.0"),
+  }),
+  nativeSelectionOptions.extend({
+    provider: z.literal("openrouter"),
+    model: z.literal("typesafe/jev-1.14-20261014"),
+  }),
+  nativeSelectionOptions.extend({
+    provider: z.literal("vercel-ai-gateway"),
+    model: z.literal("typesafe-ai/jev"),
+  }),
+]);
 const configuration = z
   .object({
     enabled: z.literal(true),

@@ -121,6 +121,18 @@ export const SYSTEMONE_BACKENDS = {
     // the pattern is only a fallback for a row that carries none.
     decisionModelPattern: /(?:^|\/)jev(?:[-.]|$)/i,
   },
+  typesafe: {
+    provider: "typesafe",
+    label: "TypeSafe AI",
+    decisionUrl: "https://api.typesafe.ai/v1/systemone",
+    modelsUrl: "https://api.typesafe.ai/v1/models",
+    allowedHosts: ["api.typesafe.ai"],
+    requiresKey: true,
+    timeoutMs: 30_000,
+    limits: JEV_SYSTEMONE_LIMITS,
+    // Native catalog names include pinned Jev versions and Jev aliases.
+    decisionModelPattern: /^jev(?:[-.]|$)/i,
+  },
 } as const satisfies Record<string, SystemOneBackend>;
 
 export type SystemOneProviderId = keyof typeof SYSTEMONE_BACKENDS;

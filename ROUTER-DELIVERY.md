@@ -2,9 +2,30 @@
 
 This branch contains an opt-in, text/JSON automatic-routing prototype. The actual chat handler can make one native System One selection over eligible model-and-effort pairs, then make at most one guarded execution of the valid chosen pair. Ordinary defaults and existing combo strategies are unchanged. It is not production-ready or evidence of improved model-selection quality.
 
+## 25 October follow-up: explicit paid native bindings
+
+Local branch `feat/native-paid-bindings-v1` starts from diagnostics commit `623329ad6e7bf9be192510fec3b8087bbc25393d`. It reuses the same bounded application path, stored API-key connections, egress checks, capacity and per-stage journal. No binding is enabled by default, and no live configuration or provider request was used to validate this follow-up.
+
+| Native selector provider                             | Exact configured request/response identifier |
+| ---------------------------------------------------- | -------------------------------------------- |
+| OpenCode Zen (`opencode-zen`, existing paid binding) | `jev-1.13`                                   |
+| TypeSafe AI (`typesafe`)                             | `jev-1.14.0`                                 |
+| OpenRouter (`openrouter`)                            | `typesafe/jev-1.14-20261014`                 |
+| Vercel AI Gateway (`vercel-ai-gateway`)              | `typesafe-ai/jev`                            |
+
+The provider is part of the binding. Cross-provider model spellings, unreviewed aliases and free Zen substitution reject before dispatch. A successful selector response must echo its exact configured identifier; missing/mismatched IDs stop without execution. Vercel's generic identifier is a floating alias: exact echo does not prove an immutable underlying model revision. No fallback extension is sent or accepted as another model.
+
+Automatic selection continues to use one Choice question over eligible model-and-effort pairs, then at most one guarded execution. Separate native passthrough supports Noul, Choice and Score; direct TypeSafe now uses the shared registry/transport/catalog parser. Its native models/name/description schema is projected without inventing release_date or pricing. Bare aliases retain their previous routes and do not acquire a TypeSafe fallback.
+
+Tests use explicitly synthetic official-contract envelopes and loopback providers, not captured real responses. The tester retained only normalized observations and reconstructed partial fixtures, so live adapter interoperability remains unproved. Nine retained-subset checks preserve Noul/Choice values and reject incomplete Score fixtures because their legends were not retained; this does not establish that the live responses lacked legends. The real OpenRouter requests used the 1.14 alias and returned the dated ID, so the dated request binding itself has only official-contract synthetic validation. TypeSafe does not document an exact USD receipt field in its inspected native response; missing cost stays unknown. OpenRouter numeric usage.cost and Vercel decimal-string provider_metadata.gateway.cost are tested as documented formats, without claiming those representations were retained from the live tests. Defensive refusal fixtures prove safe stopping, not observed Jev refusal behavior.
+
+The completed offline milestone passed 644/644 selected tests across 31 files, including 77 real-handler fixtures and nine explicitly partial retained-observation checks. Independent review found no remaining blocking defect in this scope; this is behavioral evidence, not live interoperability or model-selection quality.
+
+These bindings require an explicit operator-stored opt-in config in an isolated instance and a matching existing API-key connection. They add no credential setup/UI flow, refresh, usage probe, model discovery bootstrap, provider retry or execution provider. The separate legacy Jev combo client and its credential validator are unchanged. Production build remains unverified: Next's WASM compiler fallback does not remove the separate locked @swc/core import that triggers the recorded ownership restriction, and no supported unchanged-lock JS/WASM full-build route was established.
+
 ## 25 October follow-up: native access diagnostics
 
-Local branch `feat/decision-provider-diagnostics-v1` starts from preserved delivery head `49cf693908abc613c215c620a6ebc80241265b3c`. It adds a fixed truthful `OmniRoute-SystemOne/1.0` identifier to the native transport, bounded sanitized provider-error causes, terminal handling of native 401/402/403/429/451 without account/provider/deterministic fallback, and retention of explicitly reported failed-call usage. A presented credential does not establish its validity or the scope of a quota. No automatic selector provider or model has been added.
+Local branch `feat/decision-provider-diagnostics-v1` starts from preserved delivery head `49cf693908abc613c215c620a6ebc80241265b3c`. It adds a fixed truthful `OmniRoute-SystemOne/1.0` identifier to the native transport, bounded sanitized provider-error causes, terminal handling of native 401/402/403/429/451 without account/provider/deterministic fallback, and retention of explicitly reported failed-call usage. A presented credential does not establish its validity or the scope of a quota. That diagnostics commit added no automatic selector provider or model; the later paid-binding follow-up above is a separate local change.
 
 The original delivery tree was published as managed snapshot `7d396a43294f06a5996c5d01f88d56bf3578c1d5` on the delivery branch. This follow-up remains local and unpublished. Direct endpoint successes reported by a separate tester for TypeSafe, OpenRouter and Vercel are not tests of these application adapters. Zen returned 429 with both credential-free and keyed controls; free entitlement, key validity and quota scope remain unresolved.
 
@@ -34,7 +55,7 @@ The configured fork target at audit time is `88c1e3342b44978a72ce75beb0cc509cc83
 
 The earlier foundation also supplies separate `POST /v1/systemone` and `GET /v1/systemone/models` passthrough/catalog endpoints, with registry bindings for OpenCode Console, the Vercel native System One path and OpenRouter compatibility. Those routes retain their own dispatch and accounting behavior; they are distinct from bounded automatic selection. Their source/fixture support is not live provider compatibility. Direct TypeSafe and OpenAI Decisions transports are not added by consolidation.
 
-Native selection in this application supports only `opencode-zen/jev-1.13`, using its separate stored Console API-key connection and the documented System One endpoint. Other standalone decision adapters are not enabled as application selectors by this branch. The limited-time free alias is also not enabled in this bounded mode.
+Native selection supports only the exact provider/model pairs in the paid-binding table above, each using its own explicitly bound stored API-key connection and official native System One endpoint. The limited-time free Zen alias, alternate Vercel APIs and other models remain unsupported in this bounded mode.
 
 Execution support remains OpenAI API-key text/JSON and Claude OAuth `claude-opus-5-5` at medium/high effort. Explicit candidate profiles and exact connection bindings are required; catalog presence is not entitlement or proof of capability. Antigravity, Codex and other Claude pairs remain unsupported here. The historical 23-candidate pool was not silently replaced or declared supported.
 

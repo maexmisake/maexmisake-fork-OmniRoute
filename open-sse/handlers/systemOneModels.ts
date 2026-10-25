@@ -3,7 +3,9 @@
  *
  * Each configured decision backend contributes its own live list — OpenCode
  * Zen's model list filtered to its decision models, the Vercel AI Gateway's
- * TypeSafe list, and OpenRouter's public `output_modalities=decisions` list.
+ * TypeSafe list, OpenRouter's public `output_modalities=decisions` list, and
+ * direct TypeSafe's native name/description catalog. Upstream release_date is
+ * accepted by the shared parser but is not part of the catalog projection.
  * A backend with no usable connection is never advertised: the catalog is a
  * statement about what this installation can actually route, so a model is
  * listed only when some eligible connection of that provider could serve it

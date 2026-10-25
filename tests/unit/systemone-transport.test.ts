@@ -38,6 +38,7 @@ test("each backend resolves its documented decision endpoint by default", () => 
     "https://ai-gateway.vercel.sh/typesafe/v1/systemone"
   );
   assert.equal(systemOneUrl("openrouter", {}), "https://openrouter.ai/api/v1/systemone");
+  assert.equal(systemOneUrl("typesafe", {}), "https://api.typesafe.ai/v1/systemone");
 });
 
 test("each backend resolves its documented catalog endpoint by default", () => {
@@ -53,6 +54,7 @@ test("each backend resolves its documented catalog endpoint by default", () => {
     systemOneUrl("openrouter", {}, "models"),
     "https://openrouter.ai/api/v1/models?output_modalities=decisions"
   );
+  assert.equal(systemOneUrl("typesafe", {}, "models"), "https://api.typesafe.ai/v1/models");
 });
 
 test("a per-connection endpoint override on an allowlisted host is honored", () => {
@@ -113,6 +115,19 @@ test("an override outside the provider's allowlisted hosts is rejected", () => {
   }
 });
 
+test("the direct TypeSafe key cannot be redirected to a gateway host", () => {
+  for (const url of [
+    "https://openrouter.ai/api/v1/systemone",
+    "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+    "https://api.typesafe.ai.evil.example/v1/systemone",
+  ]) {
+    assert.throws(
+      () => systemOneUrl("typesafe", { providerSpecificData: { systemOneUrl: url } }),
+      SystemOneEndpointError
+    );
+  }
+});
+
 test("a plaintext, credentialed or malformed override is rejected", () => {
   for (const url of [
     "http://opencode.ai/inference/v1/systemone",
@@ -159,7 +174,7 @@ test("headers carry the connection bearer token and JSON content types", () => {
 });
 
 test("native providers identify the actual application with one fixed User-Agent", () => {
-  for (const provider of ["opencode-zen", "openrouter", "vercel-ai-gateway"]) {
+  for (const provider of ["opencode-zen", "openrouter", "vercel-ai-gateway", "typesafe"]) {
     const headers = systemOneHeaders(provider, { apiKey: "synthetic-native-key" });
     assert.equal(headers["User-Agent"], "OmniRoute-SystemOne/1.0");
     assert.deepEqual(Object.keys(headers).sort(), [
