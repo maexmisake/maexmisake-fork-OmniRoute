@@ -181,6 +181,11 @@ export function validateDraft(draft: Draft, options: EditorOptions) {
     };
   const policy = parsed.data;
   const issues = enabledIssues(policy, draft, options);
+  const rawOrders = parseJson(draft.taskOrder);
+  if (rawOrders && typeof rawOrders === "object" && Object.hasOwn(rawOrders, "__proto__"))
+    issues.push(
+      "The reserved task category __proto__ cannot be saved. Correct advanced JSON; its text is retained."
+    );
   const saveBody = JSON.stringify({ revision: "0".repeat(64), action: "save", policy });
   if (new TextEncoder().encode(saveBody).byteLength > 65536)
     issues.push("The complete settings save must fit within 64 KiB. Shorten profile/task JSON.");

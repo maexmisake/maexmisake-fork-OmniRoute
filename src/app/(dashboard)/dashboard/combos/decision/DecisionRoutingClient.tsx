@@ -12,122 +12,13 @@ import {
   eligibleSelector,
   selectedBinding,
   validateDraft,
-  type Candidate,
   type Connection,
   type Draft,
   type EditorOptions,
 } from "./decisionRoutingDraft";
 import { useDecisionRoutingEditor } from "./useDecisionRoutingEditor";
 
-const JSON_CLASS =
-  "mt-2 min-h-40 w-full rounded-control border border-border bg-bg p-3 font-mono text-sm text-text-main";
-
-function ProfileFields({
-  draft,
-  candidates,
-  options,
-  disabled,
-  update,
-}: {
-  draft: Draft;
-  candidates: Candidate[];
-  options: EditorOptions;
-  disabled: boolean;
-  update: (patch: Partial<Draft>) => void;
-}) {
-  return (
-    <Card title="Execution profiles and task preferences">
-      <p id="profile-help" className="text-sm text-text-muted">
-        This advanced JSON editor requires your own model profiles and task preference orders. Enter
-        explicit version 1 profiles with exact provider, model, effort, supported efforts,
-        capabilities and evidence. No profiles or rankings are supplied automatically. Unknown
-        capability/context evidence stays unknown and cannot authorize a route. Supported execution
-        transports are OpenAI API-key text/JSON and Claude OAuth claude-opus-5-5 medium/high.
-      </p>
-      <label htmlFor="decision-profiles" className="mt-4 block font-medium">
-        Candidate profiles (JSON array)
-      </label>
-      <textarea
-        id="decision-profiles"
-        aria-describedby="profile-help"
-        value={draft.candidates}
-        onChange={(event) => update({ candidates: event.target.value })}
-        disabled={disabled}
-        maxLength={262144}
-        spellCheck={false}
-        className={JSON_CLASS}
-      />
-      <p className="mt-2 text-xs text-text-muted">
-        Profile fields: id, provider, model, endpointKind, evidence, capabilities
-        (text/images/tools/reasoning/contextTokens), effort (mode/value/supported/evidence). Use
-        null for unknown evidence; it is not inferred from a model name.
-      </p>
-      <ul aria-label="Model and effort summary" className="mt-4 space-y-3">
-        {candidates.map((candidate) => (
-          <li key={candidate.id} className="rounded-control border border-border p-3">
-            <p className="mb-2 break-words text-sm">
-              {candidate.id}: {candidate.provider}/{candidate.model} · effort:{" "}
-              {candidate.effort.value ?? "unknown"}
-            </p>
-            {(!candidate.evidence || !candidate.effort.evidence) && (
-              <p className="mb-2 text-sm text-text-muted">
-                Evidence is unknown. Saving this declaration does not prove eligibility; missing
-                profile or effort evidence may leave this candidate without a route.
-              </p>
-            )}
-            <Select
-              label={`Execution connection for ${candidate.id}`}
-              value={draft.connections[candidate.id] ?? ""}
-              onChange={(event) =>
-                update({
-                  connections: { ...draft.connections, [candidate.id]: event.target.value },
-                })
-              }
-              disabled={disabled}
-              placeholder="Choose an explicit connection"
-            >
-              <option value="">Choose an explicit connection</option>
-              {options.connections
-                .filter((connection) => connection.provider === candidate.provider)
-                .map((connection) => (
-                  <option
-                    key={connection.id}
-                    value={connection.id}
-                    disabled={!connection.active || !connection.credentialPresent}
-                  >
-                    {connection.label}
-                    {!connection.active ? " — inactive" : ""}
-                    {!connection.credentialPresent ? " — credential not configured" : ""}
-                  </option>
-                ))}
-            </Select>
-          </li>
-        ))}
-      </ul>
-      <label htmlFor="decision-task-order" className="mt-5 block font-medium">
-        Task preference orders (JSON object)
-      </label>
-      <p id="task-help" className="mt-1 text-sm text-text-muted">
-        Map each task category to an ordered array of the candidate IDs you allow. Supported text
-        categories include unresolved, explanation, reasoning, complex_code and long_context. An
-        omitted category has no route. Order is your preference, not measured model quality.
-        Reasoning tasks require explicit reasoning capability and a supported thinking effort.
-        Image, tool and continuation requests remain unsupported in this bounded application even if
-        their category names appear in an order.
-      </p>
-      <textarea
-        id="decision-task-order"
-        aria-describedby="task-help"
-        value={draft.taskOrder}
-        onChange={(event) => update({ taskOrder: event.target.value })}
-        disabled={disabled}
-        maxLength={262144}
-        spellCheck={false}
-        className={JSON_CLASS}
-      />
-    </Card>
-  );
-}
+import ProfileFields from "./ProfileFields";
 
 function NativeFields({
   draft,
@@ -155,7 +46,7 @@ function NativeFields({
           <option value="">Choose a decision binding</option>
           {options.bindings.map((row) => (
             <option key={bindingKey(row)} value={bindingKey(row)}>
-              {row.label}
+              {row.label} — {row.tier === "free" ? "free-listed" : "paid"}
             </option>
           ))}
         </Select>
@@ -397,7 +288,6 @@ export default function DecisionRoutingClient() {
           )}
           <ProfileFields
             draft={draft}
-            candidates={validation?.candidates ?? []}
             options={options}
             disabled={disabled}
             update={editor.updateDraft}

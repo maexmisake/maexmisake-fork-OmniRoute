@@ -206,6 +206,266 @@ afterEach(() => {
 });
 
 describe("decision routing settings", () => {
+  it("creates an explicit model-and-effort profile through structured controls without JSON", async () => {
+    const api = server(record(null, "unconfigured"));
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    fireEvent.click(screen.getByRole("button", { name: "Add execution profile" }));
+    expect((screen.getByLabelText("Text support for profile-1") as HTMLSelectElement).value).toBe(
+      "unknown"
+    );
+    expect((screen.getByLabelText("Context limit for profile-1") as HTMLInputElement).value).toBe(
+      ""
+    );
+    expect((screen.getByLabelText("Effort for profile-1") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Add profile to Explanation") as HTMLSelectElement).value).toBe(
+      ""
+    );
+    fireEvent.change(screen.getByLabelText("Provider for profile-1"), {
+      target: { value: "openai" },
+    });
+    fireEvent.change(screen.getByLabelText("Model ID for profile-1"), {
+      target: { value: "synthetic-structured-fixture" },
+    });
+    fireEvent.change(screen.getByLabelText("Endpoint kind for profile-1"), {
+      target: { value: "direct" },
+    });
+    fireEvent.change(screen.getByLabelText("Execution connection for profile-1"), {
+      target: { value: "execute" },
+    });
+    fireEvent.change(screen.getByLabelText("Text support for profile-1"), {
+      target: { value: "yes" },
+    });
+    fireEvent.change(screen.getByLabelText("Reasoning support for profile-1"), {
+      target: { value: "yes" },
+    });
+    fireEvent.change(screen.getByLabelText("Context limit for profile-1"), {
+      target: { value: "16000" },
+    });
+    fireEvent.change(screen.getByLabelText("Effort for profile-1"), { target: { value: "low" } });
+    fireEvent.click(screen.getByLabelText("Supports low effort for profile-1"));
+    fireEvent.change(screen.getByLabelText("Profile evidence for profile-1"), {
+      target: { value: "Synthetic fixture declaration" },
+    });
+    fireEvent.change(screen.getByLabelText("Effort evidence for profile-1"), {
+      target: { value: "Synthetic fixture effort declaration" },
+    });
+    fireEvent.change(screen.getByLabelText("Add profile to Explanation"), {
+      target: { value: "profile-1" },
+    });
+    fireEvent.click(screen.getByRole("switch"));
+    expect(saveButton().disabled).toBe(false);
+    fireEvent.click(saveButton());
+    await screen.findByText("Routing settings saved.");
+    const saved = api.calls.find((call) => call.init.method === "PUT")?.body
+      ?.policy as DecisionPolicyEditorValue;
+    expect(saved.policy.candidates[0]).toMatchObject({
+      id: "profile-1",
+      provider: "openai",
+      model: "synthetic-structured-fixture",
+      capabilities: {
+        text: true,
+        reasoning: true,
+        images: null,
+        tools: null,
+        contextTokens: 16000,
+      },
+      effort: { mode: "set", value: "low", supported: ["low"] },
+    });
+    expect(saved.connections).toEqual({ "profile-1": "execute" });
+    expect(saved.policy.taskOrder).toEqual({ explanation: ["profile-1"] });
+    expect(saved.selection).toEqual({ mode: "deterministic" });
+  });
+
+  it("reorders task preferences and removes a profile atomically while preserving custom tasks", async () => {
+    const value = policy();
+    value.policy.taskOrder.custom_retained = ["light", "deep"];
+    const api = server(record(value));
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Move light earlier for Explanation",
+        }) as HTMLButtonElement
+      ).disabled
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Move deep later for Explanation" }) as HTMLButtonElement)
+        .disabled
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Move deep earlier for Explanation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove execution profile light" }));
+    fireEvent.change(screen.getByLabelText("Selection mode"), {
+      target: { value: "deterministic" },
+    });
+    fireEvent.click(saveButton());
+    await screen.findByText("Routing settings saved.");
+    const saved = api.calls.find((call) => call.init.method === "PUT")?.body
+      ?.policy as DecisionPolicyEditorValue;
+    expect(saved.policy.candidates.map((row) => row.id)).toEqual(["deep"]);
+    expect(saved.connections).toEqual({ deep: "execute" });
+    expect(saved.policy.taskOrder).toEqual({
+      explanation: ["deep"],
+      reasoning: ["deep"],
+      custom_retained: ["deep"],
+    });
+  });
+
+  it("clears model-specific declarations on identity edits and discards them explicitly", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    fireEvent.change(screen.getByLabelText("Model ID for light"), {
+      target: { value: "synthetic-different-fixture" },
+    });
+    expect((screen.getByLabelText("Text support for light") as HTMLSelectElement).value).toBe(
+      "unknown"
+    );
+    expect((screen.getByLabelText("Profile evidence for light") as HTMLInputElement).value).toBe(
+      ""
+    );
+    expect((screen.getByLabelText("Effort evidence for light") as HTMLInputElement).value).toBe("");
+    expect(
+      (screen.getByLabelText("Execution connection for light") as HTMLSelectElement).value
+    ).toBe("");
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect((screen.getByLabelText("Model ID for light") as HTMLInputElement).value).toBe(
+      "synthetic-execution-fixture"
+    );
+    expect((screen.getByLabelText("Text support for light") as HTMLSelectElement).value).toBe(
+      "yes"
+    );
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(0);
+  });
+
+  it("retains malformed advanced data and unsupported fields without resetting structured profiles", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    fireEvent.click(screen.getByText("Advanced JSON"));
+    const malformed = "[unclosed synthetic fixture";
+    fireEvent.change(screen.getByLabelText("Candidate profiles (JSON array)"), {
+      target: { value: malformed },
+    });
+    expect(
+      (screen.getByLabelText("Candidate profiles (JSON array)") as HTMLTextAreaElement).value
+    ).toBe(malformed);
+    expect(
+      (screen.getByRole("button", { name: "Add execution profile" }) as HTMLButtonElement).disabled
+    ).toBe(true);
+    expect(saveButton().disabled).toBe(true);
+    const unsupported = JSON.stringify([
+      { ...candidate("light", "low"), unsupportedFixture: true },
+    ]);
+    fireEvent.change(screen.getByLabelText("Candidate profiles (JSON array)"), {
+      target: { value: unsupported },
+    });
+    expect(
+      (screen.getByLabelText("Candidate profiles (JSON array)") as HTMLTextAreaElement).value
+    ).toBe(unsupported);
+    expect(
+      (screen.getByRole("button", { name: "Add execution profile" }) as HTMLButtonElement).disabled
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect((screen.getByLabelText("Model ID for light") as HTMLInputElement).value).toBe(
+      "synthetic-execution-fixture"
+    );
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(0);
+  });
+
+  it("preserves inert custom dictionary keys during structured task edits", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    const taskText =
+      '{"explanation":["light","deep"],"constructor":["light","deep"],"__proto__":["deep","light"],"image":["light"]}';
+    fireEvent.change(screen.getByLabelText("Task preference orders (JSON object)"), {
+      target: { value: taskText },
+    });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Move deep earlier for constructor (custom mapping unknown)",
+      })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove execution profile light" }));
+    const draftOrders = JSON.parse(
+      (screen.getByLabelText("Task preference orders (JSON object)") as HTMLTextAreaElement).value
+    );
+    expect(Object.hasOwn(draftOrders, "__proto__")).toBe(true);
+    expect(draftOrders.__proto__).toEqual(["deep"]);
+    expect(draftOrders.constructor).toEqual(["deep"]);
+    expect(draftOrders.image).toEqual([]);
+    expect(saveButton().disabled).toBe(true);
+    expect(screen.getByText(/reserved task category __proto__ cannot be saved/)).toBeTruthy();
+    expect(screen.getByText("Image (unsupported)")).toBeTruthy();
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(0);
+  });
+
+  it("does not adopt dangling task references or orphan connections when adding a profile", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    fireEvent.change(screen.getByLabelText("Task preference orders (JSON object)"), {
+      target: { value: JSON.stringify({ explanation: ["profile-1"], reasoning: ["deep"] }) },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add execution profile" }));
+    expect(screen.getByLabelText("Model ID for profile-2")).toBeTruthy();
+    const rows = JSON.parse(
+      (screen.getByLabelText("Candidate profiles (JSON array)") as HTMLTextAreaElement).value
+    );
+    expect(rows.at(-1).id).toBe("profile-2");
+    const task = JSON.parse(
+      (screen.getByLabelText("Task preference orders (JSON object)") as HTMLTextAreaElement).value
+    );
+    expect(task.explanation).toEqual(["profile-1"]);
+    expect(
+      (screen.getByLabelText("Execution connection for profile-2") as HTMLSelectElement).value
+    ).toBe("");
+    expect(saveButton().disabled).toBe(true);
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(0);
+  });
+
+  it("blocks ambiguous duplicate profile IDs without changing either advanced row", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    const duplicate = JSON.stringify([candidate("light", "low"), candidate("light", "high")]);
+    fireEvent.change(screen.getByLabelText("Candidate profiles (JSON array)"), {
+      target: { value: duplicate },
+    });
+    expect(
+      (screen.getByRole("button", { name: "Add execution profile" }) as HTMLButtonElement).disabled
+    ).toBe(true);
+    expect(screen.queryByLabelText("Model ID for light")).toBeNull();
+    expect(
+      (screen.getByLabelText("Candidate profiles (JSON array)") as HTMLTextAreaElement).value
+    ).toBe(duplicate);
+    expect(saveButton().disabled).toBe(true);
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(0);
+  });
+
+  it("rejects unsupported structured effort and duplicate physical pairs without hiding declarations", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    fireEvent.change(screen.getByLabelText("Effort for light"), { target: { value: "high" } });
+    expect(saveButton().disabled).toBe(true);
+    expect((screen.getByLabelText("Effort for light") as HTMLSelectElement).value).toBe("high");
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    fireEvent.change(screen.getByLabelText("Provider for light"), { target: { value: "claude" } });
+    fireEvent.change(screen.getByLabelText("Model ID for light"), {
+      target: { value: "claude-opus-5-5" },
+    });
+    fireEvent.change(screen.getByLabelText("Effort for light"), { target: { value: "low" } });
+    expect(saveButton().disabled).toBe(true);
+    expect((screen.getByLabelText("Profile evidence for light") as HTMLInputElement).value).toBe(
+      ""
+    );
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(0);
+  });
+
   it("starts unconfigured and off, with no invented profiles or inference calls", async () => {
     const api = server(record(null, "unconfigured"));
     render(<DecisionRoutingClient />);
