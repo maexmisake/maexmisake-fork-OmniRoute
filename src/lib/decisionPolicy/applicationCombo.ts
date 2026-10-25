@@ -81,7 +81,7 @@ const nativeSelectionOptions = z
 export const nativeSelectionSchema = z.discriminatedUnion("provider", [
   nativeSelectionOptions.extend({
     provider: z.literal("opencode-zen"),
-    model: z.literal("jev-1.13"),
+    model: z.enum(["jev-1.13", "jev-1.13-free"]),
   }),
   nativeSelectionOptions.extend({
     provider: z.literal("typesafe"),

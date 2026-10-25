@@ -345,7 +345,8 @@ export function projectSystemOneFailure(input: SystemOneFailureInput): SystemOne
   const edgeEvidence = `${html} ${text}`;
   const edge = status === 403 && /cloudflare/i.test(edgeEvidence) && /\b1010\b/.test(edgeEvidence);
   const kind = failureKind(status, text, edge);
-  const prefix = `Provider returned HTTP ${status}`;
+  // An HTTP status does not prove which provider, edge or intermediary emitted it.
+  const prefix = `Upstream returned HTTP ${status}`;
   const message = edge
     ? `${prefix}: Cloudflare 1010 edge restriction; check truthful application identification`
     : sanitizeErrorMessage(text ? `${prefix}: ${text}` : prefix).slice(0, 1200);

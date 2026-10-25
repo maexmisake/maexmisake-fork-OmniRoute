@@ -235,7 +235,7 @@ test("overlong sensitive values suppress dynamic diagnostic fields", () => {
     body: { detail: "Private partial request content could occur here" },
   });
   assert.deepEqual(result.details, {});
-  assert.equal(result.message, "Provider returned HTTP 403");
+  assert.equal(result.message, "Upstream returned HTTP 403");
 });
 
 test("lowercase URI escapes cannot disclose a known credential", () => {
@@ -389,7 +389,7 @@ test("null and numeric diagnostic values are ignored rather than coerced into me
   });
   assert.deepEqual(result.details, {});
   assert.equal(result.authScope, "unknown");
-  assert.equal(result.message, "Provider returned HTTP 429");
+  assert.equal(result.message, "Upstream returned HTTP 429");
 });
 
 test("invalid JSON and non-Cloudflare HTML do not echo raw provider content", () => {
@@ -400,7 +400,7 @@ test("invalid JSON and non-Cloudflare HTML do not echo raw provider content", ()
   ]) {
     const result = projectSystemOneFailure({ status: 403, bodyText });
     assert.equal(result.kind, "access");
-    assert.equal(result.message, "Provider returned HTTP 403");
+    assert.equal(result.message, "Upstream returned HTTP 403");
     assert.deepEqual(result.details, {});
   }
 });
@@ -414,7 +414,7 @@ test("bounded traversal and body length fail closed", () => {
   const text = "x".repeat(70_000) + "private-secret";
   assert.equal(
     projectSystemOneFailure({ status: 403, bodyText: text }).message,
-    "Provider returned HTTP 403"
+    "Upstream returned HTTP 403"
   );
   const many = Array.from({ length: 257 }, (_, index) => `secret-${index}`);
   const result = projectSystemOneFailure({
@@ -450,4 +450,31 @@ test("public diagnostic strings and messages are bounded", () => {
   assert.ok((result.details.detail?.length ?? 0) <= 512);
   assert.ok((result.details.message?.length ?? 0) <= 512);
   assert.ok(result.message.length <= 1200);
+});
+
+test("unattributed HTTP errors do not assert provider origin or completed account authentication", () => {
+  const cases = [
+    { status: 403, body: { message: "Forbidden" } },
+    {
+      status: 429,
+      body: { error: { name: "FreeUsageLimitError", message: "Free usage limit reached." } },
+    },
+  ];
+  for (const input of cases) {
+    const result = projectSystemOneFailure({ ...input, authenticated: true });
+    assert.match(result.message, /^Upstream returned HTTP /);
+    assert.doesNotMatch(
+      result.message,
+      /provider returned|account quota|authenticated|invalid key/i
+    );
+    assert.equal(result.authScope, "unknown");
+    assert.equal(result.terminalAccessDenied, true);
+    assert.deepEqual(Object.keys(result).sort(), [
+      "authScope",
+      "details",
+      "kind",
+      "message",
+      "terminalAccessDenied",
+    ]);
+  }
 });

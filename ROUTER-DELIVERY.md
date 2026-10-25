@@ -4,9 +4,9 @@ This is an opt-in, text/JSON prototype. The real application handler can ask one
 
 ## Finished, blocked, unverified
 
-- **Finished:** explicit paid decision bindings, eligibility and exact dispatch guards, separate decision/execution accounting, bounded sanitized failure diagnostics and offline application tests. The latest selected regression suite passed **644/644 across 31 files**; independent review found no remaining blocking defect in that scope.
+- **Finished:** explicit free Zen and preserved paid decision bindings, eligibility and exact dispatch guards, separate decision/execution accounting, bounded sanitized failure diagnostics and offline application tests. The current selected regression suite passed **672/672 across 31 files**, including the free-Zen binding and neutral error-origin regression. Independent checks passed 85/85 actual-handler/schema/diagnostic cases and 50/50 schema/diagnostics. No remaining blocking defect was found in this narrow scope.
 - **Build blocked:** the unchanged locked SWC dependency rejects this cloud image's ancestor ownership. A runnable production package and package boot are unverified. No security check, dependency or environment setting was weakened.
-- **Live unverified:** separate direct provider smokes succeeded, but the prototype has not run end-to-end with real accounts. Retained observations are incomplete and cannot prove full adapter compatibility. Zen remains stopped after an unresolved free-usage restriction.
+- **Live unverified:** separate direct provider smokes succeeded, but the prototype has not run end-to-end with real accounts. Retained observations are incomplete and cannot prove full adapter compatibility. Free Zen live compatibility remains unverified. Historical reported 429s do not establish the exact request, account attribution, completed authentication or quota scope. A separate cloud-network proxy denial is not an OpenCode response.
 - **Quality unverified:** synthetic routing behavior does not establish better model choices, calibrated confidence or support for the historical full candidate pool. Missing held-out tasks and SVG fixtures remain missing.
 
 ## Modes and exact bindings
@@ -22,9 +22,10 @@ This is an opt-in, text/JSON prototype. The real application handler can ask one
 | `typesafe`                              | `jev-1.14.0`                                   |
 | `openrouter`                            | `typesafe/jev-1.14-20261014`                   |
 | `vercel-ai-gateway`                     | `typesafe-ai/jev`                              |
+| `opencode-zen` (explicit free opt-in)   | `jev-1.13-free`                                |
 | `opencode-zen` (preserved paid binding) | `jev-1.13`                                     |
 
-Provider and model form one strict operator-stored binding. Cross-provider spellings, unreviewed aliases, client-supplied activation and free Zen substitution reject before dispatch. A missing or mismatched returned identifier cannot authorize execution. Vercel's generic ID is a floating alias, not an immutable underlying model revision. The real OpenRouter smoke requested `typesafe/jev-1.14` and returned the dated ID; the **dated request binding itself has only official-contract synthetic validation**. The preserved paid Zen binding does not authorize a paid Zen test.
+Provider and model form one strict operator-stored binding. Cross-provider spellings, unreviewed aliases and client-supplied activation reject before dispatch. Free Zen requires an explicit `jev-1.13-free` binding and exactly `{ systemOneTier: "free" }` connection metadata. That tag is our routing guard, not provider entitlement. It is retained and rechecked during preparation, credential selection and final dispatch; a paid model or connection cannot silently substitute for it. A missing or mismatched returned identifier cannot authorize execution. Vercel's generic ID is a floating alias, not an immutable underlying model revision. The real OpenRouter smoke requested `typesafe/jev-1.14` and returned the dated ID; the **dated request binding itself has only official-contract synthetic validation**. The preserved paid Zen binding does not authorize a paid Zen test.
 
 Separate `POST /v1/systemone` and `GET /v1/systemone/models` routes provide native passthrough/discovery for these providers. Passthrough supports Noul, Choice and Score; the automatic selector deliberately uses Choice. Direct TypeSafe reuses the existing provider connection and shared guarded transport/catalog parser. Its native `models[].name/description` shape is projected; release_date is not projected. Bare aliases retain their earlier routes and gain no TypeSafe fallback. Vercel evaluate/Decisions and direct OpenAI Decisions are different, deferred contracts.
 
@@ -38,7 +39,7 @@ The existing client authentication, stored connection selection, endpoint/header
 
 Decision and execution receipts/costs remain separate with one logical RPM charge. Missing usage/cost remains unknown; reported zero stays zero. TypeSafe's inspected native contract does not document an exact USD receipt. OpenRouter numeric usage.cost and Vercel decimal-string provider_metadata.gateway.cost are tested documented formats, not recovered live representations. Ordinary standalone history/cost writers remain best effort with inherited deduplication; they are not an atomic financial ledger. Remote bills never received and ancillary quota preflight cancellation remain limitations.
 
-The fixed truthful `OmniRoute-SystemOne/1.0` identifier names this transport, without browser/OpenCode impersonation. Bounded RFC9457/nested diagnostics use canonical sanitization and known-value/account-form redaction; raw bodies/HTML are not returned. This is not universal detection of unidentified private prose. A presented key or 429 does not prove key validity or account-specific quota. The separate legacy Jev client and credential validator are unchanged.
+The fixed truthful `OmniRoute-SystemOne/1.0` identifier names this transport, without browser/OpenCode impersonation. Bounded RFC9457/nested diagnostics use canonical sanitization and known-value/account-form redaction; raw bodies/HTML are not returned. This is not universal detection of unidentified private prose. An HTTP status alone does not identify which provider, edge or intermediary emitted it; diagnostic prefixes therefore say "Upstream returned HTTP". A presented key or 429 does not prove key validity, completed authentication or account-specific quota. The separate legacy Jev client and credential validator are unchanged.
 
 ## Reproduce offline in an isolated checkout
 
@@ -66,7 +67,7 @@ Core TypeScript passes; strict core retains the same 18 inherited diagnostics. C
 
 ## Delivery and source history
 
-The approved destination is `maexmisake/maexmisake-fork-OmniRoute`, branch `feat/native-router-delivery-20261024`. Its last verified remote head is publication snapshot `7d396a43294f06a5996c5d01f88d56bf3578c1d5`, tree `6362a2e42b64df151f9b630b3c98ef19faf5cd5e`, content-identical to preserved local `49cf693908abc613c215c620a6ebc80241265b3c`. Follow-ups are `623329ad6e7bf9be192510fec3b8087bbc25393d` and `dc1da5ae79be4d37e141d95fbca63f8f54d450a9`. This final local candidate changes only this guide beyond that tested code.
+The approved destination is `maexmisake/maexmisake-fork-OmniRoute`, branch `feat/native-router-delivery-20261024`. Its last verified remote head is publication snapshot `7d396a43294f06a5996c5d01f88d56bf3578c1d5`, tree `6362a2e42b64df151f9b630b3c98ef19faf5cd5e`, content-identical to preserved local `49cf693908abc613c215c620a6ebc80241265b3c`. Follow-ups are `623329ad6e7bf9be192510fec3b8087bbc25393d` and `dc1da5ae79be4d37e141d95fbca63f8f54d450a9`. The preserved follow-ups culminate at `a76e7a8e42ffb7bd06c2dd86f2b2a5fc5bdf58b5`. The current local follow-up adds the explicit guarded free Zen binding, handler/schema regression coverage and neutral error-origin wording; earlier local commits remain intact.
 
 The original draft PR/head, local milestone history and published snapshots remain intact. The branch is based on published stable v3.8.52 `ad6f33f66bda34eba98645d3bfdabbde294bc843`; it is not a merge-ready update to the divergent fork release target. No sync, rebase, remote merge or force push is included.
 

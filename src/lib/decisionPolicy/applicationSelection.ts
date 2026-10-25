@@ -24,7 +24,12 @@ import {
   hasExactSystemOneHeaders,
   systemOneHeaders,
   systemOneUrl,
+  type SystemOneCredentials,
 } from "../../../open-sse/handlers/systemOneTransport.ts";
+import {
+  isConnectionEligibleForTier,
+  systemOneModelTier,
+} from "../../../open-sse/config/systemOneRegistry.ts";
 import { runWithSharedCapacity } from "../../../open-sse/handlers/systemOneCapacity.ts";
 import { getExecutor } from "../../../open-sse/executors/index.ts";
 import { getProviderCredentialsWithQuotaPreflight } from "../../sse/services/auth";
@@ -67,10 +72,28 @@ const nativeCredentials = z.object({
   connectionId: z.string(),
   apiKey: z.string(),
   accessToken: z.string().nullable().optional(),
+  providerSpecificData: z.record(z.string(), z.unknown()).nullable().optional(),
   maxConcurrent: z.number().int().nonnegative().nullable().optional(),
   rateLimitMaxConcurrent: z.number().int().nonnegative().nullable().optional(),
   modelConcurrency: z.record(z.string(), z.number().int().nonnegative()).nullable().optional(),
 });
+const emptyNativeMetadata = z.object({}).strict();
+const freeNativeMetadata = z.object({ systemOneTier: z.literal("free") }).strict();
+
+/** The free marker is our routing guard, never a provider entitlement claim.
+ * Other connection metadata cannot inject native headers or destinations. */
+function eligibleNativeCredentials(
+  provider: string,
+  model: string,
+  credentials: SystemOneCredentials
+): boolean {
+  const tier = systemOneModelTier(provider, model);
+  const schema = tier === "free" ? freeNativeMetadata : emptyNativeMetadata;
+  return (
+    schema.safeParse(credentials.providerSpecificData ?? {}).success &&
+    isConnectionEligibleForTier(tier, credentials, provider)
+  );
+}
 const unknownUsage = (): AttemptUsage => ({ status: null, input: null, output: null, cost: null });
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -198,13 +221,16 @@ export async function prepareNativeStage(
     connection.apiKey !== connection.apiKey.trim() ||
     connection.accessToken ||
     connection.refreshToken ||
-    Object.keys(connection.providerSpecificData ?? {}).length
+    !eligibleNativeCredentials(selection.provider, selection.model, connection)
   )
     throw new Error("decision_connection_unsupported");
   const authorization = `Bearer ${connection.apiKey}`;
   const credentials = Object.freeze({
     apiKey: connection.apiKey,
     connectionId: selection.connectionId,
+    ...(connection.providerSpecificData?.systemOneTier === "free"
+      ? { providerSpecificData: Object.freeze({ systemOneTier: "free" }) }
+      : {}),
   });
   const endpoint = systemOneUrl(selection.provider, credentials);
   const headers = systemOneHeaders(selection.provider, credentials);
@@ -256,6 +282,7 @@ export async function prepareNativeStage(
           details.credentials.connectionId !== selection.connectionId ||
           details.credentials.apiKey !== credentials.apiKey ||
           details.credentials.accessToken ||
+          !eligibleNativeCredentials(selection.provider, selection.model, details.credentials) ||
           details.body !== expectedBody ||
           !validNativeHeaders(details.headers, authorization)
         )
@@ -328,7 +355,8 @@ export async function prepareNativeStage(
               !selected.success ||
               selected.data.connectionId !== selection.connectionId ||
               selected.data.apiKey !== credentials.apiKey ||
-              selected.data.accessToken
+              selected.data.accessToken ||
+              !eligibleNativeCredentials(selection.provider, selection.model, selected.data)
             )
               throw new Error("decision_credentials_changed");
             const response = await runWithSharedCapacity(

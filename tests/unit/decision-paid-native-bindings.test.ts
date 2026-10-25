@@ -159,14 +159,77 @@ for (const binding of bindings) {
   }
 }
 
-test("unreviewed selector aliases and free/paid substitutions remain unsupported", () => {
+test("native selection accepts the exact Zen free pair with the existing bounded defaults", () => {
+  assert.deepEqual(
+    nativeSelectionSchema.parse({
+      ...selection,
+      provider: "opencode-zen",
+      model: "jev-1.13-free",
+    }),
+    { ...selection, provider: "opencode-zen", model: "jev-1.13-free", maxCandidates: 32 }
+  );
+});
+
+test("the existing Zen paid pair remains distinct and supported", () => {
+  assert.deepEqual(
+    nativeSelectionSchema.parse({
+      ...selection,
+      provider: "opencode-zen",
+      model: "jev-1.13",
+    }),
+    { ...selection, provider: "opencode-zen", model: "jev-1.13", maxCandidates: 32 }
+  );
+});
+
+test("Zen free selection cannot cross providers or use unreviewed model spellings", () => {
+  for (const provider of ["typesafe", "openrouter", "vercel-ai-gateway"]) {
+    assert.equal(
+      nativeSelectionSchema.safeParse({ ...selection, provider, model: "jev-1.13-free" }).success,
+      false
+    );
+  }
+  for (const model of [
+    "jev-free",
+    "jev-1.13:free",
+    "Jev-1.13-free",
+    "jev-1.13-free-paid",
+    "opencode-zen/jev-1.13-free",
+    "jev-1.13-free ",
+  ]) {
+    assert.equal(
+      nativeSelectionSchema.safeParse({ ...selection, provider: "opencode-zen", model }).success,
+      false
+    );
+  }
+});
+
+test("Zen free selection rejects unknown properties instead of widening its contract", () => {
+  for (const extra of [
+    { tier: "paid" },
+    { allowPaidFallback: true },
+    { apiKey: "synthetic-unsupported-key" },
+    { headers: { "User-Agent": "caller-selected-identity" } },
+    { url: "https://opencode.ai/inference/systemone/v1/systemone" },
+  ]) {
+    assert.equal(
+      nativeSelectionSchema.safeParse({
+        ...selection,
+        provider: "opencode-zen",
+        model: "jev-1.13-free",
+        ...extra,
+      }).success,
+      false
+    );
+  }
+});
+
+test("unreviewed selector aliases remain unsupported", () => {
   for (const [provider, model] of [
     ["typesafe", "jev-latest"],
     ["typesafe", "jev-1.14"],
     ["openrouter", "typesafe/jev-1.14"],
     ["openrouter", "~typesafe/jev-latest"],
     ["vercel-ai-gateway", "typesafe-ai/jev-1.14.0"],
-    ["opencode-zen", "jev-1.13-free"],
   ]) {
     assert.equal(nativeSelectionSchema.safeParse({ ...selection, provider, model }).success, false);
   }
