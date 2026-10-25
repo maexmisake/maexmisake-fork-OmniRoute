@@ -3070,6 +3070,143 @@ paths:
                       message:
                         type: string
 
+  /api/decision-routing/options:
+    get:
+      tags: [Combos]
+      summary: Inspect local supported native selector bindings and connection metadata
+      description: >-
+        Always requires management authentication, even when dashboard login is disabled.
+        Returns only supported protocol bindings, combo names, opaque connection IDs,
+        credential-present booleans and routing-guard metadata. Does not return credentials,
+        discover provider catalogs, validate keys, clear cooldowns, synchronize cloud state
+        or make model requests. Free listing and a routing guard do not prove entitlement.
+      x-always-protected: true
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Local binding and connection options; live access remains unverified
+        "401":
+          description: Authentication required
+        "403":
+          description: Insufficient management permissions
+
+  /api/combos/{id}/decision-policy:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Combos]
+      summary: Inspect the stored bounded decision policy and revision for a combo
+      description: >-
+        Always authenticated. Invalid stored settings are reported without echoing their
+        raw values. Configuration status is not a live compatibility or model-quality result.
+      x-always-protected: true
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Policy status, validated policy or null, and opaque revision
+        "401":
+          description: Authentication required
+        "404":
+          description: Combo not found
+    put:
+      tags: [Combos]
+      summary: Save or disable bounded decision routing with an atomic revision check
+      description: >-
+        Changes only this combo's decisionPolicy subtree and preserves unrelated config.
+        The strict version 1 policy supports explicit disabled drafts, deterministic mode
+        and exact native provider/model/connection bindings. Enabled settings are locally
+        validated; no provider call, key validation, cooldown reset or cloud sync is performed.
+        Generic combo CRUD cannot alter this separately managed subtree. A cancelled or
+        disconnected client must reload to determine whether a submitted write committed.
+      x-always-protected: true
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, action]
+              properties:
+                revision:
+                  type: string
+                  pattern: "^[a-f0-9]{64}$"
+                action:
+                  type: string
+                  enum: [save, disable]
+                policy:
+                  type: object
+                  description: Required for save; strict version 1 bounded decision editor configuration
+              additionalProperties: false
+      responses:
+        "200":
+          description: Newly stored policy view and revision
+        "400":
+          description: Invalid or unsupported settings
+        "401":
+          description: Authentication required
+        "403":
+          description: Insufficient management permissions or invalid browser mutation origin
+        "409":
+          description: Stale revision; reload before saving
+        "499":
+          description: Request cancelled; reload to establish the saved state
+
+  /api/decision-routing/connections/{id}/tier:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    put:
+      tags: [Providers]
+      summary: Set the local OpenCode Zen native free or paid routing guard
+      description: >-
+        Always authenticated. Delegated access tokens require admin, as for provider metadata
+        mutation. Accepts an opaque current revision and free or paid; only the local
+        systemOneTier marker changes. Credentials, other metadata and health/cooldown state
+        are preserved. Paid removes the marker. Unsupported extra metadata is not deleted
+        or made compatible. This does not grant entitlement, reset quota or contact a provider.
+      x-always-protected: true
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, tier]
+              properties:
+                revision:
+                  type: string
+                  pattern: "^[a-f0-9]{64}$"
+                tier:
+                  type: string
+                  enum: [free, paid]
+              additionalProperties: false
+      responses:
+        "200":
+          description: Credential-free updated connection metadata and revision
+        "400":
+          description: Invalid settings or unsupported provider
+        "401":
+          description: Authentication required
+        "403":
+          description: Insufficient management permissions or invalid browser mutation origin
+        "409":
+          description: Stale connection revision; reload before changing the guard
+        "499":
+          description: Request cancelled; reload to establish the saved state
+
   /api/combos:
     get:
       tags: [Combos]

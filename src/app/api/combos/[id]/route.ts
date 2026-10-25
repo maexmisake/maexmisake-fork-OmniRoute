@@ -1,3 +1,5 @@
+import { DecisionPolicyOwnershipError } from "@/lib/combos/decisionPolicyOwnership";
+import { buildErrorBody } from "@omniroute/open-sse/utils/error";
 import { NextResponse } from "next/server";
 import { getComboById, updateCombo, deleteCombo, getComboByName, getCombos } from "@/lib/db/combos";
 import { isCloudEnabled } from "@/lib/db/settings";
@@ -238,7 +240,7 @@ export async function PUT(request, { params }) {
       }
     }
 
-    const combo = await updateCombo(id, body);
+    const combo = await updateCombo(id, body, { preserveDecisionPolicy: true });
 
     // Auto sync to Cloud if enabled
     await syncToCloudIfEnabled();
@@ -249,6 +251,17 @@ export async function PUT(request, { params }) {
     const warning = comboName ? buildComboNameCollisionWarning(String(comboName)) : null;
     return NextResponse.json(warning ? { ...combo, warning } : combo);
   } catch (error) {
+    if (error instanceof DecisionPolicyOwnershipError) {
+      return NextResponse.json(
+        buildErrorBody(
+          409,
+          "Decision routing changed or requires its dedicated settings editor. Reload and try again.",
+          undefined,
+          { code: "decision_policy_conflict" }
+        ),
+        { status: 409 }
+      );
+    }
     if (error instanceof ComboInvariantError) {
       return comboErrorResponse("COMBO_008", 400, { reason: error.message }, request);
     }

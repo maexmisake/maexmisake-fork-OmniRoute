@@ -7,7 +7,9 @@ import type {
   ComboReorderResult,
   ComboRepository,
   ComboUpdateResult,
+  ComboUpdateOptions,
 } from "@/domain/persistence/comboRepositories";
+import { preserveManagedDecisionPolicy } from "@/lib/combos/decisionPolicyOwnership";
 import { normalizeComboRecord } from "@/lib/combos/steps";
 import { validateComboInvariant } from "@/lib/combos/invariants";
 import { getDbInstance } from "../core";
@@ -217,7 +219,26 @@ export async function createCombo(data: JsonRecord) {
   return combo;
 }
 
-export async function updateCombo(id: string, data: JsonRecord): Promise<ComboUpdateResult | null> {
+export async function updateCombo(
+  id: string,
+  data: JsonRecord,
+  options: ComboUpdateOptions = {}
+): Promise<ComboUpdateResult | null> {
+  const db = getDbInstance();
+  const write = () => writeComboUpdate(id, data, options);
+  if (!options.preserveDecisionPolicy) return write();
+  let result: ComboUpdateResult | null = null;
+  db.immediate(() => {
+    result = write();
+  });
+  return result;
+}
+
+function writeComboUpdate(
+  id: string,
+  data: JsonRecord,
+  options: ComboUpdateOptions
+): ComboUpdateResult | null {
   const db = getDbInstance();
   const existing = db
     .prepare("SELECT id, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
@@ -226,6 +247,9 @@ export async function updateCombo(id: string, data: JsonRecord): Promise<ComboUp
 
   const current = parseComboRow(existing);
   if (!current) return null;
+  if (options.preserveDecisionPolicy && Object.hasOwn(data, "config")) {
+    data = { ...data, config: preserveManagedDecisionPolicy(current.config, data.config) };
+  }
   const sortOrder =
     typeof data.sortOrder === "number"
       ? data.sortOrder

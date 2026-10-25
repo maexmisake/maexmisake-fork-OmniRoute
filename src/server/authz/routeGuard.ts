@@ -253,6 +253,12 @@ export const ALWAYS_PROTECTED_API_PATHS: ReadonlyArray<string> = [
  * both GHSA-mghq-58h3-qcqj and GHSA-v7g9-7f55-5g46 missed.
  */
 export const ALWAYS_PROTECTED_API_PATTERNS: ReadonlyArray<RegExp> = [
+  // Native routing settings remain authenticated with login disabled. Otherwise
+  // the pipeline could treat a cookie-bearing write as anonymous and skip its
+  // normal dashboard Origin/CSRF check before the handler accepts the session.
+  /^\/api\/decision-routing\/options\/?$/,
+  /^\/api\/decision-routing\/connections\/[^/]+\/tier\/?$/,
+  /^\/api\/combos\/[^/]+\/decision-policy\/?$/,
   // `export` hands the caller the raw token; `apply-local` writes it into the
   // host's CLI config (~/.codex/auth.json and the Claude equivalent). The second
   // does not disclose the credential, but "anonymous" is still the wrong

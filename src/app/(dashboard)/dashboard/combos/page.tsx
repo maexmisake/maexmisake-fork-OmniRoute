@@ -1223,6 +1223,12 @@ function CombosPageContent() {
               {getI18nOrFallback(t, "usageGuideShow", "Show guide")}
             </Button>
           )}
+          <Link
+            href="/dashboard/combos/decision"
+            className="text-sm font-medium text-primary hover:underline"
+          >
+            Native decision routing
+          </Link>
           <Button icon="add" onClick={() => setShowCreateModal(true)}>
             {t("createCombo")}
           </Button>

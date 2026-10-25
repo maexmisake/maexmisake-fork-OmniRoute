@@ -1,3 +1,5 @@
+import { hasManagedDecisionPolicy } from "@/lib/combos/decisionPolicyOwnership";
+import { buildErrorBody } from "@omniroute/open-sse/utils/error";
 import { NextResponse } from "next/server";
 import { getCombos, getCombosCount, createCombo, getComboByName } from "@/lib/db/combos";
 import { isCloudEnabled } from "@/lib/db/settings";
@@ -58,6 +60,17 @@ export async function POST(request) {
     const validation = validateBody(createComboSchema, body);
     if (isValidationFailure(validation)) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+    if (hasManagedDecisionPolicy(validation.data.config)) {
+      return NextResponse.json(
+        buildErrorBody(
+          409,
+          "Create the combo first, then configure decision routing in its dedicated settings editor.",
+          undefined,
+          { code: "decision_policy_managed_separately" }
+        ),
+        { status: 409 }
+      );
     }
     const allCombos = await getCombos();
     const normalizedModels = normalizeComboModels(validation.data.models, {
