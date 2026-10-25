@@ -1,4 +1,11 @@
 import { z } from "zod";
+import { buildErrorBody } from "../../../open-sse/utils/error.ts";
+import {
+  projectSystemOneFailure,
+  systemOneSensitiveValues,
+  systemOneRetryAfter,
+  type SystemOneFailureDiagnostic,
+} from "../../../open-sse/handlers/systemOneDiagnostics.ts";
 import { randomUUID } from "node:crypto";
 import type {
   Candidate,
@@ -14,9 +21,15 @@ import {
 } from "../../../open-sse/services/decisionPolicy/applicationContext.ts";
 import {
   fetchSystemOne,
+  hasExactSystemOneHeaders,
   systemOneHeaders,
   systemOneUrl,
+  type SystemOneCredentials,
 } from "../../../open-sse/handlers/systemOneTransport.ts";
+import {
+  isConnectionEligibleForTier,
+  systemOneModelTier,
+} from "../../../open-sse/config/systemOneRegistry.ts";
 import { runWithSharedCapacity } from "../../../open-sse/handlers/systemOneCapacity.ts";
 import { getExecutor } from "../../../open-sse/executors/index.ts";
 import { getProviderCredentialsWithQuotaPreflight } from "../../sse/services/auth";
@@ -52,23 +65,35 @@ export type NativeStage = {
   annotate: (response: Response) => Response;
 };
 function validNativeHeaders(headers: HeadersInit | undefined, authorization: string): boolean {
-  const wire = new Headers(headers);
-  return (
-    wire.get("authorization") === authorization &&
-    wire.get("accept") === "application/json" &&
-    wire.get("content-type") === "application/json" &&
-    [...wire.keys()].every((key) => ["authorization", "accept", "content-type"].includes(key))
-  );
+  return hasExactSystemOneHeaders(headers, authorization);
 }
 
 const nativeCredentials = z.object({
   connectionId: z.string(),
   apiKey: z.string(),
   accessToken: z.string().nullable().optional(),
+  providerSpecificData: z.record(z.string(), z.unknown()).nullable().optional(),
   maxConcurrent: z.number().int().nonnegative().nullable().optional(),
   rateLimitMaxConcurrent: z.number().int().nonnegative().nullable().optional(),
   modelConcurrency: z.record(z.string(), z.number().int().nonnegative()).nullable().optional(),
 });
+const emptyNativeMetadata = z.object({}).strict();
+const freeNativeMetadata = z.object({ systemOneTier: z.literal("free") }).strict();
+
+/** The free marker is our routing guard, never a provider entitlement claim.
+ * Other connection metadata cannot inject native headers or destinations. */
+function eligibleNativeCredentials(
+  provider: string,
+  model: string,
+  credentials: SystemOneCredentials
+): boolean {
+  const tier = systemOneModelTier(provider, model);
+  const schema = tier === "free" ? freeNativeMetadata : emptyNativeMetadata;
+  return (
+    schema.safeParse(credentials.providerSpecificData ?? {}).success &&
+    isConnectionEligibleForTier(tier, credentials, provider)
+  );
+}
 const unknownUsage = (): AttemptUsage => ({ status: null, input: null, output: null, cost: null });
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -196,13 +221,16 @@ export async function prepareNativeStage(
     connection.apiKey !== connection.apiKey.trim() ||
     connection.accessToken ||
     connection.refreshToken ||
-    Object.keys(connection.providerSpecificData ?? {}).length
+    !eligibleNativeCredentials(selection.provider, selection.model, connection)
   )
     throw new Error("decision_connection_unsupported");
   const authorization = `Bearer ${connection.apiKey}`;
   const credentials = Object.freeze({
     apiKey: connection.apiKey,
     connectionId: selection.connectionId,
+    ...(connection.providerSpecificData?.systemOneTier === "free"
+      ? { providerSpecificData: Object.freeze({ systemOneTier: "free" }) }
+      : {}),
   });
   const endpoint = systemOneUrl(selection.provider, credentials);
   const headers = systemOneHeaders(selection.provider, credentials);
@@ -220,6 +248,8 @@ export async function prepareNativeStage(
     outcome = "unknown",
     handedOver = false,
     started = false;
+  let failureDiagnostic: SystemOneFailureDiagnostic | null = null;
+  let failureRetryAfter: string | null = null;
   let selectedCandidate: Candidate | undefined;
   let expectedBody = "",
     decoded: Record<string, unknown> | null = null;
@@ -252,6 +282,7 @@ export async function prepareNativeStage(
           details.credentials.connectionId !== selection.connectionId ||
           details.credentials.apiKey !== credentials.apiKey ||
           details.credentials.accessToken ||
+          !eligibleNativeCredentials(selection.provider, selection.model, details.credentials) ||
           details.body !== expectedBody ||
           !validNativeHeaders(details.headers, authorization)
         )
@@ -269,6 +300,22 @@ export async function prepareNativeStage(
           decoded = parsed as Record<string, unknown>;
       } catch {
         /* Invalid JSON still records the physical HTTP outcome. */
+      }
+      if (!response.ok) {
+        failureDiagnostic = projectSystemOneFailure({
+          status: response.status,
+          body: decoded,
+          bodyText: text,
+          authenticated: true,
+          sensitiveValues: systemOneSensitiveValues([
+            credentials.apiKey,
+            selection.connectionId,
+            keyId,
+            identity.id,
+            JSON.parse(expectedBody),
+          ]),
+        });
+        failureRetryAfter = systemOneRetryAfter(response.headers.get("retry-after"));
       }
       const raw = decoded?.usage as Record<string, unknown> | undefined;
       usage = {
@@ -308,7 +355,8 @@ export async function prepareNativeStage(
               !selected.success ||
               selected.data.connectionId !== selection.connectionId ||
               selected.data.apiKey !== credentials.apiKey ||
-              selected.data.accessToken
+              selected.data.accessToken ||
+              !eligibleNativeCredentials(selection.provider, selection.model, selected.data)
             )
               throw new Error("decision_credentials_changed");
             const response = await runWithSharedCapacity(
@@ -372,10 +420,31 @@ export async function prepareNativeStage(
       }
     },
     annotate: (response) => {
-      const result = new Response(response.body, {
-        status: response.status,
-        headers: response.headers,
-      });
+      const diagnostic =
+        response.status === 409 &&
+        ["decision_auth", "decision_denied", "decision_retryable", "decision_invalid"].includes(
+          response.headers.get("x-omniroute-decision-reason") ?? ""
+        )
+          ? failureDiagnostic
+          : null;
+      const result = new Response(
+        diagnostic
+          ? JSON.stringify(
+              buildErrorBody(response.status, diagnostic.message, diagnostic.details, {
+                code: "decision_application_rejected",
+              })
+            )
+          : response.body,
+        {
+          status: response.status,
+          headers: response.headers,
+        }
+      );
+      if (diagnostic) {
+        result.headers.set("x-omniroute-provider-error-kind", diagnostic.kind);
+        result.headers.set("x-omniroute-provider-auth-scope", diagnostic.authScope);
+        if (failureRetryAfter) result.headers.set("retry-after", failureRetryAfter);
+      }
       result.headers.set("x-omniroute-selection-mode", "native");
       result.headers.set("x-omniroute-decision-request", identity.id);
       result.headers.set(

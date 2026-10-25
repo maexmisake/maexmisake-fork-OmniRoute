@@ -409,7 +409,13 @@ for (const status of [401, 402, 403, 429, 503, 200]) {
     const outcome = await client.select(config.candidates, request, new AbortController().signal);
     assert.equal(
       outcome.status,
-      [401, 402, 403].includes(status) ? "auth" : status === 200 ? "refused" : "retryable"
+      status === 401
+        ? "auth"
+        : [402, 403, 429].includes(status)
+          ? "denied"
+          : status === 200
+            ? "refused"
+            : "retryable"
     );
   });
 }
@@ -694,3 +700,48 @@ test("cancellation between decisions cannot add a phantom unknown-cost attempt",
   assert.equal(result.ledger.length, calls);
   assert.equal(result.costs.decision.totalUsd, 0.001);
 });
+
+for (const status of [402, 403, 429]) {
+  test(`native denial HTTP${status} cannot become deterministic or decision-provider fallback`, async () => {
+    let first = 0,
+      second = 0,
+      executed = 0;
+    const result = await runDecisionPolicy(
+      { ...config, decisionFailure: "deterministic" },
+      request,
+      deps({
+        decisionClients: [
+          nativeDecisionClient({
+            id: "denied",
+            model: "fixture",
+            call: async () => {
+              first++;
+              return {
+                status,
+                body: {
+                  error: { name: "FreeUsageLimitError", message: "Free usage limit reached." },
+                },
+              };
+            },
+          }),
+          {
+            id: "must-not-run",
+            select: async () => {
+              second++;
+              return { status: "unknown", costUsd: 0 };
+            },
+          },
+        ],
+        execute: async (candidate) => {
+          executed++;
+          return { status: "success", costUsd: 0, committed: false, actual: actual(candidate) };
+        },
+      })
+    );
+    assert.equal(first, 1);
+    assert.equal(second, 0);
+    assert.equal(executed, 0);
+    assert.equal(result.status, "decision_stopped");
+    assert.equal(result.costs.decision.totalUsd, null);
+  });
+}

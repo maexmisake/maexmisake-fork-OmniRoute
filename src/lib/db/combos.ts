@@ -6,7 +6,7 @@
  * remain here instead of becoming part of the portable repository surface.
  */
 
-import type { ComboRecord } from "@/domain/persistence/comboRepositories";
+import type { ComboRecord, ComboUpdateOptions } from "@/domain/persistence/comboRepositories";
 import { backupDbFile } from "./backup";
 import { clearSessionModelHistoryForCombo } from "./contextHandoffs";
 import { getDbInstance } from "./core";
@@ -44,8 +44,14 @@ export async function createCombo(data: ComboRecord): Promise<ComboRecord> {
   return combo;
 }
 
-export async function updateCombo(id: string, data: ComboRecord): Promise<ComboRecord | null> {
-  const result = await repository.update(id, data);
+export async function updateCombo(
+  id: string,
+  data: ComboRecord,
+  options?: ComboUpdateOptions
+): Promise<ComboRecord | null> {
+  const result = await (options
+    ? repository.update(id, data, options)
+    : repository.update(id, data));
   if (!result) return null;
 
   if (result.modelsFieldProvided) {

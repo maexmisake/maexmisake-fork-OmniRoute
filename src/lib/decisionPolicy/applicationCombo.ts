@@ -4,9 +4,10 @@ import { createValidationDispatchFence } from "../modelValidation/dispatchFence"
 import { createValidationPluginFence } from "../modelValidation/pluginFence";
 import { getSettings } from "../db/settings";
 import { randomUUID } from "node:crypto";
-import { z } from "zod";
+import type { z } from "zod";
+import { boundedDecisionConfigurationSchema as configuration } from "../../shared/decisionPolicy/configuration.ts";
+export { nativeSelectionSchema } from "../../shared/decisionPolicy/configuration.ts";
 import {
-  policySchema,
   type Candidate,
   type CandidateState,
 } from "../../../open-sse/services/decisionPolicy/contract.ts";
@@ -68,36 +69,6 @@ function rejectedAttempt(
   if (attempt) response.headers.set("x-omniroute-decision-attempt", attempt.id);
   return response;
 }
-export const nativeSelectionSchema = z
-  .object({
-    mode: z.literal("native"),
-    provider: z.literal("opencode-zen"),
-    model: z.literal("jev-1.13"),
-    connectionId: z.string().min(1),
-    timeoutMs: z.number().int().min(1).max(10000),
-    maxCandidates: z.number().int().min(2).max(255).default(32),
-  })
-  .strict();
-const configuration = z
-  .object({
-    enabled: z.literal(true),
-    applicationMode: z.literal("bounded-v1"),
-    policy: policySchema,
-    selection: z
-      .union([z.object({ mode: z.literal("deterministic") }).strict(), nativeSelectionSchema])
-      .optional(),
-    connections: z.record(z.string(), z.string().min(1)),
-  })
-  .strict()
-  .refine(
-    (value) =>
-      value.policy.maxExecutionAttempts === 1 &&
-      (value.selection?.mode === "native"
-        ? value.policy.maxDecisionAttempts === 1 &&
-          value.policy.decisionFailure === "stop" &&
-          value.selection.timeoutMs <= value.policy.timeoutMs
-        : value.policy.maxDecisionAttempts === 0)
-  );
 export type AutomaticPlan = {
   sourcePolicy: string;
   comboId: string;

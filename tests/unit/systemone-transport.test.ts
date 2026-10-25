@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 
 import {
   SystemOneEndpointError,
+  hasExactSystemOneHeaders,
   systemOneHeaders,
   systemOneUrl,
 } from "../../open-sse/handlers/systemOneTransport.ts";
@@ -37,6 +38,7 @@ test("each backend resolves its documented decision endpoint by default", () => 
     "https://ai-gateway.vercel.sh/typesafe/v1/systemone"
   );
   assert.equal(systemOneUrl("openrouter", {}), "https://openrouter.ai/api/v1/systemone");
+  assert.equal(systemOneUrl("typesafe", {}), "https://api.typesafe.ai/v1/systemone");
 });
 
 test("each backend resolves its documented catalog endpoint by default", () => {
@@ -52,6 +54,7 @@ test("each backend resolves its documented catalog endpoint by default", () => {
     systemOneUrl("openrouter", {}, "models"),
     "https://openrouter.ai/api/v1/models?output_modalities=decisions"
   );
+  assert.equal(systemOneUrl("typesafe", {}, "models"), "https://api.typesafe.ai/v1/models");
 });
 
 test("a per-connection endpoint override on an allowlisted host is honored", () => {
@@ -112,6 +115,19 @@ test("an override outside the provider's allowlisted hosts is rejected", () => {
   }
 });
 
+test("the direct TypeSafe key cannot be redirected to a gateway host", () => {
+  for (const url of [
+    "https://openrouter.ai/api/v1/systemone",
+    "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+    "https://api.typesafe.ai.evil.example/v1/systemone",
+  ]) {
+    assert.throws(
+      () => systemOneUrl("typesafe", { providerSpecificData: { systemOneUrl: url } }),
+      SystemOneEndpointError
+    );
+  }
+});
+
 test("a plaintext, credentialed or malformed override is rejected", () => {
   for (const url of [
     "http://opencode.ai/inference/v1/systemone",
@@ -155,6 +171,61 @@ test("headers carry the connection bearer token and JSON content types", () => {
   assert.equal(headers.Authorization, "Bearer sk-test-key");
   assert.equal(headers["Content-Type"], "application/json");
   assert.equal(headers.Accept, "application/json");
+});
+
+test("native providers identify the actual application with one fixed User-Agent", () => {
+  for (const provider of ["opencode-zen", "openrouter", "vercel-ai-gateway", "typesafe"]) {
+    const headers = systemOneHeaders(provider, { apiKey: "synthetic-native-key" });
+    assert.equal(headers["User-Agent"], "OmniRoute-SystemOne/1.0");
+    assert.deepEqual(Object.keys(headers).sort(), [
+      "Accept",
+      "Authorization",
+      "Content-Type",
+      "User-Agent",
+    ]);
+  }
+});
+
+test("native application identity cannot be replaced by connection-supplied headers", () => {
+  const headers = systemOneHeaders("opencode-zen", {
+    apiKey: "synthetic-native-key",
+    providerSpecificData: {
+      headers: { "User-Agent": "Mozilla/5.0", "X-Client-Identity": "opencode" },
+      userAgent: "opencode/1.0",
+    },
+  });
+  assert.equal(headers["User-Agent"], "OmniRoute-SystemOne/1.0");
+  assert.equal("X-Client-Identity" in headers, false);
+});
+
+test("the automatic native header fence accepts only its exact fixed values", () => {
+  const authorization = "Bearer synthetic-native-key";
+  const headers = systemOneHeaders("opencode-zen", { apiKey: "synthetic-native-key" });
+  assert.equal(hasExactSystemOneHeaders(headers, authorization), true);
+  assert.equal(hasExactSystemOneHeaders(new Headers(headers), authorization), true);
+
+  for (const [name, value] of [
+    ["Authorization", "Bearer different-synthetic-key"],
+    ["Accept", "text/html"],
+    ["Content-Type", "text/plain"],
+    ["User-Agent", "Mozilla/5.0"],
+    ["X-Client-Identity", "opencode"],
+  ]) {
+    assert.equal(hasExactSystemOneHeaders({ ...headers, [name]: value }, authorization), false);
+  }
+  for (const name of ["Authorization", "Accept", "Content-Type", "User-Agent"]) {
+    const changed = { ...headers };
+    delete changed[name];
+    assert.equal(hasExactSystemOneHeaders(changed, authorization), false);
+  }
+  assert.equal(hasExactSystemOneHeaders(undefined, authorization), false);
+});
+
+test("duplicate or combined User-Agent values cannot evade the native header fence", () => {
+  const authorization = "Bearer synthetic-native-key";
+  const headers = new Headers(systemOneHeaders("opencode-zen", { apiKey: "synthetic-native-key" }));
+  headers.append("user-agent", "opencode/1.0");
+  assert.equal(hasExactSystemOneHeaders(headers, authorization), false);
 });
 
 test("an OAuth access token is used when no API key is stored", () => {

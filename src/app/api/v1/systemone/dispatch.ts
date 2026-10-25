@@ -17,9 +17,10 @@
  * providers" and "a free alias never reaches a paid backend" structural rather
  * than a rule this loop has to remember.
  *
- * Fallback is deliberately narrow: only a status that says something about the
- * ACCOUNT (401/402/403/429) or the upstream's availability (408, 5xx except 501)
- * is retried. A 502 must carry the proxy's `upstream_error` code to retry;
+ * Fallback is deliberately narrow: only upstream availability failures (408,
+ * 5xx except 501) are retried. Authentication, access, billing and rate/quota
+ * restrictions (401/402/403/429/451) are terminal; another identity must not
+ * bypass the same restriction. A 502 must carry the proxy's `upstream_error` code to retry;
  * malformed success bodies carry `upstream_protocol_error` and fail closed, as
  * do unclassified 502s and caller-fault statuses that would repeat on every account.
  *
@@ -58,9 +59,9 @@ import { getProviderConnections } from "@/lib/db/providers";
 import { checkTokenLimits } from "@omniroute/open-sse/services/tokenLimitCounter.ts";
 
 /**
- * Connections tried per candidate before moving on. A decision call is cheap
- * and idempotent, so rotating is safe, but an unbounded rotation would turn one
- * client request into a scan of every key the operator owns.
+ * Connections tried per candidate after retryable service failures. A call may
+ * be billable even when it fails; this bound does not permit rotation after
+ * authentication, access, billing or rate/quota restrictions.
  */
 export const SYSTEMONE_MAX_CONNECTION_ATTEMPTS = 3;
 
@@ -137,7 +138,7 @@ export type SystemOneDispatchInput = {
 export function isRetryableSystemOneStatus(status: number): boolean {
   if (status === 501 || status === 502) return false;
   if (status >= 500) return true;
-  return status === HTTP_STATUS.REQUEST_TIMEOUT || status === HTTP_STATUS.RATE_LIMITED;
+  return status === HTTP_STATUS.REQUEST_TIMEOUT;
 }
 
 async function canRetryResponse(response: Response): Promise<boolean> {

@@ -34,16 +34,17 @@ function captureError(fn: () => unknown): SystemOneTargetError {
   throw new Error("expected the call to throw");
 }
 
-test("the three authorized backends are registered and nothing else", () => {
+test("the four explicit native backends are registered and nothing else", () => {
   assert.deepEqual(listSystemOneProviders().sort(), [
     "opencode-zen",
     "openrouter",
+    "typesafe",
     "vercel-ai-gateway",
   ]);
   assert.equal(isSystemOneProvider("opencode-zen"), true);
   assert.equal(isSystemOneProvider("openrouter"), true);
   assert.equal(isSystemOneProvider("vercel-ai-gateway"), true);
-  assert.equal(isSystemOneProvider("typesafe"), false);
+  assert.equal(isSystemOneProvider("typesafe"), true);
   assert.equal(isSystemOneProvider("constructor"), false);
   assert.equal(isSystemOneProvider("__proto__"), false);
 });
@@ -70,6 +71,11 @@ test("each backend carries the documented decision and catalog endpoints", () =>
     SYSTEMONE_BACKENDS.openrouter.modelsUrl,
     "https://openrouter.ai/api/v1/models?output_modalities=decisions"
   );
+  const typesafe = systemOneBackend("typesafe");
+  assert.equal(typesafe.decisionUrl, "https://api.typesafe.ai/v1/systemone");
+  assert.equal(typesafe.modelsUrl, "https://api.typesafe.ai/v1/models");
+  assert.deepEqual(typesafe.allowedHosts, ["api.typesafe.ai"]);
+  assert.equal(typesafe.requiresKey, true);
 });
 
 test("every backend declares its allowlisted override hosts and a key requirement", () => {
@@ -90,7 +96,22 @@ test("every backend declares its allowlisted override hosts and a key requiremen
 });
 
 test("systemOneBackend rejects an unregistered provider instead of returning undefined", () => {
-  assert.throws(() => systemOneBackend("typesafe"), SystemOneTargetError);
+  assert.throws(() => systemOneBackend("unknown-native"), SystemOneTargetError);
+});
+
+test("direct TypeSafe is explicit and never enlarges an existing bare alias", () => {
+  assert.deepEqual(resolveSystemOneCandidates("typesafe/jev-1.14.0"), [
+    {
+      provider: "typesafe",
+      model: "jev-1.14.0",
+      canonicalModel: "typesafe/jev-1.14.0",
+      tier: "paid",
+      pinned: true,
+    },
+  ]);
+  assert.throws(() => resolveSystemOneCandidates("jev", { availableProviders: ["typesafe"] }));
+  assert.equal(nativeSystemOnePricing("typesafe", "jev-1.14.0"), null);
+  assert.equal(isConnectionEligibleForTier("paid", { apiKey: null }, "typesafe"), false);
 });
 
 test("a provider-qualified id pins exactly one backend", () => {

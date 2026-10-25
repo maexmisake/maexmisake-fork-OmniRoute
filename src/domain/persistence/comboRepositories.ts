@@ -1,5 +1,10 @@
 export type ComboRecord = Record<string, unknown>;
 
+/** Generic editors cannot replace the separately managed routing policy. */
+export interface ComboUpdateOptions {
+  preserveDecisionPolicy?: boolean;
+}
+
 export interface ComboUpdateResult {
   combo: ComboRecord;
   previousName: string;
@@ -19,7 +24,11 @@ export interface ComboRepository {
   findByName(name: string): Promise<ComboRecord | null>;
   findByNameInsensitive(name: string): Promise<ComboRecord | null>;
   create(data: ComboRecord): Promise<ComboRecord>;
-  update(id: string, data: ComboRecord): Promise<ComboUpdateResult | null>;
+  update(
+    id: string,
+    data: ComboRecord,
+    options?: ComboUpdateOptions
+  ): Promise<ComboUpdateResult | null>;
   reorder(comboIds: string[]): Promise<ComboReorderResult>;
   deleteById(id: string): Promise<boolean>;
 }

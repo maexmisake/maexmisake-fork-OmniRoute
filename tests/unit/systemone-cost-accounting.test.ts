@@ -255,6 +255,53 @@ for (const fixture of [
   });
 }
 
+for (const cost of [null, 0, 0.00012]) {
+  test(`native denial persists reported failure usage with cost ${cost}`, async () => {
+    const model = "systemone-failure-unpriced-test-model";
+    const response = await handleSystemOneProxy(
+      {
+        provider: "openrouter",
+        canonicalModel: `openrouter/${model}`,
+        body: {
+          model,
+          state: "test",
+          questions: { accepted: { type: "noul", instructions: "Accept?" } },
+        },
+        credentials: { apiKey: "synthetic-key", connectionId: "synthetic-connection" },
+        apiKeyInfo: { id: ENTRY.apiKeyId },
+      },
+      {
+        withCapacity: async (_options, _signal, run) => run(),
+        fetchSystemOne: async () =>
+          Response.json(
+            {
+              error: { type: "FreeUsageLimitError", message: "Free usage limit reached." },
+              usage: { input_tokens: 4, output_tokens: 0, cost },
+            },
+            { status: 429 }
+          ),
+        saveRequestUsage: async (entry) => {
+          await saveRequestUsage({ ...entry, timestamp: ENTRY.timestamp });
+        },
+        recordCost: () => {},
+      }
+    );
+    assert.equal(response.status, 429);
+    assert.deepEqual(
+      getDbInstance()
+        .prepare(
+          "SELECT tokens_input, tokens_output, provider_cost_usd, success FROM usage_history"
+        )
+        .all(),
+      [{ tokens_input: 4, tokens_output: 0, provider_cost_usd: cost, success: 0 }]
+    );
+    const status = await getStatus();
+    assert.equal(status.dailyHasUnpricedUsage, cost === null);
+    assert.equal(status.dailyExceeded, cost === null);
+    assert.equal(status.dailySpentUsd, cost ?? 0);
+  });
+}
+
 test("historical NULL tokens fail closed even beside a complete priced row", async () => {
   const model = "historical-null-tokens";
   await updatePricing({ vercel: { [model]: { input: 0.2, output: 1 } } });

@@ -84,6 +84,9 @@ export function inferRequiredScope(method: string, path: string): AccessScope {
   if (matchesPrefix(p, ["/api/keys"]) && /\/reveal\/?$/.test(p)) return "admin";
 
   const isMutation = !READ_METHODS.has(m);
+  // This narrow settings route mutates provider metadata, just like /api/providers/:id.
+  if (isMutation && /^\/api\/decision-routing\/connections\/[^/]+\/tier\/?$/.test(p))
+    return "admin";
   if (isMutation && matchesPrefix(p, ADMIN_MUTATION_PREFIXES)) return "admin";
   if (isMutation && matchesExactPath(p, ADMIN_MUTATION_EXACT_PATHS)) return "admin";
 

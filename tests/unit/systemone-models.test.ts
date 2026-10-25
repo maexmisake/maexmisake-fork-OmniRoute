@@ -47,6 +47,18 @@ const VERCEL_LIST = {
   data: [{ id: "typesafe-ai/jev", name: "TypeSafe Jev" }],
 };
 
+// Deterministic contract fixture, not a captured live provider response.
+const TYPESAFE_LIST = {
+  models: [
+    {
+      name: "jev-1.14.0",
+      description: "Synthetic native decision model",
+      release_date: "2026-10-14",
+    },
+    { name: "jev-latest", description: "Synthetic native alias", release_date: "2026-10-14" },
+  ],
+};
+
 function connection(
   provider: string,
   overrides: Partial<SystemOneCatalogConnection> = {}
@@ -109,6 +121,62 @@ test("a provider without a System One backend is ignored entirely", async () => 
   const response = await handleSystemOneModels({}, deps([connection("anthropic")], {}));
   assert.deepEqual(await listed(response), []);
   assert.equal(response.headers.get("X-OmniRoute-Catalog-Status"), "unconfigured");
+});
+
+test("direct TypeSafe discovery maps its native name/description catalog without inventing price", async () => {
+  const reads: Array<{ url: string; authorization: string | null }> = [];
+  const response = await handleSystemOneModels(
+    {},
+    deps(
+      [connection("typesafe", { apiKey: "synthetic-typesafe-key" })],
+      {},
+      {
+        fetchSystemOne: async (url, _credentials, init) => {
+          reads.push({ url, authorization: new Headers(init.headers).get("authorization") });
+          return new Response(JSON.stringify(TYPESAFE_LIST), { status: 200 });
+        },
+      }
+    )
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(reads, [
+    { url: "https://api.typesafe.ai/v1/models", authorization: "Bearer synthetic-typesafe-key" },
+  ]);
+  const models = await listed(response);
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ["typesafe/jev-1.14.0", "typesafe/jev-latest"]
+  );
+  assert.equal(models[0].name, "jev-1.14.0");
+  assert.equal(models[0].description, "Synthetic native decision model");
+  assert.equal(models[0].root, "jev-1.14.0");
+  assert.equal(models[0].owned_by, "typesafe");
+  assert.equal(models[0].type, "decision");
+  assert.equal(models[0].tier, "paid");
+  assert.deepEqual(models[0].supported_endpoints, ["systemone"]);
+  assert.equal(models[0].pricing_status, "unknown");
+  assert.equal(models[0].pricing, undefined);
+  assert.equal(models[0].pricing_source, undefined);
+  assert.equal(resolveSystemOneCandidates(String(models[0].id))[0].model, "jev-1.14.0");
+});
+
+test("a TypeSafe catalog authentication failure does not rotate to another account", async () => {
+  let reads = 0;
+  const response = await handleSystemOneModels(
+    {},
+    deps(
+      [connection("typesafe", { id: "ts-a" }), connection("typesafe", { id: "ts-b" })],
+      {},
+      {
+        fetchSystemOne: async () => {
+          reads++;
+          return new Response(JSON.stringify({ error: "synthetic-auth-failure" }), { status: 401 });
+        },
+      }
+    )
+  );
+  assert.equal(reads, 1);
+  assert.equal(response.status, 502);
 });
 
 test("OpenRouter contributes only models whose output modality is decisions", async () => {
