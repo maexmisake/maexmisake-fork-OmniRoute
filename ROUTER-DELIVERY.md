@@ -1,75 +1,48 @@
-# Native decision router: local delivery guide
+# Native decision router: review delivery
 
-This branch contains an opt-in, text/JSON automatic-routing prototype. The actual chat handler can make one native System One selection over eligible model-and-effort pairs, then make at most one guarded execution of the valid chosen pair. Ordinary defaults and existing combo strategies are unchanged. It is not production-ready or evidence of improved model-selection quality.
+This is an opt-in, text/JSON prototype. The real application handler can ask one native decision model to choose an eligible execution model and thinking effort, then make at most one guarded execution. Ordinary defaults and existing combo strategies are unchanged. The live installation has not been modified.
 
-## 25 October follow-up: explicit paid native bindings
+## Finished, blocked, unverified
 
-Local branch `feat/native-paid-bindings-v1` starts from diagnostics commit `623329ad6e7bf9be192510fec3b8087bbc25393d`. It reuses the same bounded application path, stored API-key connections, egress checks, capacity and per-stage journal. No binding is enabled by default, and no live configuration or provider request was used to validate this follow-up.
+- **Finished:** explicit paid decision bindings, eligibility and exact dispatch guards, separate decision/execution accounting, bounded sanitized failure diagnostics and offline application tests. The latest selected regression suite passed **644/644 across 31 files**; independent review found no remaining blocking defect in that scope.
+- **Build blocked:** the unchanged locked SWC dependency rejects this cloud image's ancestor ownership. A runnable production package and package boot are unverified. No security check, dependency or environment setting was weakened.
+- **Live unverified:** separate direct provider smokes succeeded, but the prototype has not run end-to-end with real accounts. Retained observations are incomplete and cannot prove full adapter compatibility. Zen remains stopped after an unresolved free-usage restriction.
+- **Quality unverified:** synthetic routing behavior does not establish better model choices, calibrated confidence or support for the historical full candidate pool. Missing held-out tasks and SVG fixtures remain missing.
 
-| Native selector provider                             | Exact configured request/response identifier |
-| ---------------------------------------------------- | -------------------------------------------- |
-| OpenCode Zen (`opencode-zen`, existing paid binding) | `jev-1.13`                                   |
-| TypeSafe AI (`typesafe`)                             | `jev-1.14.0`                                 |
-| OpenRouter (`openrouter`)                            | `typesafe/jev-1.14-20261014`                 |
-| Vercel AI Gateway (`vercel-ai-gateway`)              | `typesafe-ai/jev`                            |
+## Modes and exact bindings
 
-The provider is part of the binding. Cross-provider model spellings, unreviewed aliases and free Zen substitution reject before dispatch. A successful selector response must echo its exact configured identifier; missing/mismatched IDs stop without execution. Vercel's generic identifier is a floating alias: exact echo does not prove an immutable underlying model revision. No fallback extension is sent or accepted as another model.
+| Mode                  | Behavior                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ordinary combos       | Existing behavior; this prototype does not activate itself.                                                                                                         |
+| Bounded deterministic | Eligibility first, explicit task preference order, zero decision calls and at most one execution.                                                                   |
+| Bounded native        | Eligibility first, one Choice decision over allowed model-and-effort options, then at most one exact execution. Invalid, unknown, refused or denied decisions stop. |
 
-Automatic selection continues to use one Choice question over eligible model-and-effort pairs, then at most one guarded execution. Separate native passthrough supports Noul, Choice and Score; direct TypeSafe now uses the shared registry/transport/catalog parser. Its native models/name/description schema is projected without inventing release_date or pricing. Bare aliases retain their previous routes and do not acquire a TypeSafe fallback.
+| Selector provider config ID             | Exact requested and required returned model ID |
+| --------------------------------------- | ---------------------------------------------- |
+| `typesafe`                              | `jev-1.14.0`                                   |
+| `openrouter`                            | `typesafe/jev-1.14-20261014`                   |
+| `vercel-ai-gateway`                     | `typesafe-ai/jev`                              |
+| `opencode-zen` (preserved paid binding) | `jev-1.13`                                     |
 
-Tests use explicitly synthetic official-contract envelopes and loopback providers, not captured real responses. The tester retained only normalized observations and reconstructed partial fixtures, so live adapter interoperability remains unproved. Nine retained-subset checks preserve Noul/Choice values and reject incomplete Score fixtures because their legends were not retained; this does not establish that the live responses lacked legends. The real OpenRouter requests used the 1.14 alias and returned the dated ID, so the dated request binding itself has only official-contract synthetic validation. TypeSafe does not document an exact USD receipt field in its inspected native response; missing cost stays unknown. OpenRouter numeric usage.cost and Vercel decimal-string provider_metadata.gateway.cost are tested as documented formats, without claiming those representations were retained from the live tests. Defensive refusal fixtures prove safe stopping, not observed Jev refusal behavior.
+Provider and model form one strict operator-stored binding. Cross-provider spellings, unreviewed aliases, client-supplied activation and free Zen substitution reject before dispatch. A missing or mismatched returned identifier cannot authorize execution. Vercel's generic ID is a floating alias, not an immutable underlying model revision. The real OpenRouter smoke requested `typesafe/jev-1.14` and returned the dated ID; the **dated request binding itself has only official-contract synthetic validation**. The preserved paid Zen binding does not authorize a paid Zen test.
 
-The completed offline milestone passed 644/644 selected tests across 31 files, including 77 real-handler fixtures and nine explicitly partial retained-observation checks. Independent review found no remaining blocking defect in this scope; this is behavioral evidence, not live interoperability or model-selection quality.
+Separate `POST /v1/systemone` and `GET /v1/systemone/models` routes provide native passthrough/discovery for these providers. Passthrough supports Noul, Choice and Score; the automatic selector deliberately uses Choice. Direct TypeSafe reuses the existing provider connection and shared guarded transport/catalog parser. Its native `models[].name/description` shape is projected; release_date is not projected. Bare aliases retain their earlier routes and gain no TypeSafe fallback. Vercel evaluate/Decisions and direct OpenAI Decisions are different, deferred contracts.
 
-These bindings require an explicit operator-stored opt-in config in an isolated instance and a matching existing API-key connection. They add no credential setup/UI flow, refresh, usage probe, model discovery bootstrap, provider retry or execution provider. The separate legacy Jev combo client and its credential validator are unchanged. Production build remains unverified: Next's WASM compiler fallback does not remove the separate locked @swc/core import that triggers the recorded ownership restriction, and no supported unchanged-lock JS/WASM full-build route was established.
+Execution support remains OpenAI API-key text/JSON and Claude OAuth `claude-opus-5-5` at medium/high effort. Explicit capability/effort profiles and exact connection bindings are required. Antigravity, Codex and other Claude pairs remain unsupported here. Catalog presence is not account entitlement or capability evidence; the historical 23-candidate pool was not replaced or declared supported.
 
-## 25 October follow-up: native access diagnostics
+## Guards and accounting
 
-Local branch `feat/decision-provider-diagnostics-v1` starts from preserved delivery head `49cf693908abc613c215c620a6ebc80241265b3c`. It adds a fixed truthful `OmniRoute-SystemOne/1.0` identifier to the native transport, bounded sanitized provider-error causes, terminal handling of native 401/402/403/429/451 without account/provider/deterministic fallback, and retention of explicitly reported failed-call usage. A presented credential does not establish its validity or the scope of a quota. That diagnostics commit added no automatic selector provider or model; the later paid-binding follow-up above is a separate local change.
+Native mode permits 2–32 eligible options by default (configurable up to 255), one decision attempt, one execution attempt and stop-on-decision-failure. Request/response bytes are bounded to 64 KiB for the native stage; its timeout is at most 10 seconds within the overall 30-second maximum. The selector receives task labels, flags and counts rather than raw prompts/private profile evidence. Its confidence grants no permissions and is not measured correctness.
 
-The original delivery tree was published as managed snapshot `7d396a43294f06a5996c5d01f88d56bf3578c1d5` on the delivery branch. This follow-up remains local and unpublished. Direct endpoint successes reported by a separate tester for TypeSafe, OpenRouter and Vercel are not tests of these application adapters. Zen returned 429 with both credential-free and keyed controls; free entitlement, key validity and quota scope remain unresolved.
+The existing client authentication, stored connection selection, endpoint/header fence, capacity, authorization rechecks and per-stage journal remain the call path. Native 401/402/403/429/451 stops without account/provider/global/deterministic fallback. Queued policy changes, cancellation and committed output prevent follow-on execution. No bootstrap, quota usage probe, refresh, hidden chat substitute or second gateway was added. Unsupported streaming, images, tools/continuations, capped/quota-scoped keys and proxy/TLS configurations fail closed in this bounded lane.
 
-Failure diagnostics retain bounded semantic RFC9457 fields and nested messages after canonical sanitization and caller-owned value redaction; raw bodies/HTML are never returned. This is not universal detection of every unidentified private value. A reported error cost, including zero, is retained; a missing receipt stays unknown. The ordinary standalone history/cost writers remain best effort with inherited natural-key deduplication. This does not upgrade them to the automatic lane's per-attempt journal or crash-proof accounting.
+Decision and execution receipts/costs remain separate with one logical RPM charge. Missing usage/cost remains unknown; reported zero stays zero. TypeSafe's inspected native contract does not document an exact USD receipt. OpenRouter numeric usage.cost and Vercel decimal-string provider_metadata.gateway.cost are tested documented formats, not recovered live representations. Ordinary standalone history/cost writers remain best effort with inherited deduplication; they are not an atomic financial ledger. Remote bills never received and ancillary quota preflight cancellation remain limitations.
 
-The actual-handler regression suite is `tests/integration/decision-native-selector.test.ts`; diagnostics and failure-receipt fixtures are `tests/unit/systemone-{diagnostics,proxy,cost-accounting}.test.ts`. Use the offline command below with those explicit files. Detailed dated source, test, accounting and build evidence is saved in the private Gravewire research repository. No credentials or provider calls are required.
+The fixed truthful `OmniRoute-SystemOne/1.0` identifier names this transport, without browser/OpenCode impersonation. Bounded RFC9457/nested diagnostics use canonical sanitization and known-value/account-form redaction; raw bodies/HTML are not returned. This is not universal detection of unidentified private prose. A presented key or 429 does not prove key validity or account-specific quota. The separate legacy Jev client and credential validator are unchanged.
 
-## Branch and ancestry
+## Reproduce offline in an isolated checkout
 
-- Delivery branch: `feat/native-router-delivery-20261024`.
-- Frozen feature commit: `a582ee575296099248d995a59dd2b577b425c9b2`.
-- Exact immediate baseline: `1e53f94268cbe235536ee57be7591122abaef2ca`.
-- Published stable ancestor: v3.8.52, `ad6f33f66bda34eba98645d3bfdabbde294bc843`.
-- Original PR head `d075d8d8c5b440a13bd1eff5736d3ee0cfe82dec` remains preserved separately. This delivery does not rewrite it or merge remote branches.
-
-The stable integration chain retains the native transport foundation (`60182c8c0e`), offline policy (`fde986c4a8`), dispatch guards (`413bd72eae`), application admission (`066685c6e7`), permitted path (`084b15d16b` plus deadline/bearer fixes), Claude contracts (`4d09a99bee`, `1e53f94268`) and native application selection (`a582ee5752`). No feature scope was added during consolidation; the only additions are this guide and an explicitly loaded offline audit preload.
-
-The configured fork target at audit time is `88c1e3342b44978a72ce75beb0cc509cc83a93d2`. It is not an ancestor of this stable-based branch. Their merge base is `fc5e2bccd4f70fecf5aab94dfb8136c74ab5a21b`, with 5,840 fork-side versus 15 stable/feature-side commits before consolidation. Publishing a review branch would not update that target. This is not a merge-ready PR against the divergent fork release branch; target alignment needs separate review.
-
-## Implemented modes and boundaries
-
-| Mode                  | Behavior                                                                                                                                                                   |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ordinary combos       | Existing behavior; no automatic activation of this prototype.                                                                                                              |
-| Bounded deterministic | Eligibility first, then explicit task preference order; zero decision calls, at most one execution.                                                                        |
-| Bounded native        | Eligibility first, one native decision, then at most one exact execution. Invalid/refused/auth-failed/unknown decisions stop; no chat substitution or retry/fallback loop. |
-
-The earlier foundation also supplies separate `POST /v1/systemone` and `GET /v1/systemone/models` passthrough/catalog endpoints, with registry bindings for OpenCode Console, the Vercel native System One path and OpenRouter compatibility. Those routes retain their own dispatch and accounting behavior; they are distinct from bounded automatic selection. Their source/fixture support is not live provider compatibility. Direct TypeSafe and OpenAI Decisions transports are not added by consolidation.
-
-Native selection supports only the exact provider/model pairs in the paid-binding table above, each using its own explicitly bound stored API-key connection and official native System One endpoint. The limited-time free Zen alias, alternate Vercel APIs and other models remain unsupported in this bounded mode.
-
-Execution support remains OpenAI API-key text/JSON and Claude OAuth `claude-opus-5-5` at medium/high effort. Explicit candidate profiles and exact connection bindings are required; catalog presence is not entitlement or proof of capability. Antigravity, Codex and other Claude pairs remain unsupported here. The historical 23-candidate pool was not silently replaced or declared supported.
-
-Native mode requires 2–32 eligible options by default (configurable up to 255), one decision attempt, one execution attempt and stop-on-decision-failure. Fewer than two options is no-route. Native-selector request/response size is bounded to 64 KiB; selector timeout is at most 10s and within the overall 30s maximum. The selector sees task labels, flags and counts rather than raw prompts/private profile evidence. Its confidence is not calibrated correctness or authorization.
-
-Decision and execution have distinct durable receipts and reported costs, with one logical RPM charge. Unknown usage/cost remains NULL. Handover is atomic; queued policy changes, cancellation and exact physical identity remain guarded. This is not financial escrow, remote exactly-once execution or automatic recovery of billing never received.
-
-This bounded lane rejects streaming, images, tools/continuations, automatic OAuth refresh, quota-scoped keys, financial/token caps, unsupported proxy/TLS-fingerprint/insecure-TLS settings and live quota preflight. Do not bypass those rejections or fall back to another route to obtain success.
-
-## Reproduce only in an isolated test instance
-
-Use the saved isolated checkout and existing installed dependencies, Node24.19.0/TypeScript6.0.3. Do not copy a live database, `.env`, plugins or credentials into it. Do not run dependency install scripts or a live server as a smoke test.
-
-From the checkout root, this verified command invokes the real application handler with local synthetic providers:
+Use the installed project dependencies and isolated synthetic setup; do not copy a live database, .env, plugins or credentials. From this checkout:
 
 ```sh
 env -i PATH="$PATH" OMNIROUTE_OFFLINE_AUDIT=local-fixtures \
@@ -80,30 +53,23 @@ env -i PATH="$PATH" OMNIROUTE_OFFLINE_AUDIT=local-fixtures \
   --import ./tests/_setup/isolateDataDir.ts \
   --test --test-reporter=tap --test-concurrency=4 \
   tests/integration/decision-native-selector.test.ts \
-  tests/unit/db/native-decision-handover.test.ts
+  tests/unit/db/native-decision-handover.test.ts \
+  tests/unit/decision-paid-native-bindings.test.ts \
+  tests/unit/decision-paid-observed-subset.test.ts
 ```
 
-The test setup creates a temporary DATA_DIR, fake client/provider keys, local mock endpoints and an operator-stored combo policy. Its `configure` function demonstrates the only activation used in validation: `enabled:true`, `applicationMode:"bounded-v1"`, explicit `selection.mode:"native"`, the pinned selector connection, exact candidate/connection profiles and one-attempt bounds. The client request only names that combo; request fields cannot enable native mode. `configure("deterministic")` demonstrates the separate baseline. Do not copy the synthetic capabilities into a real candidate pool as evidence.
+The actual-handler fixture's `configure()` function creates a temporary database, synthetic keys, loopback providers and an explicit stored combo policy (`enabled:true`, `applicationMode:"bounded-v1"`, deterministic/native selection, exact connection bindings). This isolated fixture is the only activation used. Do not treat its synthetic profiles as live model evidence. The audit preload rejects external JS fetch/socket dispatch and is inherited by child Node processes; it is a test safeguard, not an OS-wide firewall or production startup component.
 
-The audit preload rejects external JS fetch/socket dispatch, permits explicit 127.0.0.1 fixtures in this mode, and permits filesystem IPC. It is not part of application startup and is not an OS-wide firewall. The command inherits the preload through NODE_OPTIONS so spawned Node database-check processes are guarded too. Production builds use its default no-network mode, inherited by child Node processes through NODE_OPTIONS. Do not load it in a live installation.
+The nine retained-subset checks preserve six Noul/Choice observations and reject three incomplete Score fixtures whose legends were not retained. They do **not** establish that live responses lacked legends. Complete raw response bodies, original cost representations/source paths and other discarded fields cannot be reconstructed. Defensive refusal fixtures prove safe stopping, not observed Jev refusal behavior.
 
-Relevant code: [application orchestration](src/lib/decisionPolicy/applicationCombo.ts), [native selection binding](src/lib/decisionPolicy/applicationSelection.ts), [shared native transport](open-sse/handlers/systemOneTransport.ts), [shared capacity](open-sse/handlers/systemOneCapacity.ts), [journal](src/lib/db/decisionAttempts.ts), [migration 215](src/lib/db/migrations/215_native_selection_lanes.sql), [actual-handler acceptance](tests/integration/decision-native-selector.test.ts).
+Core TypeScript passes; strict core retains the same 18 inherited diagnostics. Complexity thresholds remain unchanged. The SWC build failure comes from separate locked `@swc/core` through next-intl; Next's WASM fallback alone does not remove it, and no supported unchanged-lock full JS/WASM build route was established. A compatible cloud runner must repeat paired full builds, then package/no-network boot checks on success.
 
-## Validation status
+## Delivery and source history
 
-- Feature acceptance: 127 targeted tests and 793 selected regressions passed, plus one guarded TLS connector policy test. These are synthetic behavior checks, not live handshake or quality evidence.
-- Independent feature review: 38 handler cases, six adversarial probes and three journal cases passed in separate runs; no blocker for local preservation remained.
-- Delivery command above: 41/41 passed using the committed preload. Build/packaging unit checks: 69/69 at both feature and exact baseline. Source package dry-run and policy checks pass on both.
-- Production build: blocked on both commits before compilation by the same installed SWC native carrier/cache trust failure. Default, isolated custom cache and documented temporary-materialization settings could not load the addon. No reinstall, native-security bypass, source workaround or resource-limit increase was used. There is no built standalone artifact; full package assembly/boot remains unverified.
-- Separate compiler evidence remains: core 0 diagnostics; strict core 18 inherited diagnostics unchanged. Expanded route graph 713 versus 722 baseline after the shared limiter's signal types were corrected; it is still a failed check. Next's build configuration ignores TS errors, so even a future successful build will not erase these failures.
-- Quality thresholds were not raised. Four SVG fixtures and 30 held-out tasks remain missing. No real provider inference, credential access, paid usage or deployment occurred.
+The approved destination is `maexmisake/maexmisake-fork-OmniRoute`, branch `feat/native-router-delivery-20261024`. Its last verified remote head is publication snapshot `7d396a43294f06a5996c5d01f88d56bf3578c1d5`, tree `6362a2e42b64df151f9b630b3c98ef19faf5cd5e`, content-identical to preserved local `49cf693908abc613c215c620a6ebc80241265b3c`. Follow-ups are `623329ad6e7bf9be192510fec3b8087bbc25393d` and `dc1da5ae79be4d37e141d95fbca63f8f54d450a9`. This final local candidate changes only this guide beyond that tested code.
 
-The recovery audit verified the unchanged lockfile's SHA-512 against the exact official registry archives for `@swc/core` and `@swc/core-linux-x64-gnu` 1.16.13. All 18 installed files match those archives. Fresh single-link copies also fail in default, private absolute-cache and temporary modes. This is not a stale/mismatched dependency or hardlink problem: the [pinned ancestor check](https://github.com/swc-project/swc/blob/v1.16.13/crates/swc_native_addon/src/platform/unix.rs#L87) trusts only UID 0 or the effective user, while this managed environment exposes `/` as UID 65534 and Node runs as UID 1000. Every absolute cache path traverses that rejected ancestor. The exact failure is `ERR_SWC_NATIVE_CACHE`, with “cache root has a parent writable by another user without trusted sticky protection.” A same-version reinstall cannot change that check; no application dependency, lock version, security policy or filesystem permission was changed.
+The original draft PR/head, local milestone history and published snapshots remain intact. The branch is based on published stable v3.8.52 `ad6f33f66bda34eba98645d3bfdabbde294bc843`; it is not a merge-ready update to the divergent fork release target. No sync, rebase, remote merge or force push is included.
 
-To unblock release validation, use a cloud build image where the installed verified SWC native carrier loads under its normal filesystem ownership rules, then repeat the same offline production build on both commits, assemble/validate the actual package and run isolated package boot checks. Do not label source package-policy success as runnable artifact success.
+Current changes are **prepared, not published**. Transfer must recheck the target head and preserve any new remote work; ancestry differs because the earlier managed publication was a snapshot. No PR, upstream submission, deployment, live configuration, new credential access or additional provider call is included. Detailed research, captures and budget records remain in private Gravewire, never in this public implementation tree.
 
-## Publication boundary
-
-This proposed public-fork delivery contains code, synthetic tests and sanitized operator documentation. Private research, manual assets, screenshots, actual configuration and build captures stay in the separate private research repository. A local scan/manual diff review found no real credentials or private endpoints introduced by this delivery; the repository gitleaks check was unavailable and reported SKIP, not a clean scan.
-
-An authorized push would create only `feat/native-router-delivery-20261024` in `maexmisake/maexmisake-fork-OmniRoute`. No draft PR is proposed as part of that push while the release target is divergent and the build remains blocked. No upstream submission, target-branch update or deployment is included. The original delivery was subsequently published to that new fork branch as snapshot `7d396a43294f06a5996c5d01f88d56bf3578c1d5`; the original local commit/history remain intact. The 25 October follow-up is local only. No PR, merge or deployment was performed.
+Source: [application selection](src/lib/decisionPolicy/applicationSelection.ts), [explicit config bindings](src/lib/decisionPolicy/applicationCombo.ts), [registry](open-sse/config/systemOneRegistry.ts), [transport](open-sse/handlers/systemOneTransport.ts), [journal](src/lib/db/decisionAttempts.ts), [handler acceptance](tests/integration/decision-native-selector.test.ts).
