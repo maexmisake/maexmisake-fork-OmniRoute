@@ -147,7 +147,9 @@ def load_functions(profile):
 
 def project(captured, driver):
     allowed = {"model", "messages", "tools", "max_tokens", "max_completion_tokens",
-               "reasoning_effort", "temperature", "timeout", "extra_body"}
+               "reasoning_effort", "temperature", "top_p", "timeout", "extra_body"}
+    # The unchanged pinned profile merge already forwards top_p request_overrides.
+    # Recognizing it in this fixture projection does not admit sampling at the router.
     if set(captured) - allowed:
         raise ClosedBoundaryError("unknown SDK kwarg")
     body = dict(captured)
@@ -167,10 +169,13 @@ def project(captured, driver):
 
 
 def run(case):
+    configured_controls = {"configured-temperature", "configured-top-p",
+                           "configured-strict-absent", "configured-strict-false",
+                           "configured-strict-true"}
     allowed = {"explicit-medium", "explicit-high", "default-medium", "omitted-cap",
                "stream-tools", "default-stream", "nonstream-tools", "tool-continuation",
                "unknown-provider", "unknown-import", "socket-canary",
-               "extra-body-collision"}
+               "extra-body-collision"} | configured_controls
     if case not in allowed:
         raise ClosedBoundaryError("unknown fixture case")
     profile = SimpleNamespace(name="custom", fixed_temperature=None, default_max_tokens=None,
@@ -217,7 +222,19 @@ def run(case):
         tools = [{"type": "function", "function": {"name": "synthetic_tool", "parameters": {
             "type": "object", "properties": {},
         }}}] if case in {"stream-tools", "nonstream-tools"} else []
+        if case in configured_controls:
+            # Supplied synthetic configuration, not registry discovery or a default.
+            tools = [{"type": "function", "function": {"name": "synthetic_tool", "parameters": {
+                "type": "object", "properties": {"item": {"type": "string"}},
+                "required": ["item"], "additionalProperties": False,
+            }}}]
+            if case in {"configured-strict-false", "configured-strict-true"}:
+                tools[0]["function"]["strict"] = case == "configured-strict-true"
         overrides = {"extra_body": {"model": "unintended"}} if case == "extra-body-collision" else {}
+        if case == "configured-temperature":
+            overrides = {"temperature": 0.7}
+        if case == "configured-top-p":
+            overrides = {"top_p": 0.9}
         messages = [{"role": "user", "content": "Explain a synthetic lamp."}]
         if case == "tool-continuation":
             messages.extend([
@@ -239,7 +256,7 @@ def run(case):
         captured.update(value)
 
     capture_create(**kwargs)
-    driver = {"stream": True, "stream_options": {"include_usage": True}} if case in {"stream-tools", "default-stream"} else {"stream": False}
+    driver = {"stream": True, "stream_options": {"include_usage": True}} if case in {"stream-tools", "default-stream"} | configured_controls else {"stream": False}
     return {
         "case": case, "pin": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
         "proofKind": "original-source-kwargs-plus-declared-fixture-JSON-projection",

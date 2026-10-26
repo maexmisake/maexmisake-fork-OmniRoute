@@ -2,7 +2,7 @@ import "../_setup/isolateDataDir.ts";
 import assert from "node:assert/strict";
 import { before, beforeEach, after, test } from "node:test";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createApiKey } from "../../src/lib/db/apiKeys.ts";
@@ -28,6 +28,12 @@ const AVAILABLE = !!PYTHON;
 const MODEL = "synthetic-hermes-pinned";
 const SELECTOR = "https://opencode.ai/inference/systemone/v1/systemone";
 const EXECUTOR = "https://api.anthropic.com/v1/messages?beta=true";
+const CONTROL_SCHEMA = {
+  type: "object",
+  properties: { item: { type: "string" } },
+  required: ["item"],
+  additionalProperties: false,
+};
 const originalFetch = globalThis.fetch;
 const encoder = new TextEncoder();
 let POST: (request: Request) => Promise<Response>;
@@ -39,6 +45,10 @@ let agy = false,
   agyRefuse = false;
 let agyIdMode = "explicit",
   agyOriginId = "";
+let configuredSchema: Record<string, unknown> | undefined;
+let checkConfiguredStrict = false,
+  configuredStrict: boolean | undefined;
+const controlTraces: Array<Record<string, unknown>> = [];
 let effort = "high",
   decisions = 0,
   executions = 0;
@@ -123,16 +133,18 @@ function config() {
     },
   };
 }
-async function configureAgy(parallel: boolean) {
+async function configureAgy(parallel: boolean, sole = false) {
   agy = true;
   agyParallel = parallel;
   const value = config();
-  value.decisionPolicy.connections = { "agy-high": agyId, "sonnet-high": sonnetId };
+  value.decisionPolicy.connections = sole
+    ? { "agy-high": agyId }
+    : { "agy-high": agyId, "sonnet-high": sonnetId };
   value.decisionPolicy.policy.candidates = [
     { ...candidate("sonnet", "high"), id: "agy-high", provider: "agy", model: BOUNDED_AGY_MODEL },
-    candidate("sonnet", "high"),
+    ...(sole ? [] : [candidate("sonnet", "high")]),
   ];
-  const ids = ["agy-high", "sonnet-high"];
+  const ids = sole ? ["agy-high"] : ["agy-high", "sonnet-high"];
   value.decisionPolicy.policy.taskOrder = {
     explanation: ids,
     reasoning: ids,
@@ -339,14 +351,22 @@ before(async () => {
       assert.equal(body.request.generationConfig.thinkingConfig.thinkingLevel, "high");
       const declaration = body.request.tools[0].functionDeclarations[0];
       assert.equal(declaration.name, "synthetic_tool");
-      assert.deepEqual(declaration.parametersJsonSchema, { type: "object", properties: {} });
-      assert.equal(Object.hasOwn(declaration.parametersJsonSchema, "additionalProperties"), false);
+      const expectedSchema = configuredSchema ?? { type: "object", properties: {} };
+      assert.deepEqual(declaration.parametersJsonSchema, expectedSchema);
+      assert.equal(
+        Object.hasOwn(declaration.parametersJsonSchema, "additionalProperties"),
+        Object.hasOwn(expectedSchema, "additionalProperties")
+      );
       return agyResponse();
     }
     assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-sonnet-oauth");
     assert.equal(body.model, "claude-sonnet-5-5");
     assert.equal(body.output_config.effort, effort);
     assert.equal(body.max_tokens, 64);
+    if (checkConfiguredStrict) {
+      for (const tool of body.tools)
+        assert.equal(tool.strict, configuredStrict === true ? true : undefined);
+    }
     if (denial)
       return Response.json(
         { error: { message: "Synthetic terminal denial" } },
@@ -429,6 +449,9 @@ beforeEach(async () => {
   agyRefuse = false;
   agyIdMode = "explicit";
   agyOriginId = "";
+  configuredSchema = undefined;
+  checkConfiguredStrict = false;
+  configuredStrict = undefined;
   effort = "high";
   delegated = false;
   decisions = 0;
@@ -442,6 +465,11 @@ beforeEach(async () => {
 });
 after(async () => {
   if (!AVAILABLE) return;
+  if (process.env.DECISION_HERMES_CONTROLS_TRACE_FILE)
+    writeFileSync(
+      process.env.DECISION_HERMES_CONTROLS_TRACE_FILE,
+      JSON.stringify(controlTraces, null, 2) + "\n"
+    );
   globalThis.fetch = originalFetch;
   const { __resetRateLimitManagerForTests } =
     await import("../../open-sse/services/rateLimitManager.ts");
@@ -978,3 +1006,112 @@ for (const [mode, count] of [
       assert.equal(result.fullHermesExecuted, false);
     }
   );
+
+const configuredControls = [
+  ["temperature", "configured-temperature", 0.7],
+  ["top_p", "configured-top-p", 0.9],
+  ["strict-absent", "configured-strict-absent", undefined],
+  ["strict-false", "configured-strict-false", false],
+  ["strict-true", "configured-strict-true", true],
+] as const;
+for (const provider of ["claude", "agy"] as const)
+  for (const [control, fixtureCase, configuredValue] of configuredControls)
+    test(`configured Hermes ${control} reaches SDK and ${provider} contract`, options, async () => {
+      const capture = source(fixtureCase);
+      for (const name of [
+        "_build_chat_completions_kwargs",
+        "_build_kwargs_from_profile",
+        "_base_kwargs",
+      ])
+        assert.ok(
+          capture.executedSourceFunctions.some((entry: string) => entry.endsWith(":" + name))
+        );
+      const sampling = control === "temperature" || control === "top_p";
+      const originalFunction = capture.capturedKwargs.tools[0].function;
+      assert.deepEqual(originalFunction.parameters, CONTROL_SCHEMA);
+      assert.equal(originalFunction.strict, sampling ? undefined : configuredValue);
+      assert.equal(
+        Object.hasOwn(originalFunction, "strict"),
+        !sampling && configuredValue !== undefined
+      );
+      for (const field of ["temperature", "top_p"])
+        assert.equal(
+          capture.capturedKwargs[field],
+          field === control ? configuredValue : undefined
+        );
+      if (provider === "agy") await configureAgy(true, true);
+      configuredSchema = structuredClone(CONTROL_SCHEMA);
+      checkConfiguredStrict = !sampling;
+      configuredStrict = typeof configuredValue === "boolean" ? configuredValue : undefined;
+      const { result, requests, observations } = await sdk(capture, "stream");
+      const rows = readDecisionAttempts(key.id);
+      controlTraces.push({
+        provider,
+        control,
+        configuredValue: configuredValue ?? "absent",
+        handlerStatus: observations[0]?.status ?? null,
+        sdkErrorClass: result.errorClass ?? null,
+        decisions,
+        executions,
+        journal: rows.map((row) => ({
+          lane: row.lane,
+          provider: row.provider,
+          state: row.state,
+          httpStatus: row.http_status,
+          applicationStatus: row.application_status,
+          costUsd: row.cost_usd,
+        })),
+      });
+      assert.equal(requests.length, 1, "the actual SDK must reach the handler once");
+      const wireFunction = (requests[0].tools as Array<{ function: Record<string, unknown> }>)[0]
+        .function;
+      assert.deepEqual(
+        wireFunction,
+        originalFunction,
+        "SDK serialization preserves configured tool fields"
+      );
+      for (const field of ["temperature", "top_p"])
+        assert.equal(requests[0][field], field === control ? configuredValue : undefined);
+      const rejected = sampling || (provider === "agy" && configuredValue !== undefined);
+      assert.equal(observations.length, 1);
+      assert.equal(
+        observations[0].status,
+        rejected ? 409 : 200,
+        JSON.stringify({ result, observations, decisions, executions })
+      );
+      if (rejected) {
+        assert.equal(result.ok, false);
+        assert.equal(result.status, 409);
+        assert.equal(decisions, 0);
+        assert.equal(executions, 0);
+        assert.equal(rows.length, 0, "unsupported controls cannot reserve any provider attempt");
+        assert.equal(readToolContinuations(key.id, comboId).length, 0);
+      } else {
+        assert.equal(result.ok, true);
+        const summary = (
+          result.summaries as Array<{ callCount: number; calls: Array<{ arguments: string }> }>
+        )[0];
+        assert.equal(summary.callCount, 2);
+        assert.equal(summary.calls.length, 2);
+        for (const call of summary.calls) {
+          const argumentsValue = JSON.parse(call.arguments);
+          assert.deepEqual(Object.keys(argumentsValue), ["item"]);
+          assert.equal(
+            typeof argumentsValue.item,
+            "string",
+            "mock final arguments satisfy the configured strict schema"
+          );
+        }
+        assert.equal(decisions, provider === "agy" ? 0 : 1);
+        assert.equal(executions, 1);
+        assert.equal(
+          rows.filter((row) => row.lane === "decision").length,
+          provider === "agy" ? 0 : 1
+        );
+        const execution = rows.filter((row) => row.lane === "execution");
+        assert.equal(execution.length, 1);
+        assert.equal(execution[0].provider, provider);
+        assert.equal(execution[0].application_status, 200);
+        assert.equal(execution[0].cost_usd, provider === "agy" ? null : 0.003);
+      }
+    });
