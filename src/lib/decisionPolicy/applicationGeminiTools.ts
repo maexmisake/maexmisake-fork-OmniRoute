@@ -30,11 +30,12 @@ import {
 import { buildGeminiToolWire, assertGeminiToolWire } from "./geminiToolWire";
 import {
   assertGeminiReplayIdentity,
-  parseGeminiToolReplay,
+  parseGeminiToolReplayGroup,
   restoreGeminiToolReplay,
   storeGeminiToolReplay,
   discardGeminiToolReplay,
 } from "./geminiToolReplay";
+import { createGeminiCorrelationNamespace } from "./geminiToolIdentity";
 
 type Json = Record<string, unknown>;
 function fail(): never {
@@ -69,6 +70,7 @@ function assertPreparedRequest(raw: Json, expected: InspectedToolRequest, effort
 export class ApplicationGeminiTools {
   private replay: Record<string, string> = {};
   private parts = new Map<number, readonly Json[]>();
+  private namespaces = new Map<number, string>();
   private expectedWire?: Json;
   private attached = false;
   constructor(
@@ -82,14 +84,19 @@ export class ApplicationGeminiTools {
     if (continuation.replayOrigins.length !== request.history.length) fail();
     continuation.replayOrigins.forEach((origin, index) => {
       if (!origin.requiresThinkingReplay) fail();
-      const value = restoreGeminiToolReplay({
+      const original = {
         ...continuation.binding,
         id: origin.sourceAttemptId,
         keyId,
         comboId: plan.comboId,
-      });
+      };
+      const value = restoreGeminiToolReplay(original);
+      const group = parseGeminiToolReplayGroup(value, original);
       this.replay[origin.sourceAttemptId] = value;
-      this.parts.set(request.history[index].assistantIndex, parseGeminiToolReplay(value));
+      const occurrence = request.history[index].assistantIndex;
+      this.parts.set(occurrence, group.parts);
+      if (group.correlationNamespace !== undefined)
+        this.namespaces.set(occurrence, group.correlationNamespace);
     });
   }
   claim(identity: AttemptIdentity): void {
@@ -113,21 +120,34 @@ export class ApplicationGeminiTools {
     assertPreparedRequest(body, this.request, identity.effort);
     const project = credentials.projectId ?? credentials.providerSpecificData?.projectId;
     if (typeof project !== "string") fail();
-    this.expectedWire = buildGeminiToolWire(this.request.body, model, project, this.parts);
+    this.expectedWire = buildGeminiToolWire(
+      this.request.body,
+      model,
+      project,
+      this.parts,
+      this.namespaces
+    );
     return structuredClone(this.expectedWire);
   }
   attach(identity: AttemptIdentity, authority: string): ApplicationToolHooks {
     assertGeminiReplayIdentity(identity);
     if (this.attached) fail();
     this.attached = true;
+    const namespace = createGeminiCorrelationNamespace(identity.id);
     const names = new Set((this.request.body.tools ?? []).map((tool) => tool.function.name));
     const raw = new RawGeminiToolCollector({
       model: identity.model,
       allowedNames: names,
       allowToolUse: this.request.body.tool_choice !== "none",
+      correlationNamespace: namespace,
     });
     const client = new ClientOpenAIToolCollector(identity.model);
-    const translator = new GeminiToolClient(identity.model, "chatcmpl-" + identity.id, names);
+    const translator = new GeminiToolClient(
+      identity.model,
+      "chatcmpl-" + identity.id,
+      names,
+      namespace
+    );
     let rawVerified = false,
       terminalValidated = false,
       published = false;
@@ -199,7 +219,11 @@ export class ApplicationGeminiTools {
       return;
     }
     if (!raw) fail();
-    const replay = storeGeminiToolReplay(identity, raw.parts);
+    const replay = storeGeminiToolReplay(
+      identity,
+      raw.parts,
+      createGeminiCorrelationNamespace(identity.id)
+    );
     try {
       commitToolContinuation(identity, {
         clientPrefixJSON: canonicalClientPrefix([

@@ -57,7 +57,7 @@ def load_tool_helpers():
 def original_results(message, initial_messages):
     # Actual SDK-assembled message/call objects enter unchanged original constructors.
     helpers, env, statements = load_tool_helpers()
-    assistant = env["build_assistant_message"](helpers.agent_fixture(), message, "tool_calls")
+    assistant = env["build_assistant_message"](helpers.agent_fixture(pinned_ids=True), message, "tool_calls")
     messages = [*initial_messages, assistant]
     for call in reversed(assistant["tool_calls"]):
         result = env["make_tool_result_message"](call["function"]["name"], "Synthetic result", call["id"])

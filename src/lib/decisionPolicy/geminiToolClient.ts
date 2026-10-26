@@ -1,6 +1,10 @@
 import { boundedJson } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import { BoundedGeminiFrames } from "./geminiResponseProof.ts";
-import { validateGeminiFunctionCallPart } from "./geminiToolResponseProof.ts";
+import { inspectGeminiFunctionCallPart } from "./geminiToolResponseProof.ts";
+import {
+  resolveGeminiClientCallId,
+  validateGeminiCorrelationNamespace,
+} from "./geminiToolIdentity.ts";
 
 type Json = Record<string, unknown>;
 type ToolDelta = {
@@ -38,6 +42,15 @@ function invalid(): never {
 function identifier(value: unknown): asserts value is string {
   if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) invalid();
 }
+function capturedCallResolver(namespace: string | undefined) {
+  try {
+    if (namespace !== undefined) validateGeminiCorrelationNamespace(namespace);
+  } catch {
+    return invalid();
+  }
+  return (nativeId: string | null, ordinal: number) =>
+    resolveGeminiClientCallId(nativeId, namespace, ordinal);
+}
 function responseOf(raw: unknown): Json {
   if (!boundedJson(raw) || !raw || typeof raw !== "object" || Array.isArray(raw)) invalid();
   return ((raw as Json).response ?? {}) as Json;
@@ -61,6 +74,7 @@ export class GeminiToolClient {
   private readonly proof: BoundedGeminiFrames;
   private readonly created = Math.floor(Date.now() / 1000);
   private readonly callIds = new Set<string>();
+  private readonly resolveCallId: (nativeId: string | null, ordinal: number) => string;
   private roleEmitted = false;
   private terminalEmitted = false;
   private readonly allowedNames: ReadonlySet<string>;
@@ -69,10 +83,12 @@ export class GeminiToolClient {
   constructor(
     private readonly model: string,
     private readonly responseId: string,
-    allowedNames: ReadonlySet<string>
+    allowedNames: ReadonlySet<string>,
+    correlationNamespace?: string
   ) {
     identifier(model);
     identifier(responseId);
+    this.resolveCallId = capturedCallResolver(correlationNamespace);
     if (!(allowedNames instanceof Set) || allowedNames.size > 64) invalid();
     const names = [...allowedNames];
     if (
@@ -81,7 +97,7 @@ export class GeminiToolClient {
       invalid();
     this.allowedNames = new Set(names);
     this.proof = new BoundedGeminiFrames(model, {
-      validateFunctionCallPart: (part) => validateGeminiFunctionCallPart(part, this.allowedNames),
+      validateFunctionCallPart: (part) => inspectGeminiFunctionCallPart(part, this.allowedNames),
     });
   }
   accept(raw: unknown): GeminiToolClientChunk[] {
@@ -123,15 +139,16 @@ export class GeminiToolClient {
     return "length";
   }
   private call(part: Json): Delta {
-    const call = validateGeminiFunctionCallPart(part, this.allowedNames);
-    if (this.callIds.has(call.id) || this.callIds.size >= 32) invalid();
+    const call = inspectGeminiFunctionCallPart(part, this.allowedNames);
     const index = this.callIds.size;
-    this.callIds.add(call.id);
+    const id = this.resolveCallId(call.nativeId, index);
+    if (this.callIds.has(id) || this.callIds.size >= 32) invalid();
+    this.callIds.add(id);
     return {
       tool_calls: [
         {
           index,
-          id: call.id,
+          id,
           type: "function",
           function: { name: call.wireName, arguments: JSON.stringify(call.input) },
         },

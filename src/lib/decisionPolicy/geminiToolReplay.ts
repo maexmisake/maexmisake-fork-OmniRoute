@@ -1,6 +1,11 @@
 import type { AttemptIdentity } from "../db/decisionAttempts";
-import { canonicalToolJSON } from "../../../open-sse/services/decisionPolicy/toolContract.ts";
+import {
+  canonicalToolJSON,
+  parseDecisionToolArguments,
+} from "../../../open-sse/services/decisionPolicy/toolContract.ts";
+import type { ContinuationCall } from "../db/decisionContinuations";
 import { validateGeminiToolParts } from "./geminiToolResponseProof";
+import { createGeminiCorrelationNamespace } from "./geminiToolIdentity";
 
 type Json = Record<string, unknown>;
 type ReplayIdentity = Pick<
@@ -8,6 +13,7 @@ type ReplayIdentity = Pick<
   "id" | "keyId" | "comboId" | "provider" | "model" | "connectionId" | "effort"
 >;
 type Entry = { binding: string; value: string; expires: number; bytes: number };
+export type GeminiReplayGroup = { parts: Json[]; correlationNamespace?: string };
 const entries = new Map<string, Entry>();
 const LIMITS = { sources: 128, bytes: 4 * 1024 * 1024, groupBytes: 262144, ttlMs: 30 * 60_000 };
 function fail(): never {
@@ -24,29 +30,93 @@ export function assertGeminiReplayIdentity(identity: ReplayIdentity): void {
   )
     fail();
 }
-/** Shape validation only; the DB owner MAC and original receipt supply authority. */
-export function parseGeminiToolReplay(value: string): Json[] {
+function checkedEnvelope(parsed: unknown): Json {
+  if (!Array.isArray(parsed) || parsed.length !== 1) fail();
+  const envelope = parsed[0] as Json;
+  if (
+    !envelope ||
+    !["gemini-tool-parts-v1", "gemini-tool-parts-v2"].includes(String(envelope.type))
+  )
+    fail();
+  const keys = ["type", "parts"];
+  if (envelope.type === "gemini-tool-parts-v2") keys.push("correlationNamespace");
+  if (Object.keys(envelope).some((key) => !keys.includes(key))) fail();
+  return envelope;
+}
+function checkedNamespace(envelope: Json, identity?: ReplayIdentity): string | undefined {
+  if (envelope.type === "gemini-tool-parts-v1") return undefined;
+  const namespace = envelope.correlationNamespace;
+  if (typeof namespace !== "string" || !/^[a-f0-9]{32}$/.test(namespace)) fail();
+  if (identity) {
+    assertGeminiReplayIdentity(identity);
+    if (namespace !== createGeminiCorrelationNamespace(identity.id)) fail();
+  }
+  return namespace;
+}
+/** Shape-only without an identity. DB issue/claim and memory restore ALWAYS supply the original owner. */
+export function parseGeminiToolReplayGroup(
+  value: string,
+  identity?: ReplayIdentity
+): GeminiReplayGroup {
   try {
     if (typeof value !== "string" || Buffer.byteLength(value) > LIMITS.groupBytes) fail();
     const parsed: unknown = JSON.parse(value);
-    if (!Array.isArray(parsed) || parsed.length !== 1) fail();
-    const envelope = parsed[0] as Json;
-    if (
-      !envelope ||
-      envelope.type !== "gemini-tool-parts-v1" ||
-      Object.keys(envelope).some((key) => !["type", "parts"].includes(key))
-    )
-      fail();
-    const proof = validateGeminiToolParts(envelope.parts);
+    const envelope = checkedEnvelope(parsed),
+      namespace = checkedNamespace(envelope, identity);
+    const proof = validateGeminiToolParts(
+      envelope.parts,
+      undefined,
+      namespace === undefined ? undefined : { correlationNamespace: namespace }
+    );
     if (!proof.calls.length || canonicalToolJSON(parsed) !== value) fail();
-    return proof.parts;
+    return {
+      parts: proof.parts,
+      ...(namespace === undefined ? {} : { correlationNamespace: namespace }),
+    };
   } catch {
     return fail();
   }
 }
-export function serializeGeminiToolReplay(parts: readonly Json[]): string {
-  const value = canonicalToolJSON([{ type: "gemini-tool-parts-v1", parts }]);
-  parseGeminiToolReplay(value);
+/** Compatibility projection; parsing alone never grants continuation authority. */
+export function parseGeminiToolReplay(value: string, identity?: ReplayIdentity): Json[] {
+  return parseGeminiToolReplayGroup(value, identity).parts;
+}
+/** Bind the issued client descriptors to the same original native group and namespace. */
+export function assertGeminiReplayCalls(
+  value: string,
+  identity: ReplayIdentity,
+  calls: readonly ContinuationCall[]
+): void {
+  const group = parseGeminiToolReplayGroup(value, identity);
+  const proof = validateGeminiToolParts(
+    group.parts,
+    undefined,
+    group.correlationNamespace === undefined
+      ? undefined
+      : { correlationNamespace: group.correlationNamespace }
+  );
+  if (!Array.isArray(calls) || proof.calls.length !== calls.length) fail();
+  proof.calls.forEach((native, index) => {
+    const client = calls[index];
+    if (
+      native.id !== client.id ||
+      native.wireName !== client.name ||
+      canonicalToolJSON(native.input) !==
+        canonicalToolJSON(parseDecisionToolArguments(client.arguments))
+    )
+      fail();
+  });
+}
+export function serializeGeminiToolReplay(
+  parts: readonly Json[],
+  correlationNamespace?: string
+): string {
+  const envelope =
+    correlationNamespace === undefined
+      ? { type: "gemini-tool-parts-v1", parts }
+      : { type: "gemini-tool-parts-v2", correlationNamespace, parts };
+  const value = canonicalToolJSON([envelope]);
+  parseGeminiToolReplayGroup(value);
   return value;
 }
 function binding(identity: ReplayIdentity): string {
@@ -63,9 +133,14 @@ function expire(): number {
   return bytes;
 }
 /** Private worker memory only. Restart/cache loss rejects rather than reconstructing signatures. */
-export function storeGeminiToolReplay(identity: ReplayIdentity, parts: readonly Json[]): string {
+export function storeGeminiToolReplay(
+  identity: ReplayIdentity,
+  parts: readonly Json[],
+  correlationNamespace?: string
+): string {
   const bound = binding(identity),
-    value = serializeGeminiToolReplay(parts);
+    value = serializeGeminiToolReplay(parts, correlationNamespace);
+  parseGeminiToolReplayGroup(value, identity);
   const bytes = Buffer.byteLength(value),
     occupied = expire();
   if (entries.has(identity.id) || entries.size >= LIMITS.sources || occupied + bytes > LIMITS.bytes)
@@ -78,7 +153,7 @@ export function restoreGeminiToolReplay(identity: ReplayIdentity): string {
   expire();
   const entry = entries.get(identity.id);
   if (!entry || entry.binding !== bound) fail();
-  parseGeminiToolReplay(entry.value);
+  parseGeminiToolReplayGroup(entry.value, identity);
   return entry.value;
 }
 /** Remove only this newly stored value after failed metadata publication. */

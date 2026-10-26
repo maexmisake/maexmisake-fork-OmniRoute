@@ -20,6 +20,10 @@ import {
   prepareToolContinuation,
 } from "../../../src/lib/db/decisionContinuations.ts";
 import { serializeGeminiToolReplay } from "../../../src/lib/decisionPolicy/geminiToolReplay.ts";
+import {
+  createGeminiCorrelationNamespace,
+  resolveGeminiClientCallId,
+} from "../../../src/lib/decisionPolicy/geminiToolIdentity.ts";
 
 const parts = [
   {
@@ -82,6 +86,28 @@ async function fixture() {
   };
   return { identity, proof, request };
 }
+function v2(f: Awaited<ReturnType<typeof fixture>>) {
+  const namespace = createGeminiCorrelationNamespace(f.identity.id);
+  const native = [
+    {
+      functionCall: { name: "synthetic_lookup", args: { text: "fixture" } },
+      thoughtSignature: "synthetic-native-idless-signature",
+    },
+  ];
+  const nextCalls = [{ ...calls[0], id: resolveGeminiClientCallId(null, namespace, 0) }];
+  const group = { ...f.request.history[0], calls: nextCalls };
+  return {
+    ...f,
+    namespace,
+    native,
+    proof: {
+      ...f.proof,
+      calls: nextCalls,
+      thinkingBlocksJSON: serializeGeminiToolReplay(native, namespace),
+    },
+    request: { ...f.request, history: [group], completedCallIds: nextCalls.map((call) => call.id) },
+  };
+}
 after(resetDbInstance);
 test("trusted AGY origin issues provider-tagged MAC metadata without storing native Parts", async () => {
   const f = await fixture();
@@ -125,4 +151,80 @@ test("changed or missing private Parts cannot claim an issued AGY continuation",
   const prepared = prepareToolContinuation(f.request);
   assert.equal(prepared.binding.provider, "agy");
   assert.equal(prepared.binding.connectionId, f.identity.connectionId);
+});
+test("v2 original-owner correlation authenticates a claim without a native ID", async () => {
+  const f = v2(await fixture());
+  issueToolContinuation(f.identity, f.proof);
+  const next: AttemptIdentity = { ...f.identity, id: randomUUID(), leaseOwner: undefined };
+  assert.notEqual(createGeminiCorrelationNamespace(next.id), f.namespace);
+  claimToolContinuation(f.request, next, { [f.identity.id]: f.proof.thinkingBlocksJSON });
+  assertToolContinuationClaim(f.request, next, { [f.identity.id]: f.proof.thinkingBlocksJSON });
+});
+test("v2 well-shaped foreign source namespace cannot issue new authority", async () => {
+  const f = v2(await fixture());
+  const foreign = createGeminiCorrelationNamespace(randomUUID());
+  assert.throws(() =>
+    issueToolContinuation(f.identity, {
+      ...f.proof,
+      thinkingBlocksJSON: serializeGeminiToolReplay(f.native, foreign),
+    })
+  );
+});
+for (const field of ["id", "arguments"] as const) {
+  test(`v2 issue rejects client ${field} unrelated to its native source proof`, async () => {
+    const f = v2(await fixture());
+    const changed = [
+      { ...f.proof.calls[0], [field]: field === "id" ? "synthetic-forged" : '{"text":"other"}' },
+    ];
+    assert.throws(() => issueToolContinuation(f.identity, { ...f.proof, calls: changed }));
+  });
+}
+test("shape-valid explicit-ID v1 downgrade cannot satisfy an issued v2 MAC", async () => {
+  const f = await fixture();
+  f.proof.thinkingBlocksJSON = serializeGeminiToolReplay(
+    parts,
+    createGeminiCorrelationNamespace(f.identity.id)
+  );
+  issueToolContinuation(f.identity, f.proof);
+  const next: AttemptIdentity = { ...f.identity, id: randomUUID(), leaseOwner: undefined };
+  assert.throws(() =>
+    claimToolContinuation(f.request, next, { [f.identity.id]: serializeGeminiToolReplay(parts) })
+  );
+});
+test("v1 then v2 chain replays each original source rather than the latest attempt namespace", async () => {
+  const f = await fixture();
+  const firstTurn = issueToolContinuation(f.identity, f.proof);
+  const second: AttemptIdentity = { ...f.identity, id: randomUUID(), leaseOwner: undefined };
+  claimToolContinuation(f.request, second, { [f.identity.id]: f.proof.thinkingBlocksJSON });
+  startDecisionAttempt(second);
+  settleDecisionAttempt(second, { status: 200, input: 2, output: 4, cost: null });
+  finishDecisionApplication(second.id, 200);
+  const secondGroup = v2({ ...f, identity: second });
+  secondGroup.proof.clientPrefixJSON = JSON.stringify([
+    ...JSON.parse(f.proof.clientPrefixJSON),
+    { role: "assistant", content: "synthetic-second-source" },
+  ]);
+  const secondTurn = issueToolContinuation(second, {
+    ...secondGroup.proof,
+    previousTurnId: firstTurn,
+  });
+  assert.notEqual(secondTurn, firstTurn);
+  const third: AttemptIdentity = { ...f.identity, id: randomUUID(), leaseOwner: undefined };
+  const request = {
+    ...secondGroup.request,
+    history: [
+      f.request.history[0],
+      {
+        ...secondGroup.request.history[0],
+        clientPrefixJSON: secondGroup.proof.clientPrefixJSON,
+      },
+    ],
+  };
+  const replay = {
+    [f.identity.id]: f.proof.thinkingBlocksJSON,
+    [second.id]: secondGroup.proof.thinkingBlocksJSON,
+  };
+  assert.notEqual(createGeminiCorrelationNamespace(third.id), secondGroup.namespace);
+  claimToolContinuation(request, third, replay);
+  assertToolContinuationClaim(request, third, replay);
 });

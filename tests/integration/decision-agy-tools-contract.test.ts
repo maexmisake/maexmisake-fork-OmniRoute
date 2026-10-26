@@ -14,6 +14,11 @@ import {
   BOUNDED_AGY_MODEL,
   BOUNDED_AGY_STREAM_URL,
 } from "../../open-sse/executors/antigravity/bounded.ts";
+import { currentApplicationAttempt } from "../../open-sse/services/decisionPolicy/applicationContext.ts";
+import {
+  createGeminiCorrelationNamespace,
+  resolveGeminiClientCallId,
+} from "../../src/lib/decisionPolicy/geminiToolIdentity.ts";
 
 // Closed synthetic protocol fixture. Signatures below are opaque test strings,
 // not cryptographically validated provider signatures or live entitlement proof.
@@ -55,6 +60,11 @@ let responseFault = "",
 let wireFault: ((wire: Wire) => void) | undefined;
 let afterDecision: (() => Promise<void>) | undefined;
 let beforeEOF: (() => Promise<void>) | undefined;
+let nativeIdMode = "explicit",
+  originId = "";
+let nativeToolTurn = true;
+let secondIdlessGroup = false;
+const sourceAttemptIds: string[] = [];
 let restoreFormatter: (() => void) | undefined;
 const wires: Wire[] = [];
 const traces: Json[] = [];
@@ -128,7 +138,7 @@ function request(value: Json, token: string | null = key.key, signal?: AbortSign
   });
 }
 function originalParts(): Json[] {
-  return [
+  const parts: Json[] = [
     {
       functionCall: {
         id: "fixture-call-one",
@@ -149,6 +159,20 @@ function originalParts(): Json[] {
         ]
       : []),
   ];
+  for (const [ordinal, part] of parts.entries()) {
+    const call = part.functionCall as Json;
+    if (nativeIdMode === "absent" || (nativeIdMode === "mixed" && ordinal === 0)) delete call.id;
+    if (ordinal === 0 && nativeIdMode === "null") call.id = null;
+    if (ordinal === 0 && nativeIdMode === "empty") call.id = "";
+    if (nativeIdMode.startsWith("collision")) {
+      const namespace = createGeminiCorrelationNamespace(originId);
+      const explicitOrdinal = nativeIdMode === "collision-first" ? 0 : 1;
+      if (ordinal === explicitOrdinal)
+        call.id = resolveGeminiClientCallId(null, namespace, 1 - ordinal);
+      else delete call.id;
+    }
+  }
+  return parts;
 }
 function providerResponse() {
   if (executionStatus !== 200)
@@ -163,7 +187,7 @@ function providerResponse() {
   const parts =
     responseFault === "no-call-safety"
       ? [{ text: "Synthetic safety refusal" }]
-      : executions === 1
+      : nativeToolTurn || (secondIdlessGroup && executions === 2)
         ? originalParts()
         : [{ text: "Synthetic continuation OK" }];
   if (responseFault === "missing-signature") delete parts[0].thoughtSignature;
@@ -249,6 +273,14 @@ before(async () => {
         },
         usage: { input_tokens: 7, output_tokens: 1, cost: 0 },
       });
+    }
+    nativeToolTurn = !(sent.request.contents as Array<{ parts: Json[] }>).some((row) =>
+      row.parts.some((part) => part.functionResponse)
+    );
+    sourceAttemptIds.push(currentApplicationAttempt()?.id ?? "");
+    if (nativeToolTurn) {
+      originId = currentApplicationAttempt()?.id ?? "";
+      assert.ok(originId, "capture the trusted origin only inside the closed physical mock");
     }
     executions++;
     wires.push(sent);
@@ -351,6 +383,11 @@ beforeEach(async () => {
   wireFault = undefined;
   afterDecision = undefined;
   beforeEOF = undefined;
+  nativeIdMode = "explicit";
+  originId = "";
+  nativeToolTurn = true;
+  secondIdlessGroup = false;
+  sourceAttemptIds.length = 0;
 });
 afterEach((context) => {
   traces.push({
@@ -456,7 +493,15 @@ async function begin() {
   assert.equal(calls.length, parallel ? 2 : 1);
   assert.deepEqual(
     calls.map((call) => call.id),
-    originalParts().map((part) => (part.functionCall as Json).id)
+    originalParts().map((part, ordinal) =>
+      resolveGeminiClientCallId(
+        Object.hasOwn(part.functionCall as Json, "id")
+          ? ((part.functionCall as Json).id as string)
+          : null,
+        nativeIdMode === "explicit" ? undefined : createGeminiCorrelationNamespace(originId),
+        ordinal
+      )
+    )
   );
   assert.equal(readToolContinuations(key.id, comboId).length, 1);
   const history: Json[] = [
@@ -823,4 +868,233 @@ test("a new user turn after a closed AGY tool cycle is rejected before selection
     previous,
     "closed-cycle rejection adds no receipt or change to known outcomes"
   );
+});
+
+for (const [mode, count] of [
+  ["absent", 1],
+  ["absent", 2],
+  ["mixed", 2],
+] as const)
+  test(`native ${mode} ID ${count}-call group correlates without grafting native IDs`, async () => {
+    nativeIdMode = mode;
+    parallel = count === 2;
+    if (count === 1) {
+      const fixed = config();
+      fixed.decisionPolicy.policy.candidates[0].effort.mode = "fixed";
+      await updateCombo(comboId, { config: fixed });
+    }
+    const continuation = await begin();
+    const clientCalls = (continuation.messages as Json[])[1].tool_calls as Call[];
+    assert.equal(new Set(clientCalls.map((call) => call.id)).size, count);
+    const response = await POST(request(continuation));
+    assert.equal(response.status, 200);
+    assert.match(await consume(response), /Synthetic continuation OK/);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 2);
+    const parts = wires[1].request.contents.flatMap((row) => row.parts);
+    assert.deepEqual(
+      parts.filter((part) => part.functionCall),
+      originalParts()
+    );
+    assert.deepEqual(
+      parts.filter((part) => part.functionResponse),
+      originalParts().map((part, ordinal) => {
+        const call = part.functionCall as Json;
+        return {
+          functionResponse: {
+            ...(Object.hasOwn(call, "id") ? { id: call.id } : {}),
+            name: call.name,
+            response: { output: "Synthetic result " + clientCalls[ordinal].id },
+          },
+        };
+      })
+    );
+    assert.ok(!JSON.stringify(wires[1]).includes("skip_thought_signature_validator"));
+    const rows = readDecisionAttempts(key.id);
+    assert.equal(rows.filter((row) => row.lane === "decision").length, 1);
+    assert.equal(rows.filter((row) => row.lane === "execution").length, 2);
+    for (const row of rows.filter((item) => item.lane === "execution")) {
+      assert.equal(row.connection_id, agyId);
+      assert.equal(row.model, BOUNDED_AGY_MODEL);
+      assert.equal(row.effort, "high");
+      assert.equal(row.application_status, 200);
+      assert.equal(row.cost_usd, null);
+    }
+    const replay = await POST(request(continuation));
+    await consume(replay);
+    assert.ok(replay.status >= 400);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 2, "an ID-less group's consumed pin cannot dispatch again");
+  });
+
+async function rejectedIdGroup() {
+  const response = await POST(request(body()));
+  let text = "";
+  try {
+    text = await consume(response);
+  } catch (error) {
+    assert.match(String(error), /stream|abort/i);
+  }
+  assert.ok(response.status >= 400 || !text.includes("data: [DONE]"));
+  assert.equal(readToolContinuations(key.id, comboId).length, 0);
+}
+test("present null or empty native IDs are rejected instead of becoming missing IDs", async () => {
+  for (const mode of ["null", "empty"]) {
+    nativeIdMode = mode;
+    const before = { decisions, executions };
+    await rejectedIdGroup();
+    assert.equal(decisions, before.decisions + 1);
+    assert.equal(executions, before.executions + 1);
+  }
+});
+test("explicit/generated client-ID collisions reject in either native call order", async () => {
+  parallel = true;
+  for (const mode of ["collision-first", "collision-last"]) {
+    nativeIdMode = mode;
+    const before = { decisions, executions };
+    await rejectedIdGroup();
+    assert.equal(decisions, before.decisions + 1);
+    assert.equal(executions, before.executions + 1);
+  }
+});
+test("foreign v2 correlation namespace cannot replace a valid original ID-less pin", async () => {
+  nativeIdMode = "absent";
+  parallel = true;
+  const continuation = await begin();
+  const before = readToolContinuations(key.id, comboId)[0];
+  const foreign = createGeminiCorrelationNamespace("11111111-1111-4111-8111-111111111111");
+  assert.notEqual(foreign, createGeminiCorrelationNamespace(originId));
+  const forged = structuredClone(continuation);
+  const messages = forged.messages as Json[];
+  const calls = messages[1].tool_calls as Call[];
+  const replacements = new Map(
+    calls.map((call, ordinal) => [call.id, resolveGeminiClientCallId(null, foreign, ordinal)])
+  );
+  for (const call of calls) call.id = replacements.get(call.id)!;
+  for (const message of messages.filter((row) => row.role === "tool"))
+    message.tool_call_id = replacements.get(String(message.tool_call_id));
+  const rejected = await POST(request(forged));
+  await consume(rejected);
+  assert.ok(rejected.status >= 400);
+  assert.equal(decisions, 1);
+  assert.equal(executions, 1);
+  assert.equal(readToolContinuations(key.id, comboId)[0].state, before.state);
+  const valid = await POST(request(continuation));
+  assert.equal(valid.status, 200);
+  await consume(valid);
+  assert.equal(decisions, 1);
+  assert.equal(executions, 2);
+});
+test("ID-less private replay loss cannot be reconstructed from client correlation IDs", async () => {
+  nativeIdMode = "absent";
+  const continuation = await begin();
+  const path = "../../src/lib/decisionPolicy/geminiToolReplay.ts";
+  const { __clearGeminiToolReplayForTests } = await import(path);
+  __clearGeminiToolReplayForTests();
+  const rejected = await POST(request(continuation));
+  await consume(rejected);
+  assert.ok(rejected.status >= 400);
+  assert.equal(decisions, 1);
+  assert.equal(executions, 1);
+});
+test("cancellation before ID-less terminal leaves no usable correlation pin", async () => {
+  nativeIdMode = "absent";
+  parallel = true;
+  holdOpen = true;
+  const response = await POST(request(body()));
+  assert.equal(response.status, 200);
+  const reader = response.body!.getReader();
+  await reader.read();
+  await reader.cancel();
+  assert.equal(decisions, 1);
+  assert.equal(executions, 1);
+  assert.equal(readToolContinuations(key.id, comboId).length, 0);
+  assert.equal(
+    readDecisionAttempts(key.id).find((row) => row.lane === "execution")?.application_status,
+    499
+  );
+});
+
+test("two active ID-less groups retain their own origin namespaces on a third request", async () => {
+  nativeIdMode = "absent";
+  parallel = true;
+  secondIdlessGroup = true;
+  const firstContinuation = await begin();
+  const firstCalls = (firstContinuation.messages as Json[])[1].tool_calls as Call[];
+  const second = await POST(request(firstContinuation));
+  assert.equal(second.status, 200);
+  const secondText = await consume(second);
+  assert.match(secondText, /data: \[DONE\]/);
+  const secondCalls = callsFrom(secondText);
+  assert.equal(secondCalls.length, 2);
+  assert.equal(sourceAttemptIds.length, 2);
+  const namespaces = sourceAttemptIds.map(createGeminiCorrelationNamespace);
+  assert.notEqual(namespaces[0], namespaces[1]);
+  for (const [index, calls] of [firstCalls, secondCalls].entries())
+    assert.deepEqual(
+      calls.map((call) => call.id),
+      calls.map((_call, ordinal) => resolveGeminiClientCallId(null, namespaces[index], ordinal))
+    );
+  assert.equal(new Set([...firstCalls, ...secondCalls].map((call) => call.id)).size, 4);
+  const finalHistory: Json[] = [
+    ...(firstContinuation.messages as Json[]),
+    { role: "assistant", content: null, tool_calls: secondCalls },
+    ...[...secondCalls].reverse().map((call) => ({
+      role: "tool",
+      tool_call_id: call.id,
+      content: "Synthetic result " + call.id,
+    })),
+  ];
+  const final = await POST(request(body(finalHistory)));
+  assert.equal(final.status, 200, final.headers.get("x-omniroute-decision-reason") ?? "");
+  assert.match(await consume(final), /Synthetic continuation OK/);
+  assert.equal(final.headers.get("x-omniroute-selection-mode"), "continuation-pin");
+  assert.equal(decisions, 1);
+  assert.equal(executions, 3);
+  const contents = wires[2].request.contents;
+  const nativeGroups = contents.filter((row) => row.parts.some((part) => part.functionCall));
+  assert.equal(nativeGroups.length, 2);
+  for (const group of nativeGroups)
+    assert.deepEqual(
+      group.parts,
+      originalParts(),
+      "each raw group retains absent IDs and original signature placement"
+    );
+  const responseGroups = contents.filter((row) => row.parts.some((part) => part.functionResponse));
+  assert.equal(responseGroups.length, 2);
+  for (const [index, calls] of [firstCalls, secondCalls].entries())
+    assert.deepEqual(
+      responseGroups[index].parts,
+      calls.map((call) => ({
+        functionResponse: {
+          name: call.function.name,
+          response: { output: "Synthetic result " + call.id },
+        },
+      })),
+      "each native result omits id and matches its own original group"
+    );
+  assert.ok(!JSON.stringify(wires[2]).includes("skip_thought_signature_validator"));
+  const rows = readDecisionAttempts(key.id);
+  assert.equal(rows.filter((row) => row.lane === "decision").length, 1);
+  const attempts = rows.filter((row) => row.lane === "execution");
+  assert.equal(attempts.length, 3);
+  assert.equal(new Set(attempts.map((row) => row.id)).size, 3);
+  assert.equal(rows.find((row) => row.lane === "decision")?.cost_usd, 0);
+  for (const row of attempts) {
+    assert.equal(row.connection_id, agyId);
+    assert.equal(row.model, BOUNDED_AGY_MODEL);
+    assert.equal(row.effort, "high");
+    assert.equal(row.application_status, 200);
+    assert.equal(row.state, "completed");
+    assert.equal(row.input_tokens, 2);
+    assert.equal(row.output_tokens, 4);
+    assert.equal(row.reasoning_tokens, 1);
+    assert.equal(row.cost_usd, null);
+  }
+  const rpm = getDbInstance()
+    .prepare(
+      "SELECT SUM(consumed) AS used FROM api_key_quota_counters WHERE api_key_id=? AND dimension_key='key-quota:rpm'"
+    )
+    .get(key.id) as { used: number };
+  assert.equal(rpm.used, 3);
 });

@@ -1,0 +1,19 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "fragmentFileSHA256": "61478c953cba6d80cfa7e2b2814b425c89fe775099e02f50e1cba3233b3f8e0b",
+  "sourceReceipt": {
+    "repository": "NousResearch/hermes-agent",
+    "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+    "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/codex_responses_adapter.py",
+    "retrieval": "managed GitHub public fetch; one successful read, no retry",
+    "bytes": 72408,
+    "sha256": "c86e14ebe721e94f86a1a50266272c364ccea9660a6da456eb00fa109e5f054d",
+    "calculatedGitBlobSHA": "8d6d9bfe8a5683c3e6deac6b36dad2189716d700",
+    "remoteBlobSHAIndependentlyRetrieved": false,
+    "license": "MIT; original LICENSE retained",
+    "sourceExecuted": false,
+    "providerRequests": 0
+  },
+  "scope": "Two exact pure source function bodies, not whole module execution, Codex inference or full Hermes runtime. SDK fixture uses these ID collaborators; legacy closed source fixture remains unchanged."
+}

@@ -1,0 +1,22 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "fragments": [
+    {
+      "name": "_split_responses_tool_id",
+      "path": "agent/codex_responses_adapter.py",
+      "line": 362,
+      "endLine": 370,
+      "sha256": "b1037b36308f7faf24c04d9fed06a7fb52408475d711e8e9dd4c34233074e2bb",
+      "source": "def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:\n    \"\"\"Split a stored tool id into (call_id, response_item_id).\"\"\"\n    value = raw_id.strip() if isinstance(raw_id, str) else \"\"\n    if \"|\" in value:\n        call_id, response_item_id = value.split(\"|\", 1)\n        return call_id.strip() or None, response_item_id.strip() or None\n    if not value:\n        return None, None\n    return (None, value) if value.startswith(\"fc_\") else (value, None)\n"
+    },
+    {
+      "name": "_derive_responses_function_call_id",
+      "path": "agent/codex_responses_adapter.py",
+      "line": 387,
+      "endLine": 399,
+      "sha256": "d996c56d08fe9d2e0d7fa9f4245fcb5cc9a91cd17ed30db0929754ad1b36131e",
+      "source": "def _derive_responses_function_call_id(call_id: str, response_item_id: Optional[str] = None) -> str:\n    \"\"\"Build a valid Responses `function_call.id` (must start with `fc_`).\"\"\"\n    if isinstance(response_item_id, str) and response_item_id.strip().startswith(\"fc_\"):\n        return response_item_id.strip()\n    source = (call_id or \"\").strip()\n    sanitized = re.sub(r\"[^A-Za-z0-9_-]\", \"\", source)\n    for candidate in (source, sanitized):\n        if candidate.startswith(\"fc_\") or (candidate.startswith(\"call_\") and len(candidate) > len(\"call_\")):\n            return candidate if candidate.startswith(\"fc_\") else f\"fc_{candidate[len('call_'):]}\"\n    if sanitized:\n        return f\"fc_{sanitized[:48]}\"\n    seed = source or str(response_item_id or \"\") or uuid.uuid4().hex\n    return f\"fc_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:24]}\"\n"
+    }
+  ]
+}

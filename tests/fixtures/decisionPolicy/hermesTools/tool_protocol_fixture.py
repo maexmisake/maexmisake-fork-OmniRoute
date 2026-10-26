@@ -1,4 +1,4 @@
-"""Closed pinned-AST protocol preparation. No modules, actual tools or SDK client run."""
+"""Closed pinned-AST preparation; never import original agent/provider modules or run tools."""
 import __future__
 import ast
 import builtins
@@ -71,7 +71,33 @@ def load_fragments(fragments):
             exec(code, env)
     return env, statements, imports, closed_import
 
-def agent_fixture():
+def pinned_id_helpers():
+    """Execute only the two hashed, original pure ID bodies; never import the adapter."""
+    raw = (ROOT / "tool-id-fragments.json").read_bytes()
+    provenance = json.loads((ROOT / "tool-id-provenance.json").read_text())
+    if hashlib.sha256(raw).hexdigest() != provenance["fragmentFileSHA256"]:
+        raise ClosedBoundaryError("Pinned ID fragment integrity")
+    payload = json.loads(raw)
+    if payload.get("commit") != PIN:
+        raise ClosedBoundaryError("Pinned ID source revision")
+    names = {"_split_responses_tool_id", "_derive_responses_function_call_id"}
+    fragments = payload.get("fragments", [])
+    if len(fragments) != 2 or {row["name"] for row in fragments} != names:
+        raise ClosedBoundaryError("Pinned ID fragment names")
+    env = {"__builtins__": {name: getattr(builtins, name) for name in ("str", "isinstance", "len")},
+           "re": re, "hashlib": hashlib, "uuid": SimpleNamespace(uuid4=denied)}
+    for row in fragments:
+        if hashlib.sha256(row["source"].encode()).hexdigest() != row["sha256"]:
+            raise ClosedBoundaryError("Pinned ID function integrity")
+        tree = ast.parse(row["source"])
+        if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef) or tree.body[0].name != row["name"]:
+            raise ClosedBoundaryError("Pinned ID AST boundary")
+        code = compile(tree, "pinned:agent/codex_responses_adapter.py:" + row["name"], "exec",
+                       flags=__future__.annotations.compiler_flag)
+        exec(code, env)
+    return env["_split_responses_tool_id"], env["_derive_responses_function_call_id"]
+
+def agent_fixture(pinned_ids=False):
     def split_id(raw):
         if not isinstance(raw, str) or not raw.startswith("fixture-call-"):
             raise ClosedBoundaryError("Unreviewed agent ID")
@@ -81,6 +107,8 @@ def agent_fixture():
         if not call_id.startswith("fixture-call-"):
             raise ClosedBoundaryError("Unreviewed agent ID derivation")
         return item_id or "fixture-item-" + call_id
+    if pinned_ids:
+        split_id, derive_id = pinned_id_helpers()
     return SimpleNamespace(_split_responses_tool_id=split_id,
         _derive_responses_function_call_id=derive_id, _deterministic_call_id=denied,
         _extract_reasoning=lambda _message: None, _needs_thinking_reasoning_pad=lambda: False,

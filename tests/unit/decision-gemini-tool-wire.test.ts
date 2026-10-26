@@ -11,6 +11,10 @@ import {
   supportsGeminiToolRequest,
   type GeminiToolJson,
 } from "../../src/lib/decisionPolicy/geminiToolWire.ts";
+import {
+  createGeminiCorrelationNamespace,
+  resolveGeminiClientCallId,
+} from "../../src/lib/decisionPolicy/geminiToolIdentity.ts";
 const model = "gemini-3.8-flash-high",
   project = "synthetic-project";
 const tool = {
@@ -392,3 +396,150 @@ for (const active of [false, true]) {
     assert.throws(() => wire(body, replay));
   });
 }
+
+// Namespaces are supplied as trusted fixture context, never inferred from client IDs.
+const namespace = createGeminiCorrelationNamespace("11111111-1111-4111-8111-111111111111");
+const otherNamespace = createGeminiCorrelationNamespace("22222222-2222-4222-8222-222222222222");
+const missingNative = (text = "x", signed = true) => ({
+  functionCall: { name: "echo", args: { text } },
+  ...(signed ? { thoughtSignature: "synthetic-opaque-signature" } : {}),
+});
+function idlessContinuation(mixed = false) {
+  const { body } = continuation();
+  const ids = [
+    mixed ? "native_1" : resolveGeminiClientCallId(null, namespace, 0),
+    resolveGeminiClientCallId(null, namespace, 1),
+  ];
+  body.messages[1].tool_calls = [call(ids[0]), call(ids[1], "y")];
+  body.messages[2].tool_call_id = ids[0];
+  body.messages[3].tool_call_id = ids[1];
+  const parts = [
+    { text: "Before tools" },
+    mixed ? native("native_1") : missingNative(),
+    missingNative("y", false),
+  ];
+  return {
+    body,
+    parts,
+    ids,
+    replay: new Map<number, readonly GeminiToolJson[]>([[1, parts]]),
+    namespaces: new Map([[1, namespace]]),
+  };
+}
+test("absent native IDs use authenticated client correlation without adding native IDs", () => {
+  const { body, parts, ids, replay, namespaces } = idlessContinuation();
+  const value = buildGeminiToolWire(body, model, project, replay, namespaces);
+  const contents = nativeRequest(value).contents as GeminiToolJson[];
+  assert.deepEqual(contents[1], { role: "model", parts });
+  assert.deepEqual(contents[2], {
+    role: "user",
+    parts: [
+      { functionResponse: { name: "echo", response: { output: '{"looks":"json"}' } } },
+      { functionResponse: { name: "echo", response: { output: "plain result" } } },
+    ],
+  });
+  for (const id of ids) assert.equal(JSON.stringify(value).includes(id), false);
+  assert.throws(() => buildGeminiToolWire(body, model, project, replay));
+});
+test("mixed native and absent IDs preserve original source order and echo only native IDs", () => {
+  const { body, parts, replay, namespaces } = idlessContinuation(true);
+  [body.messages[2], body.messages[3]] = [body.messages[3], body.messages[2]];
+  const contents = nativeRequest(buildGeminiToolWire(body, model, project, replay, namespaces))
+    .contents as GeminiToolJson[];
+  assert.deepEqual(contents[1], { role: "model", parts });
+  const responses = contents[2].parts as GeminiToolJson[];
+  assert.equal((responses[0].functionResponse as GeminiToolJson).id, "native_1");
+  assert.equal(Object.hasOwn(responses[1].functionResponse as object, "id"), false);
+});
+test("active historical groups keep distinct trusted correlation namespaces by occurrence", () => {
+  const { body, replay, namespaces } = idlessContinuation();
+  const id = resolveGeminiClientCallId(null, otherNamespace, 0);
+  body.messages.push(
+    { role: "assistant", content: null, tool_calls: [call(id, "new")] },
+    { role: "tool", tool_call_id: id, content: "new result" }
+  );
+  replay.set(4, [missingNative("new")]);
+  namespaces.set(4, otherNamespace);
+  const contents = nativeRequest(buildGeminiToolWire(body, model, project, replay, namespaces))
+    .contents as GeminiToolJson[];
+  assert.deepEqual(contents[3], { role: "model", parts: [missingNative("new")] });
+  assert.deepEqual(contents[4], {
+    role: "user",
+    parts: [{ functionResponse: { name: "echo", response: { output: "new result" } } }],
+  });
+});
+for (const change of [
+  "forged",
+  "malformed",
+  "unused",
+  "missing",
+  "client-id",
+  "client-args",
+  "client-order",
+  "native-null",
+  "native-empty",
+  "collision",
+]) {
+  test(`correlation ${change} rejects without native repair`, () => {
+    const { body, replay, namespaces } = idlessContinuation();
+    if (change === "forged") namespaces.set(1, otherNamespace);
+    if (change === "malformed") namespaces.set(1, "not-a-namespace");
+    if (change === "unused") namespaces.set(2, namespace);
+    if (change === "missing") namespaces.clear();
+    if (change === "client-id") body.messages[1].tool_calls![0].id = "forged_client_id";
+    if (change === "client-args")
+      body.messages[1].tool_calls![0].function.arguments = '{"text":"changed"}';
+    if (change === "client-order") body.messages[1].tool_calls!.reverse();
+    const parts = structuredClone(replay.get(1)!) as GeminiToolJson[];
+    if (change === "native-null") (parts[1].functionCall as GeminiToolJson).id = null;
+    if (change === "native-empty") (parts[1].functionCall as GeminiToolJson).id = "";
+    if (change === "collision")
+      (parts[1].functionCall as GeminiToolJson).id = resolveGeminiClientCallId(null, namespace, 1);
+    replay.set(1, parts);
+    assert.throws(() => buildGeminiToolWire(body, model, project, replay, namespaces));
+  });
+}
+test("provided malformed namespace rejects even an explicit-only group", () => {
+  const { body, replay } = continuation();
+  assert.throws(() => buildGeminiToolWire(body, model, project, replay, new Map([[1, "bad"]])));
+});
+test("final fence rejects inserting a gateway correlation ID into original ID-less native Parts or results", () => {
+  const { body, replay, namespaces, ids } = idlessContinuation();
+  const expected = buildGeminiToolWire(body, model, project, replay, namespaces);
+  for (const target of ["call", "result"]) {
+    const actual = structuredClone(expected),
+      contents = nativeRequest(actual).contents as GeminiToolJson[];
+    if (target === "call")
+      ((contents[1].parts as GeminiToolJson[])[1].functionCall as GeminiToolJson).id = ids[0];
+    else
+      ((contents[2].parts as GeminiToolJson[])[0].functionResponse as GeminiToolJson).id = ids[0];
+    assert.throws(() => assertGeminiToolWire(actual, expected));
+  }
+});
+test("explicit IDs retain v1 wire behavior with a valid private v2 namespace", () => {
+  const { body, replay } = continuation();
+  assert.deepEqual(
+    buildGeminiToolWire(body, model, project, replay, new Map([[1, namespace]])),
+    wire(body, replay)
+  );
+});
+test("reusing one private namespace for distinct explicit source occurrences rejects", () => {
+  const { body, replay } = continuation();
+  body.messages.push(
+    { role: "assistant", content: null, tool_calls: [call("native_3", "new")] },
+    { role: "tool", tool_call_id: "native_3", content: "new result" }
+  );
+  replay.set(4, [native("native_3", "new")]);
+  assert.throws(() =>
+    buildGeminiToolWire(
+      body,
+      model,
+      project,
+      replay,
+      new Map([
+        [1, namespace],
+        [4, namespace],
+      ])
+    )
+  );
+});

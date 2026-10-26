@@ -23,3 +23,5 @@ unchanged original constructors. This aligns the message fixture with the
 separately executed original kwargs builder's declared tool. It changes no
 upstream fragment or argument/result processing and is disclosed in capture
 substitutions. No real tool is run.
+
+The legacy `agent_fixture()` capture keeps its closed synthetic ID collaborators. The separate installed-SDK fixture calls `agent_fixture(pinned_ids=True)`: it executes only the two exact hash-checked original ID helper bodies recorded in `tool-id-fragments.json` and `tool-id-provenance.json`, from the same pinned Hermes revision. It does not import their original adapter module or add Codex execution support. The unused random-ID fallback remains a failing canary. This allows legitimate gateway correlation IDs without renaming them to fit a stub.

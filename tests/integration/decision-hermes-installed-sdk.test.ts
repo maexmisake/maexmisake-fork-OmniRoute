@@ -17,6 +17,11 @@ import {
   BOUNDED_AGY_MODEL,
   BOUNDED_AGY_STREAM_URL,
 } from "../../open-sse/executors/antigravity/bounded.ts";
+import { currentApplicationAttempt } from "../../open-sse/services/decisionPolicy/applicationContext.ts";
+import {
+  createGeminiCorrelationNamespace,
+  resolveGeminiClientCallId,
+} from "../../src/lib/decisionPolicy/geminiToolIdentity.ts";
 
 const PYTHON = process.env.OMNIROUTE_HERMES_SDK_PYTHON;
 const AVAILABLE = !!PYTHON;
@@ -32,6 +37,8 @@ let delegated = false;
 let agy = false,
   agyParallel = false,
   agyRefuse = false;
+let agyIdMode = "explicit",
+  agyOriginId = "";
 let effort = "high",
   decisions = 0,
   executions = 0;
@@ -135,7 +142,7 @@ async function configureAgy(parallel: boolean) {
   await updateCombo(comboId, { config: value });
 }
 function agyParts(): Array<Record<string, unknown>> {
-  return [
+  const parts: Array<Record<string, unknown>> = [
     {
       functionCall: {
         id: "fixture-call-one",
@@ -156,6 +163,11 @@ function agyParts(): Array<Record<string, unknown>> {
         ]
       : []),
   ];
+  for (const [ordinal, part] of parts.entries()) {
+    if (agyIdMode === "absent" || (agyIdMode === "mixed" && ordinal === 1))
+      delete (part.functionCall as Record<string, unknown>).id;
+  }
+  return parts;
 }
 function agyResponse() {
   const parts = agyRefuse
@@ -313,6 +325,12 @@ before(async () => {
     executions++;
     wires.push(body);
     if (url === BOUNDED_AGY_STREAM_URL) {
+      if (
+        !(body.request.contents as Array<{ parts: Array<Record<string, unknown>> }>).some((row) =>
+          row.parts.some((part) => part.functionResponse)
+        )
+      )
+        agyOriginId = currentApplicationAttempt()?.id ?? "";
       assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-agy-oauth");
       assert.equal(headers.get("user-agent"), "OmniRoute-Antigravity/1.0");
       assert.equal(body.model, BOUNDED_AGY_MODEL);
@@ -409,6 +427,8 @@ beforeEach(async () => {
   agy = false;
   agyParallel = false;
   agyRefuse = false;
+  agyIdMode = "explicit";
+  agyOriginId = "";
   effort = "high";
   delegated = false;
   decisions = 0;
@@ -875,3 +895,86 @@ test(
     assert.equal(row.cost_usd, null);
   }
 );
+
+for (const [mode, count] of [
+  ["absent", 1],
+  ["mixed", 2],
+] as const)
+  test(
+    `installed SDK ${mode} native ID ${count}-call group keeps generated IDs client-only`,
+    options,
+    async () => {
+      await configureAgy(count === 2);
+      agyIdMode = mode;
+      const { result, requests, observations } = await sdk(source("stream-tools"), "tool-loop");
+      assert.equal(
+        result.ok,
+        true,
+        JSON.stringify({
+          error: result.errorClass,
+          status: result.status,
+          observations,
+          decisions,
+          executions,
+        })
+      );
+      assert.equal(requests.length, 2);
+      assert.equal(decisions, 1);
+      assert.equal(executions, 2);
+      const summaries = result.summaries as Array<{
+        calls: Array<{ id: string }>;
+        callCount: number;
+        content: string;
+      }>;
+      const namespace = createGeminiCorrelationNamespace(agyOriginId);
+      assert.deepEqual(
+        summaries[0].calls.map((call) => call.id),
+        agyParts().map((part, ordinal) => {
+          const native = part.functionCall as Record<string, unknown>;
+          return resolveGeminiClientCallId(
+            Object.hasOwn(native, "id") ? (native.id as string) : null,
+            namespace,
+            ordinal
+          );
+        })
+      );
+      assert.equal(new Set(summaries[0].calls.map((call) => call.id)).size, count);
+      assert.equal(summaries[1].content, "Synthetic SDK OK");
+      const wire = wires[1].request as {
+        contents: Array<{ parts: Array<Record<string, unknown>> }>;
+      };
+      const parts = wire.contents.flatMap((row) => row.parts);
+      assert.deepEqual(
+        parts.filter((part) => part.functionCall),
+        agyParts()
+      );
+      assert.deepEqual(
+        parts.filter((part) => part.functionResponse),
+        agyParts().map((part) => {
+          const call = part.functionCall as Record<string, unknown>;
+          return {
+            functionResponse: {
+              ...(Object.hasOwn(call, "id") ? { id: call.id } : {}),
+              name: call.name,
+              response: { output: "Synthetic result" },
+            },
+          };
+        })
+      );
+      assert.ok(!JSON.stringify(wires[1]).includes("skip_thought_signature_validator"));
+      assert.equal(readToolContinuations(key.id, comboId)[0].state, "consumed");
+      const rows = readDecisionAttempts(key.id);
+      assert.equal(rows.filter((row) => row.lane === "decision").length, 1);
+      assert.equal(rows.find((row) => row.lane === "decision")?.cost_usd, 0);
+      const executionsRows = rows.filter((row) => row.lane === "execution");
+      assert.equal(executionsRows.length, 2);
+      for (const row of executionsRows) {
+        assert.equal(row.connection_id, agyId);
+        assert.equal(row.model, BOUNDED_AGY_MODEL);
+        assert.equal(row.effort, "high");
+        assert.equal(row.application_status, 200);
+        assert.equal(row.cost_usd, null);
+      }
+      assert.equal(result.fullHermesExecuted, false);
+    }
+  );

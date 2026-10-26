@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   RawGeminiToolCollector,
+  inspectGeminiFunctionCallPart,
   validateGeminiFunctionCallPart,
   validateGeminiToolParts,
 } from "../../src/lib/decisionPolicy/geminiToolResponseProof.ts";
 import { BoundedGeminiFrames } from "../../src/lib/decisionPolicy/geminiResponseProof.ts";
+import {
+  createGeminiCorrelationNamespace,
+  resolveGeminiClientCallId,
+} from "../../src/lib/decisionPolicy/geminiToolIdentity.ts";
 
 const model = "gemini-3.8-flash-high";
 const allowedNames = new Set(["echo", "other"]);
@@ -54,7 +59,14 @@ test("source-derived complete call preserves original ordered Parts and its exac
   assert.ok(result);
   assert.deepEqual(result.parts, parts);
   assert.deepEqual(result.calls, [
-    { id: "native_call_1", wireName: "echo", input: { text: "Synthetic fixture" }, partIndex: 1 },
+    {
+      id: "native_call_1",
+      nativeId: "native_call_1",
+      wireName: "echo",
+      input: { text: "Synthetic fixture" },
+      partIndex: 1,
+      ordinal: 0,
+    },
   ]);
 });
 test("parallel unsigned later call stays unsigned without merging or copying signatures", () => {
@@ -350,4 +362,152 @@ test("a thought-marked complete call remains a call and retains its original Par
   const proof = complete([original]).finish();
   assert.equal(proof?.calls.length, 1);
   assert.deepEqual(proof?.parts, [original]);
+});
+
+const namespace = createGeminiCorrelationNamespace("12345678-1234-4234-8234-123456789abc");
+const otherNamespace = createGeminiCorrelationNamespace("12345678-1234-4234-8234-123456789abd");
+function idless(signed = true): Json {
+  const part = call("discarded", "echo", signed);
+  delete (part.functionCall as Json).id;
+  return part;
+}
+function correlated(parts: Json[], correlationNamespace = namespace) {
+  return validateGeminiToolParts(parts, allowedNames, { correlationNamespace });
+}
+test("inspection distinguishes true native ID absence without modifying original Parts", () => {
+  const original = idless();
+  const inspected = inspectGeminiFunctionCallPart(original, allowedNames);
+  assert.equal(inspected.nativeId, null);
+  assert.equal(Object.hasOwn(original.functionCall as Json, "id"), false);
+  rejects(() => validateGeminiFunctionCallPart(original, allowedNames));
+  rejects(() => validateGeminiToolParts([original], allowedNames));
+  const proof = correlated([original]);
+  assert.equal(proof.calls[0].id, resolveGeminiClientCallId(null, namespace, 0));
+  assert.equal(proof.calls[0].nativeId, null);
+  assert.deepEqual(proof.parts, [original]);
+});
+test("mixed native ID presence and repeated same-name calls retain both identity domains", () => {
+  const parts = [
+    { text: "Before" },
+    idless(),
+    { text: "Between", thought: true },
+    idless(false),
+    call("explicit_id", "echo", false),
+  ];
+  const proof = correlated(parts);
+  assert.deepEqual(
+    proof.calls.map(({ id, nativeId, partIndex, ordinal }) => ({
+      id,
+      nativeId,
+      partIndex,
+      ordinal,
+    })),
+    [
+      {
+        id: resolveGeminiClientCallId(null, namespace, 0),
+        nativeId: null,
+        partIndex: 1,
+        ordinal: 0,
+      },
+      {
+        id: resolveGeminiClientCallId(null, namespace, 1),
+        nativeId: null,
+        partIndex: 3,
+        ordinal: 1,
+      },
+      { id: "explicit_id", nativeId: "explicit_id", partIndex: 4, ordinal: 2 },
+    ]
+  );
+  assert.deepEqual(proof.parts, parts);
+  assert.equal(proof.parts[3].thoughtSignature, undefined);
+});
+test("stream frame placement cannot change call ordinals or inject native IDs", () => {
+  const parts = [{ text: "Before" }, idless(), { text: "Between" }, idless(false)];
+  const value = new RawGeminiToolCollector({
+    model,
+    allowedNames,
+    allowToolUse: true,
+    correlationNamespace: namespace,
+  });
+  value.accept(frame(parts.slice(0, 1)));
+  value.accept(frame(parts.slice(1, 3)));
+  value.accept(frame(parts.slice(3), "STOP"));
+  assert.deepEqual(value.finish(), correlated(parts));
+  assert.equal(Object.hasOwn(parts[1].functionCall as Json, "id"), false);
+});
+test("an explicit generated-looking ID remains native and is never reinterpreted by prefix", () => {
+  const nativeId = resolveGeminiClientCallId(null, namespace, 0);
+  const proof = correlated([call(nativeId)]);
+  assert.equal(proof.calls[0].id, nativeId);
+  assert.equal(proof.calls[0].nativeId, nativeId);
+  assert.equal((proof.parts[0].functionCall as Json).id, nativeId);
+});
+test("an earlier generated client ID cannot collide with a later explicit native ID", () => {
+  const collision = resolveGeminiClientCallId(null, namespace, 0);
+  rejects(() => correlated([idless(), call(collision, "echo", false)]));
+});
+test("an earlier explicit native ID cannot collide with a later generated client ID", () => {
+  const collision = resolveGeminiClientCallId(null, namespace, 1);
+  rejects(() => correlated([call(collision), idless(false)]));
+});
+for (const present of [null, undefined, "", 0, false, "unsafe:id"]) {
+  test("malformed present native IDs cannot be normalized into absence", () => {
+    const part = idless();
+    (part.functionCall as Json).id = present;
+    rejects(() => inspectGeminiFunctionCallPart(part, allowedNames));
+    rejects(() => correlated([part]));
+  });
+}
+test("an immutable namespace snapshot determines IDs even if caller options later change", () => {
+  const options = { model, allowedNames, allowToolUse: true, correlationNamespace: namespace };
+  const value = new RawGeminiToolCollector(options);
+  options.correlationNamespace = otherNamespace;
+  value.accept(frame([idless()], "STOP"));
+  assert.equal(value.finish()?.calls[0].id, resolveGeminiClientCallId(null, namespace, 0));
+  const noContext: {
+    model: string;
+    allowedNames: Set<string>;
+    allowToolUse: boolean;
+    correlationNamespace?: string;
+  } = { model, allowedNames, allowToolUse: true };
+  const legacy = new RawGeminiToolCollector(noContext);
+  noContext.correlationNamespace = namespace;
+  rejects(() => legacy.accept(frame([idless()], "STOP")));
+});
+test("static namespace syntax is checked even when all calls have explicit IDs", () => {
+  for (const correlationNamespace of ["", namespace.toUpperCase(), namespace + "0"])
+    rejects(() => validateGeminiToolParts([call()], allowedNames, { correlationNamespace }));
+});
+test("namespace changes affect only local missing-ID correlation, not raw Parts or explicit IDs", () => {
+  const parts = [idless(), call("native_explicit", "echo", false)];
+  const first = correlated(parts),
+    second = correlated(parts, otherNamespace);
+  assert.notEqual(first.calls[0].id, second.calls[0].id);
+  assert.equal(first.calls[1].id, second.calls[1].id);
+  assert.deepEqual(first.parts, second.parts);
+});
+test("all 32 ID-less calls remain distinct and bounded despite identical names and arguments", () => {
+  const parts = Array.from({ length: 32 }, (_, ordinal) => idless(ordinal === 0));
+  const proof = correlated(parts);
+  assert.equal(new Set(proof.calls.map((call) => call.id)).size, 32);
+  assert.ok(proof.calls.every((call) => call.nativeId === null));
+  rejects(() => correlated([...parts, idless(false)]));
+});
+test("missing native IDs never relax signature, STOP or explicit opt-in requirements", () => {
+  rejects(() => correlated([idless(false)]));
+  const value = new RawGeminiToolCollector({
+    model,
+    allowedNames,
+    allowToolUse: true,
+    correlationNamespace: namespace,
+  });
+  value.accept(frame([idless()]));
+  rejects(() => value.finish());
+  const disabled = new RawGeminiToolCollector({
+    model,
+    allowedNames,
+    allowToolUse: false,
+    correlationNamespace: namespace,
+  });
+  rejects(() => disabled.accept(frame([idless()], "STOP")));
 });

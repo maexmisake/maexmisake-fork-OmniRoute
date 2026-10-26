@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { opaqueTokenFingerprint } from "../../../open-sse/utils/opaqueTokenFingerprint.ts";
 import {
   assertGeminiReplayIdentity,
+  assertGeminiReplayCalls,
   parseGeminiToolReplay,
 } from "../decisionPolicy/geminiToolReplay";
 import { getDbInstance } from "./core";
@@ -319,7 +320,7 @@ function checkedThinking(value: string): void {
 function checkedReplay(value: string, identity: AttemptIdentity): void {
   if (identity.provider !== "agy") return checkedThinking(value);
   assertGeminiReplayIdentity(identity);
-  parseGeminiToolReplay(value);
+  parseGeminiToolReplay(value, identity);
 }
 function validateIssue(origin: AttemptIdentity, proof: IssueProof): void {
   validateHistory([proof]);
@@ -331,6 +332,8 @@ function validateIssue(origin: AttemptIdentity, proof: IssueProof): void {
     fail("authority");
   if (origin.provider === "agy" && proof.thinkingBlocksJSON === undefined) fail("replay_missing");
   if (proof.thinkingBlocksJSON !== undefined) checkedReplay(proof.thinkingBlocksJSON, origin);
+  if (origin.provider === "agy" && proof.thinkingBlocksJSON !== undefined)
+    assertGeminiReplayCalls(proof.thinkingBlocksJSON, origin, proof.calls);
 }
 function cleanupExpired(keyId: string, comboId: string, now: number): void {
   // Retain lineage while either the source or its claimed descendant can mint again.

@@ -8,7 +8,7 @@ import {
 } from "../db/decisionAttempts";
 import { claudeReportedUsage } from "./applicationProvider";
 import { BoundedGeminiFrames } from "./geminiResponseProof";
-import { validateGeminiFunctionCallPart } from "./geminiToolResponseProof";
+import { inspectGeminiFunctionCallPart } from "./geminiToolResponseProof";
 
 function concatFrames(chunks: Uint8Array[], bytes: number): Uint8Array {
   const result = new Uint8Array(bytes);
@@ -70,7 +70,7 @@ class ProviderFrames {
     if (identity.provider === "agy")
       this.gemini = new BoundedGeminiFrames(identity.model, {
         ...(tools?.geminiResponse
-          ? { validateFunctionCallPart: validateGeminiFunctionCallPart }
+          ? { validateFunctionCallPart: inspectGeminiFunctionCallPart }
           : {}),
       });
   }

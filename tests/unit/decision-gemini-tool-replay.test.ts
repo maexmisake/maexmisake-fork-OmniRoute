@@ -7,7 +7,10 @@ import {
   serializeGeminiToolReplay,
   storeGeminiToolReplay,
   discardGeminiToolReplay,
+  parseGeminiToolReplayGroup,
 } from "../../src/lib/decisionPolicy/geminiToolReplay.ts";
+import { createGeminiCorrelationNamespace } from "../../src/lib/decisionPolicy/geminiToolIdentity.ts";
+import { canonicalToolJSON } from "../../open-sse/services/decisionPolicy/toolContract.ts";
 
 const identity = {
   id: "synthetic-source",
@@ -104,5 +107,55 @@ for (const value of [
 ]) {
   test(`unproven, empty or foreign replay format is rejected: ${value}`, () => {
     assert.throws(() => parseGeminiToolReplay(value));
+  });
+}
+const v2Identity = { ...identity, id: "01234567-89ab-4cde-8f01-23456789abcd" };
+const namespace = createGeminiCorrelationNamespace(v2Identity.id);
+function absentParts() {
+  return [
+    {
+      functionCall: { name: "synthetic_lookup", args: { value: "fixture" } },
+      thoughtSignature: "synthetic-opaque-idless-signature",
+    },
+  ];
+}
+test("v2 replay binds the namespace to the original source without inserting native IDs", () => {
+  const value = storeGeminiToolReplay(v2Identity, absentParts(), namespace);
+  const group = parseGeminiToolReplayGroup(restoreGeminiToolReplay(v2Identity), v2Identity);
+  assert.equal(group.correlationNamespace, namespace);
+  assert.deepEqual(group.parts, absentParts());
+  assert.equal(Object.hasOwn(group.parts[0].functionCall as object, "id"), false);
+  assert.equal(JSON.parse(value)[0].type, "gemini-tool-parts-v2");
+});
+test("well-shaped foreign namespace cannot be stored or used under another origin", () => {
+  const other = { ...v2Identity, id: "11234567-89ab-4cde-8f01-23456789abcd" };
+  const value = serializeGeminiToolReplay(absentParts(), namespace);
+  // Static parsing is deliberately NOT original-owner authentication.
+  assert.equal(parseGeminiToolReplayGroup(value).parts.length, 1);
+  assert.throws(() => parseGeminiToolReplayGroup(value, other));
+  assert.throws(() => storeGeminiToolReplay(other, absentParts(), namespace));
+  assert.doesNotThrow(() => storeGeminiToolReplay(v2Identity, absentParts(), namespace));
+});
+test("v1 meaning is not widened by an ID-less v2 downgrade or implicit namespace", () => {
+  const raw = JSON.parse(serializeGeminiToolReplay(absentParts(), namespace));
+  raw[0].type = "gemini-tool-parts-v1";
+  assert.throws(() => parseGeminiToolReplayGroup(canonicalToolJSON(raw)));
+  delete raw[0].correlationNamespace;
+  assert.throws(() => parseGeminiToolReplayGroup(canonicalToolJSON(raw)));
+  assert.throws(() => serializeGeminiToolReplay(absentParts()));
+  const legacy = serializeGeminiToolReplay(parts());
+  assert.equal(parseGeminiToolReplayGroup(legacy).correlationNamespace, undefined);
+  assert.deepEqual(parseGeminiToolReplay(legacy), parts());
+});
+test("v2 envelope requires a literal version tag and namespace, without coercion", () => {
+  const raw = JSON.parse(serializeGeminiToolReplay(absentParts(), namespace));
+  raw[0].type = ["gemini-tool-parts-v2"];
+  assert.throws(() => parseGeminiToolReplayGroup(canonicalToolJSON(raw)));
+});
+for (const value of [null, "", "A".repeat(32), "0".repeat(31), [namespace]]) {
+  test(`malformed v2 namespace rejects without fallback: ${JSON.stringify(value)}`, () => {
+    const raw = JSON.parse(serializeGeminiToolReplay(absentParts(), namespace));
+    raw[0].correlationNamespace = value;
+    assert.throws(() => parseGeminiToolReplayGroup(canonicalToolJSON(raw)));
   });
 }
