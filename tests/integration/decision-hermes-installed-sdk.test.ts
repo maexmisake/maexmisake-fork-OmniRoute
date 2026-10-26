@@ -15,8 +15,10 @@ import { updateSettings } from "../../src/lib/db/settings.ts";
 import { clearClaudeThinkingStore } from "../../open-sse/services/claudeThinkingStore.ts";
 import {
   BOUNDED_AGY_MODEL,
+  BOUNDED_AGY_OPUS_MODEL,
   BOUNDED_AGY_STREAM_URL,
 } from "../../open-sse/executors/antigravity/bounded.ts";
+import { NATIVE_DECISION_CODEX_ENDPOINT } from "../../open-sse/executors/codex/nativeDecision.ts";
 import { currentApplicationAttempt } from "../../open-sse/services/decisionPolicy/applicationContext.ts";
 import {
   createGeminiCorrelationNamespace,
@@ -39,6 +41,8 @@ const encoder = new TextEncoder();
 let POST: (request: Request) => Promise<Response>;
 let key: Awaited<ReturnType<typeof createApiKey>>;
 let comboId: string, selectorId: string, sonnetId: string, opusId: string, agyId: string;
+let nativeTarget: "codex" | "agy" | null = null;
+let codexId: string;
 let delegated = false;
 let widePool = false;
 let agy = false,
@@ -133,6 +137,112 @@ function config(wide = false) {
       },
     },
   };
+}
+// Source fragments + locked SDK + real handler only; not full Hermes or live-provider proof.
+async function configureNativeText(provider: "codex" | "agy") {
+  nativeTarget = provider;
+  const target = {
+    ...candidate("sonnet", "high"),
+    id: `${provider}-native-high`,
+    provider,
+    model: provider === "codex" ? "gpt-6-sol" : BOUNDED_AGY_OPUS_MODEL,
+    capabilities: { ...candidate("sonnet", "high").capabilities, tools: false },
+    effort: {
+      mode: provider === "agy" ? "fixed" : "set",
+      value: "high",
+      supported: ["high"],
+      evidence: "Synthetic original-pool High contract; not live availability",
+    },
+  };
+  const base = config();
+  await updateCombo(comboId, {
+    config: {
+      decisionPolicy: {
+        ...base.decisionPolicy,
+        applicationMode: "provider-native-output-v1",
+        nativeOutput: { acknowledgeNoTokenCeiling: true, contextOutputTokens: 64 },
+        connections: {
+          [target.id]: provider === "codex" ? codexId : agyId,
+          "sonnet-high": sonnetId,
+        },
+        policy: {
+          ...base.decisionPolicy.policy,
+          candidates: [target, candidate("sonnet", "high")],
+          taskOrder: { explanation: [target.id, "sonnet-high"] },
+        },
+      },
+    },
+  });
+}
+function nativeCodexResponse(model: string) {
+  const id = "synthetic-sdk-native-response";
+  const item = {
+    id: "synthetic-sdk-native-message",
+    type: "message",
+    role: "assistant",
+    status: "completed",
+    content: [{ type: "output_text", text: "Synthetic SDK OK", annotations: [] }],
+  };
+  const base = { id, object: "response", model, status: "in_progress", output: [] };
+  const events = [
+    { type: "response.created", response: base },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { ...item, status: "in_progress", content: [] },
+    },
+    {
+      type: "response.content_part.added",
+      output_index: 0,
+      content_index: 0,
+      item_id: item.id,
+      part: { type: "output_text", text: "", annotations: [] },
+    },
+    {
+      type: "response.output_text.delta",
+      output_index: 0,
+      content_index: 0,
+      item_id: item.id,
+      delta: "Synthetic SDK OK",
+    },
+    {
+      type: "response.output_text.done",
+      output_index: 0,
+      content_index: 0,
+      item_id: item.id,
+      text: "Synthetic SDK OK",
+    },
+    {
+      type: "response.content_part.done",
+      output_index: 0,
+      content_index: 0,
+      item_id: item.id,
+      part: item.content[0],
+    },
+    { type: "response.output_item.done", output_index: 0, item },
+    {
+      type: "response.completed",
+      response: {
+        ...base,
+        status: "completed",
+        output: [item],
+        usage: {
+          input_tokens: 8,
+          output_tokens: 4,
+          total_tokens: 12,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: 2 },
+          cost: 123,
+        },
+      },
+    },
+  ];
+  return new Response(
+    events.map((row) => `event: ${row.type}\ndata: ${JSON.stringify(row)}\n\n`).join(""),
+    {
+      headers: { "content-type": "text/event-stream" },
+    }
+  );
 }
 async function configureAgy(parallel: boolean, sole = false) {
   agy = true;
@@ -294,7 +404,12 @@ before(async () => {
     const url = input instanceof Request ? input.url : String(input);
     if (
       init.method !== "POST" ||
-      ![SELECTOR, EXECUTOR, ...(agy ? [BOUNDED_AGY_STREAM_URL] : [])].includes(url)
+      ![
+        SELECTOR,
+        EXECUTOR,
+        ...(agy || nativeTarget === "agy" ? [BOUNDED_AGY_STREAM_URL] : []),
+        ...(nativeTarget === "codex" ? [NATIVE_DECISION_CODEX_ENDPOINT] : []),
+      ].includes(url)
     ) {
       unexpected++;
       throw new Error("Closed SDK provider fixture rejected route");
@@ -307,29 +422,33 @@ before(async () => {
       const ids = Object.keys(body.questions.route.criteria);
       assert.deepEqual(
         ids.sort(),
-        (agy
-          ? ["agy-high", "sonnet-high"]
-          : delegated
-            ? (widePool ? ["medium", "high", "xhigh", "max"] : ["medium", "high"]).flatMap(
-                (value) => [`opus-${value}`, `sonnet-${value}`]
-              )
-            : [`opus-${effort}`, `sonnet-${effort}`]
+        (nativeTarget
+          ? [`${nativeTarget}-native-high`, "sonnet-high"]
+          : agy
+            ? ["agy-high", "sonnet-high"]
+            : delegated
+              ? (widePool ? ["medium", "high", "xhigh", "max"] : ["medium", "high"]).flatMap(
+                  (value) => [`opus-${value}`, `sonnet-${value}`]
+                )
+              : [`opus-${effort}`, `sonnet-${effort}`]
         ).sort()
       );
       const text = JSON.stringify(body);
       assert.ok(!text.includes("synthetic lamp"));
       assert.ok(!text.includes('"item"'));
+      const selected = nativeTarget
+        ? `${nativeTarget}-native-high`
+        : agy
+          ? "agy-high"
+          : `sonnet-${effort}`;
       return Response.json({
         model: "jev-1.13-free",
         answers: {
           route: {
             type: "choice",
-            choice: agy ? "agy-high" : `sonnet-${effort}`,
+            choice: selected,
             probabilities: Object.fromEntries(
-              ids.map((id) => [
-                id,
-                id === (agy ? "agy-high" : `sonnet-${effort}`) ? 0.8 : (1 - 0.8) / (ids.length - 1),
-              ])
+              ids.map((id) => [id, id === selected ? 0.8 : (1 - 0.8) / (ids.length - 1)])
             ),
             confidence: (0.8 - 1 / ids.length) / (1 - 1 / ids.length),
           },
@@ -339,6 +458,46 @@ before(async () => {
     }
     executions++;
     wires.push(body);
+    if (nativeTarget) {
+      const attempt = currentApplicationAttempt();
+      assert.equal(attempt?.connectionId, nativeTarget === "codex" ? codexId : agyId);
+      assert.equal(attempt?.effort, "high");
+      for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens"])
+        assert.equal(body[field], undefined);
+      if (nativeTarget === "codex") {
+        assert.equal(url, NATIVE_DECISION_CODEX_ENDPOINT);
+        assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-codex-oauth");
+        assert.equal(headers.get("chatgpt-account-id"), "synthetic-sdk-workspace");
+        assert.equal(body.model, "gpt-6-sol");
+        assert.equal(body.reasoning.effort, "high");
+        return nativeCodexResponse(body.model);
+      }
+      assert.equal(url, BOUNDED_AGY_STREAM_URL);
+      assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-agy-oauth");
+      assert.equal(body.model, BOUNDED_AGY_OPUS_MODEL);
+      assert.equal(body.project, "synthetic-sdk-agy-project");
+      assert.deepEqual(body.request.generationConfig, { topK: 40, topP: 1 });
+      return new Response(
+        `data: ${JSON.stringify({
+          response: {
+            candidates: [
+              {
+                index: 0,
+                content: { role: "model", parts: [{ text: "Synthetic SDK OK" }] },
+                finishReason: "STOP",
+              },
+            ],
+            usageMetadata: {
+              promptTokenCount: 2,
+              candidatesTokenCount: 3,
+              thoughtsTokenCount: 1,
+              totalTokenCount: 6,
+            },
+          },
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } }
+      );
+    }
     if (url === BOUNDED_AGY_STREAM_URL) {
       if (
         !(body.request.contents as Array<{ parts: Array<Record<string, unknown>> }>).some((row) =>
@@ -419,6 +578,20 @@ before(async () => {
       })
     ).id
   );
+  codexId = String(
+    (
+      await createProviderConnection({
+        provider: "codex",
+        authType: "oauth",
+        name: "synthetic-sdk-codex",
+        accessToken: "synthetic-sdk-codex-oauth",
+        expiresAt: new Date(Date.now() + 86400000).toISOString(),
+        isActive: true,
+        testStatus: "active",
+        providerSpecificData: { workspaceId: "synthetic-sdk-workspace" },
+      })
+    ).id
+  );
   comboId = String(
     (
       await createCombo({
@@ -451,6 +624,7 @@ beforeEach(async () => {
     else sonnetId = String(row.id);
   }
   await updateCombo(comboId, { config: config() });
+  nativeTarget = null;
   agy = false;
   agyParallel = false;
   agyRefuse = false;
@@ -641,6 +815,71 @@ const options = {
   skip: AVAILABLE ? false : "Exact external SDK venv is not configured; no SDK execution",
   timeout: 40000,
 };
+for (const provider of ["codex", "agy"] as const) {
+  test(
+    `installed SDK native-output omitted-cap source reaches original ${provider} High once`,
+    options,
+    async () => {
+      await configureNativeText(provider);
+      const capture = source("omitted-cap");
+      const originalKwargs = structuredClone(capture.capturedKwargs);
+      for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens"])
+        assert.equal(capture.capturedKwargs[field], undefined);
+      // The unchanged original builder omits streaming; this driver choice is declared separately.
+      capture.driverFlags = { stream: true, stream_options: { include_usage: true } };
+      const { result, requests, observations } = await sdk(capture, "stream");
+      assert.equal(result.ok, true, JSON.stringify({ error: result.errorClass, observations }));
+      assert.deepEqual(capture.capturedKwargs, originalKwargs);
+      assert.equal(result.fullHermesExecuted, false);
+      assert.equal(result.actualToolsRun, false);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].reasoning_effort, "high");
+      assert.deepEqual(requests[0].messages, originalKwargs.messages);
+      for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens"])
+        assert.equal(requests[0][field], undefined);
+      assert.equal(
+        (result.summaries as Array<Record<string, unknown>>)[0].content,
+        "Synthetic SDK OK"
+      );
+      assert.equal(decisions, 1);
+      assert.equal(executions, 1);
+      const rows = readDecisionAttempts(key.id);
+      assert.equal(rows.length, 2);
+      const execution = rows.find((row) => row.lane === "execution")!;
+      const decision = rows.find((row) => row.lane === "decision")!;
+      assert.equal(execution.provider, provider);
+      assert.equal(execution.model, provider === "codex" ? "gpt-6-sol" : BOUNDED_AGY_OPUS_MODEL);
+      assert.equal(execution.effort, "high");
+      assert.equal(execution.connection_id, provider === "codex" ? codexId : agyId);
+      assert.equal(execution.application_status, 200);
+      assert.equal(
+        execution.cost_usd,
+        null,
+        "Undocumented native receipt is unknown, not zero or foreign cost"
+      );
+      assert.equal(decision.cost_usd, 0, "Explicit synthetic decision zero remains separate");
+      assert.equal(observations[0].status, 200);
+    }
+  );
+  test(
+    `installed SDK native-output original ${provider} High rejects explicit caller cap before stages`,
+    options,
+    async () => {
+      await configureNativeText(provider);
+      const capture = source("explicit-high");
+      assert.equal(capture.capturedKwargs.max_tokens, 64);
+      capture.driverFlags = { stream: true, stream_options: { include_usage: true } };
+      const { result, requests, observations } = await sdk(capture, "stream");
+      assert.equal(result.ok, false);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].max_tokens, 64);
+      assert.equal(observations[0].status, 409);
+      assert.equal(decisions, 0);
+      assert.equal(executions, 0);
+      assert.deepEqual(readDecisionAttempts(key.id), []);
+    }
+  );
+}
 for (const [caseName, value] of [
   ["explicit-medium", "medium"],
   ["explicit-high", "high"],

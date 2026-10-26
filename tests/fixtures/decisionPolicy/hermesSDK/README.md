@@ -36,7 +36,7 @@ Allowed Claude cases retain two eligible Claude choices and use one decision plu
 
 ## Nested effort and original higher tiers
 
-The current 37-case suite preserves the earlier thirty controls cases and adds
+The earlier 37-case suite preserves the earlier thirty controls cases and adds
 three configured nested-effort cases plus four XHigh/Max tool loops. The nested
 cases pass the original builder's explicit extra_body override through actual SDK
 serialization: matching High is admitted for Claude and sole AGY; conflicting
@@ -51,3 +51,9 @@ options, then continuation pins account/model/effort/cap without another decisio
 The test-only wide pool defaults off and every earlier case retains its original
 pool. Synthetic prices and unknown receipts remain distinct; there is no live
 provider or full-Hermes claim.
+
+## Native-output omitted-cap follow-up
+
+The suite now passes **41/41** offline: the existing 37 cases plus two positive native-output text/SSE cases and two caller-cap rejections. Unchanged `hermesPinned` `omitted-cap` kwargs pass through the actual locked SDK to the real handler for original Codex GPT-6 Sol High and fixed AGY Opus High. Explicit High is supplied by that original source fixture; this is not a new effort-delegation proof. Streaming/include_usage flags are separately declared before SDK serialization, as in the existing driver contract. No serialized SDK message, cap or wire field is mutated to obtain a pass.
+
+Each positive uses two eligible synthetic profiles, exactly one mock native decision and one exact execution, verifies account/model/effort, carries no SDK/native generation cap, and preserves execution cost as unknown separately from the synthetic decision's explicit zero. Original explicit-cap requests return409 before either stage. Full pinned Hermes initialization/Relay, tools/continuation in native mode, other SDK/native pair combinations, live providers and quality are not proven by these four cases. Production runtime is unchanged from the PC-validated 6d9 checkpoint.
