@@ -230,6 +230,53 @@ export function reserveDecisionAttempt(identity: AttemptIdentity): void {
   const db = getDbInstance();
   db.immediate(() => reserveInTransaction(identity));
 }
+/** Internal DB-domain seam: a continuation claim and its fresh reservation commit together. */
+export function reserveDecisionAttemptWithClaim(
+  identity: AttemptIdentity,
+  claim: () => void
+): void {
+  assertSharedDecisionStorage();
+  getDbInstance().immediate(() => {
+    reserveInTransaction(identity);
+    claim();
+  });
+}
+/** Private origin capability is checked without exposing it through public receipt projections. */
+export function readCompletedDecisionOrigin(identity: AttemptIdentity): Row {
+  assertSharedDecisionStorage();
+  const row = readDecisionAttemptReceipt(identity.id);
+  assertIdentityRow(identity, row);
+  assertLeaseOwner(identity, row);
+  if (
+    row.lane !== "execution" ||
+    row.state !== "completed" ||
+    row.http_status !== 200 ||
+    row.application_status !== 200
+  )
+    throw new Error("continuation_origin_incomplete");
+  return row;
+}
+/** Only a verified complete provider response may atomically commit client success with metadata. */
+export function finishDecisionApplicationWithMetadata(
+  identity: AttemptIdentity,
+  publish: () => void
+): void {
+  assertSharedDecisionStorage();
+  getDbInstance().immediate(() => {
+    const row = readDecisionAttemptReceipt(identity.id);
+    assertIdentityRow(identity, row);
+    assertLeaseOwner(identity, row);
+    if (
+      row.lane !== "execution" ||
+      row.state !== "completed" ||
+      row.http_status !== 200 ||
+      (row.application_status != null && row.application_status !== 200)
+    )
+      throw new Error("continuation_origin_incomplete");
+    finishInTransaction(identity.id, 200);
+    publish();
+  });
+}
 function reserveInTransaction(identity: AttemptIdentity): void {
   assertSharedDecisionStorage();
   const db = getDbInstance();

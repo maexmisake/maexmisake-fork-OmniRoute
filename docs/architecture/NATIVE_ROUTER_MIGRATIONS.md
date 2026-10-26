@@ -6,10 +6,10 @@ lastUpdated: 2026-10-26
 
 # Native router migration compatibility
 
-The distribution ships **213 SQL files**: 209 core migrations through numeric
-`212`, plus four files under `src/lib/db/migrations/native-router/`. The bundled
+The distribution ships **214 SQL files**: 209 core migrations through numeric
+`212`, plus five files under `src/lib/db/migrations/native-router/`. The bundled
 files use the existing namespace convention and are recorded as `nr-213` through
-`nr-216`. They load automatically after core migrations, without an environment
+`nr-217`. They load automatically after core migrations, without an environment
 change. The `nr` namespace is reserved; optional extra directories remain separate.
 
 ## Verified upstream boundary and later correction
@@ -69,6 +69,28 @@ started work becomes unknown without replay or invented charges. Historical
 `requested_model` stays NULL: a later combo rename cannot recover the original
 trusted request scope. Runtime admission and lease ownership belong to the attempt
 domain module; this SQL migration alone does not enforce concurrency limits.
+
+`nr-217_tool_continuations` adds `decision_tool_turns` and `decision_tool_calls`.
+They retain keyed metadata, exact origin/claim references and bounded lineage;
+they do not store messages, arguments, results or signed thinking blocks. Schema
+provenance checks include primary/unique keys, required columns, foreign keys,
+state/depth/ordinal constraints and indexes. Existing migration bytes and applied
+numeric history are unchanged.
+
+The domain APIs atomically reserve a fresh continuation request and claim its
+turn. Successful tool-handoff publication or final consumption can share the
+application-outcome transaction; failed writes preserve the physical receipt
+and do not invent a successful handoff. A started attempt with an expired lease
+or uncertain outcome cannot be replayed. Only a provably unstarted cancellation
+may release its claim for a fresh request. The 30-minute authority window does not restart on each
+turn. Bounded cleanup retains ancestry while a descendant could still publish;
+it is not a timed purge or secure-erasure guarantee.
+
+These tables alone do not enable tools, attest that a tool ran or grant tool
+permissions. The guarded handler must validate complete provider/client output,
+current authorization, cancellation, exact identity and required in-memory
+signed replay. Database fixtures do not establish those runtime or live-provider
+properties.
 
 ## Inventory and packaging
 

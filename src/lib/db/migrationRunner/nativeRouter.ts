@@ -13,6 +13,7 @@ const LEGACY = [
 const NAMES = new Map<string, string>([
   ...LEGACY.map((m) => [PREFIX + m.version, m.name] as [string, string]),
   ["nr-216", "native_attempt_leases"],
+  ["nr-217", "tool_continuations"],
 ]);
 const BASE_COLUMNS = {
   id: "TEXT",
@@ -132,6 +133,160 @@ function requireAttemptConstraints(db: SqliteAdapter, number: number): void {
     fail("attempt lane constraint is missing or incompatible");
 }
 
+function requireNativeToolKeys(
+  db: SqliteAdapter,
+  table: string,
+  primary: string[],
+  required: string[]
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+    pk: number;
+    notnull: number;
+  }>;
+  const actual = columns
+    .filter((column) => column.pk > 0)
+    .sort((a, b) => a.pk - b.pk)
+    .map((column) => column.name);
+  if (
+    JSON.stringify(actual) !== JSON.stringify(primary) ||
+    required.some((name) => columns.find((column) => column.name === name)?.notnull !== 1)
+  )
+    fail(`required ${table} primary/NOT NULL constraints are missing`);
+}
+function requireNativeToolUnique(db: SqliteAdapter, table: string, columns: string[]): void {
+  const indexes = db.prepare(`PRAGMA index_list(${table})`).all() as Array<{
+    name: string;
+    unique: number;
+    partial: number;
+  }>;
+  const found = indexes.some(
+    (index) =>
+      index.unique === 1 &&
+      index.partial === 0 &&
+      JSON.stringify(
+        (
+          db
+            .prepare("SELECT name FROM pragma_index_info(?) ORDER BY seqno")
+            .all(index.name) as Array<{ name: string }>
+        ).map((field) => field.name)
+      ) === JSON.stringify(columns)
+  );
+  if (!found) fail(`required ${table} unique constraint is missing`);
+}
+function requireNativeToolForeignKey(
+  db: SqliteAdapter,
+  table: string,
+  from: string,
+  target: string
+): void {
+  const keys = db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+    from: string;
+    table: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (
+    !keys.some(
+      (key) =>
+        key.from === from && key.table === target && key.to === "id" && key.on_delete === "CASCADE"
+    )
+  )
+    fail(`required ${table}.${from} foreign key is missing`);
+}
+function requireNativeToolConstraints(db: SqliteAdapter): void {
+  requireNativeToolKeys(
+    db,
+    "decision_tool_turns",
+    ["id"],
+    [
+      "id",
+      "source_attempt_id",
+      "api_key_id",
+      "combo_id",
+      "depth",
+      "state",
+      "prefix_mac",
+      "contract_mac",
+      "calls_mac",
+      "authority_mac",
+      "created_at",
+      "expires_at",
+    ]
+  );
+  requireNativeToolKeys(
+    db,
+    "decision_tool_calls",
+    ["turn_id", "id_mac"],
+    ["turn_id", "ordinal", "id_mac", "descriptor_mac"]
+  );
+  requireNativeToolUnique(db, "decision_tool_turns", ["source_attempt_id"]);
+  requireNativeToolUnique(db, "decision_tool_turns", ["claimed_attempt_id"]);
+  requireNativeToolUnique(db, "decision_tool_calls", ["turn_id", "ordinal"]);
+  requireNativeToolForeignKey(
+    db,
+    "decision_tool_turns",
+    "source_attempt_id",
+    "decision_application_attempts"
+  );
+  requireNativeToolForeignKey(
+    db,
+    "decision_tool_turns",
+    "claimed_attempt_id",
+    "decision_application_attempts"
+  );
+  requireNativeToolForeignKey(db, "decision_tool_turns", "previous_turn_id", "decision_tool_turns");
+  requireNativeToolForeignKey(db, "decision_tool_calls", "turn_id", "decision_tool_turns");
+  const turns = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='decision_tool_turns'")
+    .get() as { sql: string };
+  const calls = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='decision_tool_calls'")
+    .get() as { sql: string };
+  if (
+    !/CHECK\s*\(\s*state\s+IN\s*\(\s*'issued'\s*,\s*'claimed'\s*,\s*'consumed'\s*,\s*'unknown'\s*\)\s*\)/i.test(
+      turns.sql
+    ) ||
+    !/CHECK\s*\(\s*depth\s+BETWEEN\s+0\s+AND\s+31\s*\)/i.test(turns.sql) ||
+    !/CHECK\s*\(\s*ordinal\s+BETWEEN\s+0\s+AND\s+31\s*\)/i.test(calls.sql)
+  )
+    fail("native tool CHECK constraints are missing");
+}
+function requireNativeToolSchema(db: SqliteAdapter): void {
+  requireColumns(db, "decision_tool_turns", {
+    id: "TEXT",
+    source_attempt_id: "TEXT",
+    api_key_id: "TEXT",
+    combo_id: "TEXT",
+    previous_turn_id: "TEXT",
+    depth: "INTEGER",
+    state: "TEXT",
+    prefix_mac: "TEXT",
+    contract_mac: "TEXT",
+    calls_mac: "TEXT",
+    authority_mac: "TEXT",
+    thinking_mac: "TEXT",
+    claimed_attempt_id: "TEXT",
+    created_at: "INTEGER",
+    expires_at: "INTEGER",
+  });
+  requireColumns(db, "decision_tool_calls", {
+    turn_id: "TEXT",
+    ordinal: "INTEGER",
+    id_mac: "TEXT",
+    descriptor_mac: "TEXT",
+  });
+  requireIndex(
+    db,
+    "decision_tool_turns",
+    "idx_decision_tool_live",
+    ["api_key_id", "combo_id", "expires_at", "state"],
+    0
+  );
+  requireNativeToolConstraints(db);
+  requireIndex(db, "decision_tool_turns", "idx_decision_tool_previous", ["previous_turn_id"], 0);
+}
+
 function requireSchema(db: SqliteAdapter, number: number, leased: boolean): void {
   requireColumns(db, "decision_application_attempts", BASE_COLUMNS);
   requireAttemptConstraints(db, number);
@@ -189,6 +344,7 @@ function requireSchema(db: SqliteAdapter, number: number, leased: boolean): void
     )
       fail("obsolete exclusive active-key index remains");
   }
+  if (number >= 217) requireNativeToolSchema(db);
 }
 
 function relevant(files: Migration[]): Migration[] {
@@ -196,6 +352,8 @@ function relevant(files: Migration[]): Migration[] {
 }
 
 function requirePredecessors(applied: Map<string, Marker>, number: number): void {
+  if (number >= 217 && applied.get("nr-216")?.name !== NAMES.get("nr-216"))
+    fail("predecessor nr-216 is not recorded");
   for (const predecessor of LEGACY) {
     if (Number(predecessor.version) >= number) continue;
     const old = applied.get(predecessor.version)?.name === predecessor.name;
