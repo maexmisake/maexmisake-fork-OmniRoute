@@ -36,6 +36,7 @@ import {
   getResolvedModelCapabilities,
   supportsReasoning,
 } from "@/lib/modelCapabilities";
+import { currentApplicationAttempt } from "./decisionPolicy/applicationContext.ts";
 import {
   jsonLengthStrippingBase64DataUris,
   rawLengthStrippingBase64DataUris,
@@ -256,6 +257,19 @@ export function ensureThinkingConfig(body: unknown) {
 
   // If thinking config already present, don't override
   if (bodyRecord.thinking) return body;
+
+  // This exact fixed-profile lane has no adjustable thinking carrier. Do not
+  // invent one from its model suffix; supplied fields remain for its wire fence.
+  const application = currentApplicationAttempt();
+  if (
+    application?.executionContract === "agy-opus-fixed-native-output-v1" &&
+    application.provider === "agy" &&
+    application.model === "claude-opus-4-6-thinking" &&
+    application.effort === "high" &&
+    application.nativeOutput &&
+    (model === application.model || model === `agy/${application.model}`)
+  )
+    return body;
 
   const result: JsonRecord = { ...bodyRecord };
   result.thinking = {

@@ -1,7 +1,10 @@
 import { ANTIGRAVITY_DEFAULT_SYSTEM } from "../../../open-sse/config/constants.ts";
 import {
   assertBoundedAgyCredentials,
+  boundedAgyContext,
+  AGY_OPUS_NATIVE_OUTPUT_CONTRACT,
   BOUNDED_AGY_MODEL,
+  BOUNDED_AGY_OPUS_MODEL,
   BOUNDED_AGY_STREAM_URL,
   BOUNDED_AGY_USER_AGENT,
 } from "../../../open-sse/executors/antigravity/bounded.ts";
@@ -21,17 +24,28 @@ function record(value: unknown): Json {
 function same(left: unknown, right: unknown): boolean {
   return canonicalToolJSON(left) === canonicalToolJSON(right);
 }
-export function isApplicationAgyPair(candidate: Candidate): boolean {
+export function isApplicationAgyPair(candidate: Candidate, allowNativeOutput = false): boolean {
   return (
     candidate.provider === "agy" &&
-    candidate.model === BOUNDED_AGY_MODEL &&
     candidate.effort.value === "high" &&
-    ["set", "fixed"].includes(candidate.effort.mode)
+    ((candidate.model === BOUNDED_AGY_MODEL && ["set", "fixed"].includes(candidate.effort.mode)) ||
+      (allowNativeOutput &&
+        candidate.model === BOUNDED_AGY_OPUS_MODEL &&
+        candidate.effort.mode === "fixed"))
   );
 }
-export function applicationAgyProvider(candidate: Candidate, connection: Json) {
+export function applicationAgyProvider(
+  candidate: Candidate,
+  connection: Json,
+  allowNativeOutput = false
+): {
+  claude: false;
+  executionContract: "agy-gemini-high-v1" | typeof AGY_OPUS_NATIVE_OUTPUT_CONTRACT;
+  endpoint: string;
+  credentials: ProviderCredentials;
+} {
   if (
-    !isApplicationAgyPair(candidate) ||
+    !isApplicationAgyPair(candidate, allowNativeOutput) ||
     connection.provider !== "agy" ||
     connection.isActive !== true ||
     connection.authType !== "oauth" ||
@@ -55,7 +69,10 @@ export function applicationAgyProvider(candidate: Candidate, connection: Json) {
   assertBoundedAgyCredentials(credentials);
   return {
     claude: false,
-    executionContract: "agy-gemini-high-v1" as const,
+    executionContract:
+      candidate.model === BOUNDED_AGY_OPUS_MODEL
+        ? AGY_OPUS_NATIVE_OUTPUT_CONTRACT
+        : ("agy-gemini-high-v1" as const),
     endpoint: BOUNDED_AGY_STREAM_URL,
     credentials,
   };
@@ -124,6 +141,42 @@ function expectedContents(body: ChatPolicyBody): Json[] {
   (contents[0].parts as Json[]).unshift(...systems);
   return contents;
 }
+/** Exact fixed-profile request. The private planning allowance is never a wire output limit. */
+export function applicationAgyNativeOutputRequest(
+  model: string,
+  body: Json,
+  stream: boolean,
+  rawCredentials: Json | null
+): Json {
+  const credentials = record(rawCredentials) as ProviderCredentials;
+  const attempt = boundedAgyContext(model, credentials);
+  const allowed = [
+    "model",
+    "messages",
+    "stream",
+    "max_completion_tokens",
+    "reasoning_effort",
+    "stream_options",
+  ];
+  if (
+    attempt?.executionContract !== AGY_OPUS_NATIVE_OUTPUT_CONTRACT ||
+    stream !== true ||
+    body.reasoning_effort !== "high" ||
+    body.max_completion_tokens !== attempt.nativeOutput?.contextOutputTokens ||
+    Object.keys(body).some((key) => !allowed.includes(key))
+  )
+    return reject();
+  assertBoundedAgyCredentials(credentials);
+  return {
+    model,
+    project: credentials.projectId ?? credentials.providerSpecificData?.projectId,
+    request: {
+      contents: expectedContents(body as unknown as ChatPolicyBody),
+      systemInstruction: { role: "system", parts: [{ text: ANTIGRAVITY_DEFAULT_SYSTEM }] },
+      generationConfig: { topK: 40, topP: 1 },
+    },
+  };
+}
 /** Validate the already serialized final wire, including documented system relocation. */
 export function applicationAgyWireFacts(
   wire: Json,
@@ -131,14 +184,18 @@ export function applicationAgyWireFacts(
   credentials: ProviderCredentials,
   original: ChatPolicyBody,
   outputLimit: number,
-  validateTools?: (wire: Json) => unknown
+  validateTools?: (wire: Json) => unknown,
+  executionContract = "agy-gemini-high-v1"
 ) {
+  const opus = executionContract === AGY_OPUS_NATIVE_OUTPUT_CONTRACT;
+  if ((!opus && executionContract !== "agy-gemini-high-v1") || (opus && validateTools))
+    return reject();
   const request = record(wire.request);
   const keys = ["contents", "systemInstruction", "generationConfig"];
   if (validateTools) keys.push("tools", "toolConfig");
   if (
     Object.keys(wire).some((key) => !["model", "project", "request"].includes(key)) ||
-    wire.model !== BOUNDED_AGY_MODEL ||
+    wire.model !== (opus ? BOUNDED_AGY_OPUS_MODEL : BOUNDED_AGY_MODEL) ||
     wire.project !== credentials.projectId ||
     Object.keys(request).some((key) => !keys.includes(key)) ||
     headers.get("user-agent") !== BOUNDED_AGY_USER_AGENT ||
@@ -155,12 +212,17 @@ export function applicationAgyWireFacts(
       role: "system",
       parts: [{ text: ANTIGRAVITY_DEFAULT_SYSTEM }],
     }) ||
-    !same(request.generationConfig, {
-      maxOutputTokens: outputLimit,
-      thinkingConfig: { thinkingLevel: "high" },
-      topK: 40,
-      topP: 1,
-    })
+    !same(
+      request.generationConfig,
+      opus
+        ? { topK: 40, topP: 1 }
+        : {
+            maxOutputTokens: outputLimit,
+            thinkingConfig: { thinkingLevel: "high" },
+            topK: 40,
+            topP: 1,
+          }
+    )
   )
     return reject();
   validateTools?.(wire);

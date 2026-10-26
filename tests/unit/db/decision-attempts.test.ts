@@ -130,3 +130,27 @@ test("unknown outcome and late cost/token disclosure remain explicit and reconci
   assert.equal(getKeyQuotaStatus(a.keyId).counters.rpmUsed, 1);
   assert.throws(() => settleDecisionAttempt(a, { status: 200, input: -1, output: 4, cost: 0.01 }));
 });
+
+test("native Codex total output does not invent visible output when reasoning is missing", async () => {
+  const a = { ...(await identity()), provider: "codex", outputPolicy: "provider-native" as const };
+  reserveDecisionAttempt(a);
+  startDecisionAttempt(a);
+  settleDecisionAttempt(a, { status: 200, input: 8, output: 4, cost: null });
+  const raw = readDecisionAttempts(a.keyId)[0];
+  assert.equal(raw.output_tokens, 4);
+  assert.equal(raw.reasoning_tokens, null);
+  assert.equal(raw.cost_usd, null);
+  const history = () =>
+    getDbInstance()
+      .prepare("SELECT * FROM usage_history WHERE decision_attempt_id=?")
+      .get(a.id) as Record<string, unknown>;
+  assert.equal(history().tokens_output, null);
+  assert.equal(history().tokens_reasoning, null);
+  assert.equal(history().combo_strategy, "decision-provider-native-output-v1");
+  assert.equal(getKeyQuotaStatus(a.keyId).counters.tpmUsed, 12);
+  settleDecisionAttempt(a, { status: 200, input: 8, output: 4, reasoning: 0, cost: null });
+  assert.equal(history().tokens_output, 4);
+  assert.equal(history().tokens_reasoning, 0);
+  assert.equal(count("usage_history", a.keyId), 1);
+  assert.equal(getKeyQuotaStatus(a.keyId).counters.tpmUsed, 12);
+});

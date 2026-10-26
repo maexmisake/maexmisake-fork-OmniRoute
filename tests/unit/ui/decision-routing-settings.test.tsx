@@ -206,6 +206,269 @@ afterEach(() => {
 });
 
 describe("decision routing settings", () => {
+  it("retains all 23 exact original profile choices and fixed efforts when native output is explicitly saved", async () => {
+    type Profile = DecisionPolicyEditorValue["policy"]["candidates"][number];
+    const profiles: Profile[] = [];
+    const add = (
+      provider: string,
+      model: string,
+      effort: "medium" | "high" | "xhigh" | "max",
+      fixed = false
+    ) => {
+      const id = `fixture-${profiles.length + 1}`;
+      profiles.push({
+        ...candidate(id, "high"),
+        provider,
+        model,
+        effort: {
+          mode: fixed ? "fixed" : "set",
+          value: effort,
+          supported: [effort],
+          evidence: "Synthetic UI fixed/exact effort declaration; not live evidence",
+        },
+      });
+    };
+    for (const model of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"])
+      for (const effort of ["medium", "high", "xhigh", "max"] as const)
+        add("claude", model, effort);
+    add("codex", "gpt-6-luna", "max", true);
+    for (const model of ["gpt-5.6-sol", "gpt-6-sol"])
+      for (const effort of ["medium", "high", "xhigh", "max"] as const) add("codex", model, effort);
+    add("agy", "gemini-3.8-flash-high", "high", true);
+    add("agy", "claude-opus-4-6-thinking", "high", true);
+    expect(profiles).toHaveLength(23);
+    const value = policy();
+    value.policy.candidates = profiles;
+    value.policy.taskOrder = { reasoning: profiles.map((row) => row.id) };
+    value.connections = Object.fromEntries(
+      profiles.map((row) => [row.id, `execute-${row.provider}`])
+    );
+    const data = options();
+    for (const provider of ["claude", "codex", "agy"])
+      data.connections.push({
+        ...data.connections[2],
+        id: `execute-${provider}`,
+        provider,
+        label: `Synthetic ${provider} execution connection`,
+      });
+    const api = server(record(value), data);
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Execution output policy"), {
+      target: { value: "provider-native-output-v1" },
+    });
+    fireEvent.change(screen.getByLabelText("Output context-planning allowance (tokens)"), {
+      target: { value: "512" },
+    });
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "I acknowledge that provider-native output has no provider-enforced token ceiling",
+      })
+    );
+    expect(saveButton().disabled).toBe(false);
+    fireEvent.click(saveButton());
+    await screen.findByText("Routing settings saved.");
+    const saved = api.calls.find((call) => call.init.method === "PUT")?.body
+      ?.policy as DecisionPolicyEditorValue;
+    expect(saved.policy.candidates).toEqual(profiles);
+    expect(saved.policy.taskOrder).toEqual(value.policy.taskOrder);
+    expect(saved.connections).toEqual(value.connections);
+    expect(saved.nativeOutput).toEqual({
+      acknowledgeNoTokenCeiling: true,
+      contextOutputTokens: 512,
+    });
+    expect((screen.getByLabelText("Effort mode for fixture-23") as HTMLSelectElement).value).toBe(
+      "fixed"
+    );
+    fireEvent.change(screen.getByLabelText("Effort mode for fixture-23"), {
+      target: { value: "set" },
+    });
+    expect(saveButton().disabled).toBe(true);
+    expect(
+      screen.getByText(/unsupported provider\/model\/effort for this output policy/)
+    ).toBeTruthy();
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(1);
+  });
+
+  it("keeps provider-native output off by default and requires explicit acknowledgement and allowance", async () => {
+    const api = server(record(null, "unconfigured"));
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    expect((screen.getByLabelText("Execution output policy") as HTMLSelectElement).value).toBe(
+      "bounded-v1"
+    );
+    expect(screen.queryByLabelText("Output context-planning allowance (tokens)")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Execution output policy"), {
+      target: { value: "provider-native-output-v1" },
+    });
+    expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("false");
+    const acknowledge = screen.getByRole("checkbox", {
+      name: "I acknowledge that provider-native output has no provider-enforced token ceiling",
+    }) as HTMLInputElement;
+    expect(acknowledge.checked).toBe(false);
+    expect(acknowledge.getAttribute("aria-describedby")).toBe("native-output-disclosure");
+    expect(
+      (screen.getByLabelText("Output context-planning allowance (tokens)") as HTMLInputElement)
+        .value
+    ).toBe("");
+    expect(saveButton().disabled).toBe(true);
+    expect(screen.getByText(/Acknowledge that provider-native output/)).toBeTruthy();
+    const copy = document.body.textContent ?? "";
+    expect(copy).toContain("Caller max_tokens or max_completion_tokens is rejected");
+    expect(copy).toContain("Only streaming text is supported");
+    expect(copy).toContain(
+      "Tool and continuation preferences are retained but do not authorize requests in provider-native output mode."
+    );
+    expect(copy).toContain("Missing usage or cost remains unknown");
+    expect(copy).toContain("Financially or token-capped client keys remain unsupported");
+    expect(copy).toContain("AGY Opus High retains the original fixed profile designation");
+    expect(api.calls.every((call) => !call.init.method || call.init.method === "GET")).toBe(true);
+  });
+
+  it("rejects missing, fractional and out-of-range native planning values without saving", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    fireEvent.change(screen.getByLabelText("Execution output policy"), {
+      target: { value: "provider-native-output-v1" },
+    });
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "I acknowledge that provider-native output has no provider-enforced token ceiling",
+      })
+    );
+    for (const value of ["", "0", "-1", "1.5", "1000001"]) {
+      fireEvent.change(screen.getByLabelText("Output context-planning allowance (tokens)"), {
+        target: { value },
+      });
+      expect(saveButton().disabled).toBe(true);
+      expect(screen.getByText(/Enter an explicit output context-planning allowance/)).toBeTruthy();
+    }
+    fireEvent.change(screen.getByLabelText("Output context-planning allowance (tokens)"), {
+      target: { value: "128" },
+    });
+    expect(saveButton().disabled).toBe(false);
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(0);
+  });
+
+  it("saves native output explicitly, reloads it, and removes its acknowledgement on mode changes", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    fireEvent.change(screen.getByLabelText("Execution output policy"), {
+      target: { value: "provider-native-output-v1" },
+    });
+    fireEvent.change(screen.getByLabelText("Output context-planning allowance (tokens)"), {
+      target: { value: "512" },
+    });
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "I acknowledge that provider-native output has no provider-enforced token ceiling",
+      })
+    );
+    fireEvent.click(saveButton());
+    await screen.findByText("Routing settings saved.");
+    const first = api.calls.find((call) => call.init.method === "PUT")!;
+    const saved = first.body?.policy as DecisionPolicyEditorValue;
+    expect(first.body?.revision).toBe(REVISION);
+    expect(saved.applicationMode).toBe("provider-native-output-v1");
+    expect(saved.nativeOutput).toEqual({
+      acknowledgeNoTokenCeiling: true,
+      contextOutputTokens: 512,
+    });
+    expect(saved.policy.candidates).toEqual(policy().policy.candidates);
+    expect(saved.policy.taskOrder).toEqual(policy().policy.taskOrder);
+    fireEvent.click(screen.getByRole("button", { name: "Reload saved settings" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("Output context-planning allowance (tokens)") as HTMLInputElement)
+          .value
+      ).toBe("512")
+    );
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "I acknowledge that provider-native output has no provider-enforced token ceiling",
+        }) as HTMLInputElement
+      ).checked
+    ).toBe(true);
+    fireEvent.change(screen.getByLabelText("Output context-planning allowance (tokens)"), {
+      target: { value: "900" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(
+      (screen.getByLabelText("Output context-planning allowance (tokens)") as HTMLInputElement)
+        .value
+    ).toBe("512");
+    fireEvent.change(screen.getByLabelText("Execution output policy"), {
+      target: { value: "bounded-v1" },
+    });
+    fireEvent.click(saveButton());
+    await screen.findByText("Routing settings saved.");
+    const second = api.calls.filter((call) => call.init.method === "PUT")[1].body
+      ?.policy as DecisionPolicyEditorValue;
+    expect(second.applicationMode).toBe("bounded-v1");
+    expect(Object.hasOwn(second, "nativeOutput")).toBe(false);
+    fireEvent.change(screen.getByLabelText("Execution output policy"), {
+      target: { value: "provider-native-output-v1" },
+    });
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "I acknowledge that provider-native output has no provider-enforced token ceiling",
+        }) as HTMLInputElement
+      ).checked
+    ).toBe(false);
+    expect(
+      (screen.getByLabelText("Output context-planning allowance (tokens)") as HTMLInputElement)
+        .value
+    ).toBe("");
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("locks native policy controls during one pending save and recovers uncertain outcomes only by reload", async () => {
+    const api = server();
+    const pending = deferred<Response>();
+    api.setIntercept((call) => (call.init.method === "PUT" ? pending.promise : undefined));
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    fireEvent.change(screen.getByLabelText("Execution output policy"), {
+      target: { value: "provider-native-output-v1" },
+    });
+    fireEvent.change(screen.getByLabelText("Output context-planning allowance (tokens)"), {
+      target: { value: "256" },
+    });
+    const ackName =
+      "I acknowledge that provider-native output has no provider-enforced token ceiling";
+    fireEvent.click(screen.getByRole("checkbox", { name: ackName }));
+    fireEvent.click(saveButton());
+    fireEvent.click(saveButton());
+    expect((screen.getByLabelText("Execution output policy") as HTMLSelectElement).disabled).toBe(
+      true
+    );
+    expect(
+      (screen.getByLabelText("Output context-planning allowance (tokens)") as HTMLInputElement)
+        .disabled
+    ).toBe(true);
+    expect((screen.getByRole("checkbox", { name: ackName }) as HTMLInputElement).disabled).toBe(
+      true
+    );
+    expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(1);
+    pending.reject(new Error(CANARY));
+    await screen.findByText(/save outcome is unconfirmed/);
+    expect(saveButton().disabled).toBe(true);
+    expect(document.body.textContent).not.toContain(CANARY);
+    api.setIntercept(undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Reload saved settings" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("Execution output policy") as HTMLSelectElement).value).toBe(
+        "bounded-v1"
+      )
+    );
+    expect(screen.queryByLabelText("Output context-planning allowance (tokens)")).toBeNull();
+  });
   it("creates an explicit model-and-effort profile through structured controls without JSON", async () => {
     const api = server(record(null, "unconfigured"));
     render(<DecisionRoutingClient />);

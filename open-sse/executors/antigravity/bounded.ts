@@ -5,6 +5,8 @@ import { parseTokenExpiryMs } from "../../../src/lib/tokenHealthCheckExpiry";
 import type { ExecuteInput, ProviderCredentials } from "../base.ts";
 
 export const BOUNDED_AGY_MODEL = "gemini-3.8-flash-high";
+export const BOUNDED_AGY_OPUS_MODEL = "claude-opus-4-6-thinking";
+export const AGY_OPUS_NATIVE_OUTPUT_CONTRACT = "agy-opus-fixed-native-output-v1";
 export const BOUNDED_AGY_USER_AGENT = "OmniRoute-Antigravity/1.0";
 export const BOUNDED_AGY_STREAM_URL = `${ANTIGRAVITY_RUNTIME_BASE_URLS[0]}/v1internal:streamGenerateContent?alt=sse`;
 function reject(): never {
@@ -13,16 +15,18 @@ function reject(): never {
 /** Internal request-local capability; no HTTP field or provider alias can enable it. */
 export function boundedAgyContext(model: string, credentials: ProviderCredentials) {
   const attempt = currentApplicationAttempt();
-  if (attempt?.executionContract !== "agy-gemini-high-v1") return null;
+  const opus = attempt?.executionContract === AGY_OPUS_NATIVE_OUTPUT_CONTRACT;
+  if (!opus && attempt?.executionContract !== "agy-gemini-high-v1") return null;
   if (
     attempt.provider !== "agy" ||
-    attempt.model !== BOUNDED_AGY_MODEL ||
+    attempt.model !== (opus ? BOUNDED_AGY_OPUS_MODEL : BOUNDED_AGY_MODEL) ||
     model !== attempt.model ||
     attempt.effort !== "high" ||
     credentials.connectionId !== attempt.connectionId ||
     attempt.dispatch.singleAttempt !== true
   )
     reject();
+  if (opus && (!attempt.nativeOutput || attempt.tools)) reject();
   attempt.signal.throwIfAborted();
   return attempt;
 }
@@ -63,7 +67,8 @@ export function assertBoundedAgyInput(input: ExecuteInput): void {
 export function requestsBoundedAgy(input: ExecuteInput): boolean {
   return (
     !!input.validationDispatch ||
-    currentApplicationAttempt()?.executionContract === "agy-gemini-high-v1"
+    currentApplicationAttempt()?.executionContract === "agy-gemini-high-v1" ||
+    currentApplicationAttempt()?.executionContract === AGY_OPUS_NATIVE_OUTPUT_CONTRACT
   );
 }
 export function boundedAgyHeaders(model: string, credentials: ProviderCredentials) {
@@ -80,8 +85,17 @@ function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) reject();
   return value as Record<string, unknown>;
 }
-function assertGeneration(request: Record<string, unknown>): void {
+function assertGeneration(request: Record<string, unknown>, opus: boolean): void {
   const generation = record(request.generationConfig);
+  if (opus) {
+    if (
+      generation.topK !== 40 ||
+      generation.topP !== 1 ||
+      Object.keys(generation).some((key) => !["topK", "topP"].includes(key))
+    )
+      reject();
+    return;
+  }
   const thinking = record(generation.thinkingConfig);
   if (
     !Number.isSafeInteger(generation.maxOutputTokens) ||
@@ -98,26 +112,33 @@ export function boundedAgyProjection(
   body: unknown,
   credentials: ProviderCredentials
 ) {
-  if (!boundedAgyContext(model, credentials)) reject();
+  const attempt = boundedAgyContext(model, credentials);
+  if (!attempt) reject();
+  const opus = attempt.executionContract === AGY_OPUS_NATIVE_OUTPUT_CONTRACT;
   assertBoundedAgyCredentials(credentials);
   const envelope = record(body);
   if (envelope.model !== model || envelope.project !== projectId(credentials)) reject();
   if (
     Object.keys(envelope).some(
       (key) =>
-        !["model", "project", "request", "userAgent", "requestType", "requestId"].includes(key)
+        !(
+          opus
+            ? ["model", "project", "request"]
+            : ["model", "project", "request", "userAgent", "requestType", "requestId"]
+        ).includes(key)
     )
   )
     reject();
   const request = structuredClone(record(envelope.request));
-  delete request.sessionId;
+  if (!opus) delete request.sessionId;
   const nativeTools = !!boundedAgyContext(model, credentials)?.tools?.geminiRequest;
-  const allowed = ["contents", "systemInstruction", "generationConfig", "safetySettings"];
+  const allowed = ["contents", "systemInstruction", "generationConfig"];
+  if (!opus) allowed.push("safetySettings");
   if (nativeTools) allowed.push("tools", "toolConfig");
   for (const key of Object.keys(request)) {
     if (request[key] === undefined) delete request[key];
     else if (!allowed.includes(key)) reject();
   }
-  assertGeneration(request);
+  assertGeneration(request, opus);
   return { model, project: projectId(credentials), request };
 }

@@ -1,4 +1,8 @@
-import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
+import {
+  currentApplicationAttempt,
+  isAgyApplicationContract,
+} from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
+import { assertNativeDecisionCodexCredentials } from "@omniroute/open-sse/executors/codex/nativeDecision.ts";
 import { assertBoundedAgyCredentials } from "@omniroute/open-sse/executors/antigravity/bounded.ts";
 import { assertReadyClaudeOAuth } from "@/lib/decisionPolicy/applicationProvider";
 // Re-export from open-sse with local logger
@@ -263,12 +267,20 @@ export async function checkAndRefreshToken(provider: string, credentials: any) {
       return credentials;
     }
     if (
-      automatic.executionContract === "agy-gemini-high-v1" &&
+      isAgyApplicationContract(automatic.executionContract) &&
       provider === "agy" &&
       provider === automatic.provider &&
       credentials.connectionId === automatic.connectionId
     ) {
       assertBoundedAgyCredentials(credentials);
+      return credentials;
+    }
+    if (
+      automatic.executionContract === "codex-native-output-v1" &&
+      provider === "codex" &&
+      credentials.connectionId === automatic.connectionId
+    ) {
+      assertNativeDecisionCodexCredentials(credentials);
       return credentials;
     }
     if (

@@ -26,6 +26,7 @@ import {
 } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import {
   currentApplicationAttempt,
+  isAgyApplicationContract,
   withApplicationAttempt,
   type ApplicationAttempt,
   type ApplicationToolHooks,
@@ -65,6 +66,16 @@ import {
 } from "./applicationGemini";
 import { supportsGeminiToolRequest } from "./geminiToolWire";
 import { assertBoundedAgyCredentials } from "../../../open-sse/executors/antigravity/bounded.ts";
+import {
+  assertNativeDecisionCodexCredentials,
+  nativeDecisionCodexWireFacts,
+} from "../../../open-sse/executors/codex/nativeDecision.ts";
+import type { ProviderNativeOutput } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
+import {
+  projectSystemOneFailure,
+  systemOneSensitiveValues,
+  systemOneRetryAfter,
+} from "../../../open-sse/handlers/systemOneDiagnostics.ts";
 
 function rejectedAttempt(
   attempt: ApplicationAttempt | undefined,
@@ -100,6 +111,11 @@ export type AutomaticPlan = {
   name: string;
   config: z.infer<typeof configuration>;
 };
+function nativeOutputPlan(plan: AutomaticPlan): ProviderNativeOutput | undefined {
+  return plan.config.applicationMode === "provider-native-output-v1"
+    ? plan.config.nativeOutput
+    : undefined;
+}
 export function automaticRejection(reason = "unsupported"): Response {
   const response = errorResponse(409, "Bounded automatic combo cannot authorize this request", {
     code: "decision_application_rejected",
@@ -136,7 +152,8 @@ export async function prepareAutomaticCombo(
   const admission = preparedApplicationInput(
     clientInput,
     body,
-    settings.echoRequestedModelName === true
+    settings.echoRequestedModelName === true,
+    parsed.data.nativeOutput
   );
   if (admission.reason) return automaticRejection(admission.reason);
   const toolRequest = admission.toolRequest;
@@ -170,8 +187,14 @@ function prepareToolInput(
 function preparedApplicationInput(
   client: unknown,
   body: unknown,
-  echo: boolean
+  echo: boolean,
+  nativeOutput?: ProviderNativeOutput
 ): { toolRequest?: InspectedToolRequest; reason?: string } {
+  if (nativeOutput)
+    return validRequestFacts(client, undefined, nativeOutput) &&
+      validRequestFacts(body, undefined, nativeOutput)
+      ? {}
+      : { reason: "native_output_request_unsupported" };
   const toolRequest = prepareToolInput(client, body);
   if (toolRequest === null) return { reason: "request_facts_unsupported" };
   if (toolRequest) return echo ? { reason: "tool_model_echo_unsupported" } : { toolRequest };
@@ -179,11 +202,16 @@ function preparedApplicationInput(
     ? {}
     : { reason: "request_facts_unsupported" };
 }
-function validRequestFacts(raw: unknown, tools?: ApplicationTools) {
+function validRequestFacts(
+  raw: unknown,
+  tools?: ApplicationTools,
+  nativeOutput?: ProviderNativeOutput
+) {
   const facts = extractRequestFacts(raw, {
     measureContext: (body) =>
       Buffer.byteLength(JSON.stringify(body), "utf8") + body.messages.length * 256,
     continuationCandidateId: tools?.continuation?.binding.candidateId,
+    nativeOutput,
   });
   if (!facts.ok || facts.facts.images) return null;
   if (
@@ -227,10 +255,32 @@ function numberOrNull(value: unknown, integer = false): number | null {
     ? value
     : null;
 }
+function projectExecutionFailure(
+  response: Response,
+  data: Record<string, unknown> | null,
+  text: string,
+  sensitiveValues: readonly string[]
+): Response {
+  const diagnostic = projectSystemOneFailure({
+    status: response.status,
+    body: data,
+    bodyText: text,
+    authenticated: true,
+    sensitiveValues,
+  });
+  const safe = errorResponse(response.status, diagnostic.message, {
+    code: "decision_execution_upstream_error",
+  });
+  const retryAfter = systemOneRetryAfter(response.headers.get("retry-after"));
+  if (retryAfter) safe.headers.set("retry-after", retryAfter);
+  void response.body?.cancel().catch(() => {});
+  return safe;
+}
 async function observeResponse(
   identity: AttemptIdentity,
   signal: AbortSignal,
-  send: Promise<Response>
+  send: Promise<Response>,
+  sensitiveValues: readonly string[]
 ): Promise<Response> {
   let response: Response;
   try {
@@ -288,6 +338,7 @@ async function observeResponse(
   }
   signal.throwIfAborted();
   assertNativeResponse(identity, response, data);
+  if (!response.ok) return projectExecutionFailure(response, data, text, sensitiveValues);
   return response;
 }
 function nativeResponseIsJson(provider: string, response: Response): boolean {
@@ -321,6 +372,17 @@ function assertNativeResponse(
     throw new Error("decision_response_unsupported");
 }
 function reportedApplicationUsage(provider: string, data: Record<string, unknown> | null) {
+  // Native subscription error JSON has no documented chat-style usage/cost receipt.
+  // A successful native SSE receipt is parsed separately from raw provider frames.
+  if (["codex", "agy"].includes(provider))
+    return {
+      input: null,
+      output: null,
+      cost: null,
+      reasoning: null,
+      cacheRead: null,
+      cacheCreation: null,
+    };
   const usage =
     data?.usage && typeof data.usage === "object" ? (data.usage as Record<string, unknown>) : {};
   const cost = numberOrNull(usage.cost);
@@ -382,14 +444,29 @@ function finalApplicationWire(
 ) {
   const { contract, candidate, outputLimit, streaming, streamOptions, originalBody, toolHooks } =
     options;
-  if (contract.executionContract) {
+  if (contract.executionContract === "codex-native-output-v1") {
+    nativeDecisionCodexWireFacts(
+      wire,
+      headers,
+      contract.credentials,
+      originalBody,
+      candidate.effort.value!
+    );
+    return {
+      messages: originalBody.messages,
+      output: outputLimit,
+      messageCount: originalBody.messages.length,
+    };
+  }
+  if (isAgyApplicationContract(contract.executionContract)) {
     const messages = applicationAgyWireFacts(
       wire,
       headers,
       contract.credentials,
       originalBody,
       outputLimit,
-      toolHooks?.beforeFetch
+      toolHooks?.beforeFetch,
+      contract.executionContract
     );
     return { messages, output: outputLimit, messageCount: messages.length };
   }
@@ -432,7 +509,7 @@ function validOpenAiWire(
   );
 }
 function physicalApplicationProvider(provider: string, contract: ApplicationProvider): string {
-  return contract.executionContract ? "antigravity" : provider;
+  return isAgyApplicationContract(contract.executionContract) ? "antigravity" : provider;
 }
 function assertApplicationEgress(provider: string, contract: ApplicationProvider, url: string) {
   assertEgress(provider, url);
@@ -460,7 +537,7 @@ async function buildAttempt(
     connection.provider !== candidate.provider ||
     connection.isActive !== true ||
     !candidate.effort.value ||
-    !isApplicationEffortSupported(candidate)
+    !isApplicationEffortSupported(candidate, !!nativeOutputPlan(plan))
   )
     throw new Error("decision_binding_unsupported");
   const key = await getApiKeyById(keyId);
@@ -471,7 +548,7 @@ async function buildAttempt(
       !key.allowedConnections.includes(connectionId))
   )
     throw new Error("decision_connection_unauthorized");
-  const contract = resolveApplicationProvider(candidate, connection);
+  const contract = resolveApplicationProvider(candidate, connection, !!nativeOutputPlan(plan));
   const physicalProvider = physicalApplicationProvider(candidate.provider, contract);
   const executor = await getExecutor(candidate.provider);
   const identity: AttemptIdentity = {
@@ -484,6 +561,7 @@ async function buildAttempt(
     model: candidate.model,
     connectionId,
     effort: candidate.effort.value,
+    ...(nativeOutputPlan(plan) ? { outputPolicy: "provider-native" as const } : {}),
     trace,
     ...(native
       ? {
@@ -504,6 +582,7 @@ async function buildAttempt(
   const endpoint = new URL(contract.endpoint);
   assertApplicationEgress(candidate.provider, contract, endpoint.href);
   const plugins = createValidationPluginFence();
+  const sensitiveValues = systemOneSensitiveValues([contract.credentials, originalBody.messages]);
   let reserved = false;
   const assertFresh = () => {
     try {
@@ -524,6 +603,8 @@ async function buildAttempt(
         throw new Error("decision_authority_changed");
       if (contract.claude || contract.executionContract) {
         if (contract.claude) assertReadyClaudeOAuth(contract.credentials);
+        else if (contract.executionContract === "codex-native-output-v1")
+          assertNativeDecisionCodexCredentials(contract.credentials);
         else assertBoundedAgyCredentials(contract.credentials);
         if (executor.needsRefresh(contract.credentials))
           throw new Error("decision_oauth_unsupported");
@@ -542,6 +623,8 @@ async function buildAttempt(
     expectedCredentials: contract.credentials,
     allowNativeClaude: contract.claude,
     allowNativeAgyGemini: contract.executionContract === "agy-gemini-high-v1",
+    allowNativeAgyOpus: contract.executionContract === "agy-opus-fixed-native-output-v1",
+    allowNativeCodex: contract.executionContract === "codex-native-output-v1",
   });
   reserveApplicationAttempt(identity, native, toolsSession);
   reserved = true;
@@ -558,6 +641,7 @@ async function buildAttempt(
     stream,
     tools: toolHooks,
     ...(contract.executionContract ? { executionContract: contract.executionContract } : {}),
+    ...(nativeOutputPlan(plan) ? { nativeOutput: nativeOutputPlan(plan) } : {}),
     ...identity,
     signal,
     release: () => releaseDecisionAttempt(identity),
@@ -629,11 +713,11 @@ async function buildAttempt(
       },
     },
     observe: async (send) => {
-      if (!stream) return observeResponse(identity, signal, send);
+      if (!stream) return observeResponse(identity, signal, send, sensitiveValues);
       const response = await send;
       return response.ok
         ? stream.observe(response)
-        : observeResponse(identity, signal, Promise.resolve(response));
+        : observeResponse(identity, signal, Promise.resolve(response), sensitiveValues);
     },
   };
 }
@@ -739,7 +823,12 @@ function annotateNoDecision(
   return response;
 }
 function selectedRequest(body: Record<string, unknown>, candidate: Candidate) {
-  return { ...body, stream: body.stream === true, reasoning_effort: candidate.effort.value };
+  // The mutable provider pipeline must not share the final fence's expected transcript.
+  return {
+    ...structuredClone(body),
+    stream: body.stream === true,
+    reasoning_effort: candidate.effort.value,
+  };
 }
 function completedResponse(
   response: Response,
@@ -769,16 +858,18 @@ async function assertExecutionContract(
   requiresTools: boolean,
   body: ChatPolicyBody
 ) {
-  if (!isApplicationEffortSupported(candidate)) throw new Error("unsupported");
+  if (!isApplicationEffortSupported(candidate, !!nativeOutputPlan(plan)))
+    throw new Error("unsupported");
   if (requiresTools && !supportedToolCandidate(candidate, body)) throw new Error("unsupported");
   const row = await getProviderConnectionById(plan.config.connections[candidate.id]);
   if (!row || row.provider !== candidate.provider || row.isActive !== true)
     throw new Error("unsupported");
-  const contract = resolveApplicationProvider(candidate, row);
+  const contract = resolveApplicationProvider(candidate, row, !!nativeOutputPlan(plan));
   const supportedAgy = requiresTools
     ? supportsGeminiToolRequest(body)
     : supportsApplicationAgyRequest(body);
-  if (contract.executionContract && !supportedAgy) throw new Error("unsupported");
+  if (isAgyApplicationContract(contract.executionContract) && !supportedAgy)
+    throw new Error("unsupported");
 }
 async function supportedExecutionCandidates(
   plan: AutomaticPlan,
@@ -878,9 +969,11 @@ export async function executeAutomaticCombo(
     signal.throwIfAborted();
     if (body.model !== plan.name) return automaticRejection();
     const tools = prepareTools(plan, keyId);
-    const extracted = validRequestFacts(body, tools);
+    const extracted = validRequestFacts(body, tools, nativeOutputPlan(plan));
     if (!extracted) return automaticRejection();
     const trace: Array<{ phase: string; id?: string; reason: string }> = [];
+    if (nativeOutputPlan(plan))
+      trace.push({ phase: "output_policy", reason: "provider_native_limit_not_enforced" });
     const candidate = await selectApplicationCandidate(
       plan,
       keyId,
@@ -921,6 +1014,10 @@ export async function executeAutomaticCombo(
     response = await reportedClaudeClientUsage(response, attempt);
     signal.throwIfAborted();
     const annotated = completedResponse(response, attempt, candidate, state.mode, state.native);
+    if (nativeOutputPlan(plan)) {
+      annotated.headers.set("x-omniroute-output-policy", "provider-native");
+      annotated.headers.set("x-omniroute-output-limit-enforced", "false");
+    }
     if (attempt.stream?.active && response.ok) {
       streamHandedOff = true;
       return attempt.stream.wrap(annotated);

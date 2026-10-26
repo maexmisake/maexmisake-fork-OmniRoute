@@ -1,5 +1,7 @@
 import { register } from "../registry.ts";
 import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
+import { applicationAgyNativeOutputRequest } from "../../../src/lib/decisionPolicy/applicationGemini.ts";
+import { AGY_OPUS_NATIVE_OUTPUT_CONTRACT } from "../../executors/antigravity/bounded.ts";
 import { FORMATS } from "../formats.ts";
 import { ANTIGRAVITY_DEFAULT_SYSTEM } from "../../config/constants.ts";
 import {
@@ -970,6 +972,8 @@ function getAntigravityClaudeOutputTokens(body: Record<string, unknown>): number
 // OpenAI -> Antigravity (Sandbox Cloud Code with wrapper)
 export function openaiToAntigravityRequest(model, body, stream, credentials = null) {
   const automatic = currentApplicationAttempt();
+  if (automatic?.executionContract === AGY_OPUS_NATIVE_OUTPUT_CONTRACT)
+    return applicationAgyNativeOutputRequest(model, body, stream, credentials);
   if (automatic?.executionContract === "agy-gemini-high-v1" && automatic.tools) {
     // Formatting can run inside the fenced translation phase. Authorization
     // and lease freshness are checked after formatting at final physical send.

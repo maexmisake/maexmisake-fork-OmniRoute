@@ -18,6 +18,7 @@ import {
 } from "../../../open-sse/services/decisionPolicy/nativeSelector.ts";
 import {
   withApplicationAttempt,
+  isAgyApplicationContract,
   type ApplicationAttempt,
 } from "../../../open-sse/services/decisionPolicy/applicationContext.ts";
 import {
@@ -144,12 +145,20 @@ async function validateExecutionBindings(
       !connection ||
       connection.provider !== candidate.provider ||
       connection.isActive !== true ||
-      !isApplicationEffortSupported(candidate)
+      !isApplicationEffortSupported(
+        candidate,
+        plan.config.applicationMode === "provider-native-output-v1"
+      )
     )
       throw new Error("decision_binding_unsupported");
-    const contract = resolveApplicationProvider(candidate, connection);
+    const contract = resolveApplicationProvider(
+      candidate,
+      connection,
+      plan.config.applicationMode === "provider-native-output-v1"
+    );
     assertApplicationEgress(candidate.provider, contract.endpoint);
-    if (contract.executionContract) assertApplicationEgress("antigravity", contract.endpoint);
+    if (isAgyApplicationContract(contract.executionContract))
+      assertApplicationEgress("antigravity", contract.endpoint);
     if (contract.claude || contract.executionContract) {
       if (contract.claude) assertReadyClaudeOAuth(contract.credentials);
       if ((await getExecutor(candidate.provider)).needsRefresh(contract.credentials))
@@ -179,6 +188,9 @@ export async function prepareNativeStage(
     model: selection.model,
     connectionId: selection.connectionId,
     effort: "native",
+    ...(plan.config.applicationMode === "provider-native-output-v1"
+      ? { outputPolicy: "provider-native" as const }
+      : {}),
     lane: "decision",
   };
   identity.requestId = identity.id;

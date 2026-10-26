@@ -34,7 +34,15 @@ export const nativeSelectionSchema = z.discriminatedUnion("provider", [
 export const boundedDecisionConfigurationSchema = z
   .object({
     enabled: z.literal(true),
-    applicationMode: z.literal("bounded-v1"),
+    applicationMode: z.enum(["bounded-v1", "provider-native-output-v1"]),
+    nativeOutput: z
+      .object({
+        acknowledgeNoTokenCeiling: z.literal(true),
+        // Context planning only; native subscription transports do not enforce this ceiling.
+        contextOutputTokens: z.number().int().positive().max(1000000),
+      })
+      .strict()
+      .optional(),
     policy: policySchema,
     selection: z
       .union([z.object({ mode: z.literal("deterministic") }).strict(), nativeSelectionSchema])
@@ -44,6 +52,9 @@ export const boundedDecisionConfigurationSchema = z
   .strict()
   .refine(
     (value) =>
+      (value.applicationMode === "provider-native-output-v1"
+        ? value.nativeOutput !== undefined
+        : value.nativeOutput === undefined) &&
       value.policy.maxExecutionAttempts === 1 &&
       (value.selection?.mode === "native"
         ? value.policy.maxDecisionAttempts === 1 &&

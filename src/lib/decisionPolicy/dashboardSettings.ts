@@ -17,7 +17,11 @@ import {
   compareAndSetDecisionPolicy,
   compareAndSetZenTier,
 } from "../db/decisionPolicySettings";
-import { resolveApplicationProvider, assertApplicationEgress } from "./applicationProvider";
+import {
+  resolveApplicationProvider,
+  assertApplicationEgress,
+  isApplicationEffortSupported,
+} from "./applicationProvider";
 import {
   systemOneModelTier,
   isConnectionEligibleForTier,
@@ -184,12 +188,12 @@ function validateNativeSelection(policy: DecisionPolicyEditorValue): void {
   }
 }
 type EditorCandidate = DecisionPolicyEditorValue["policy"]["candidates"][number];
-function explicitExecutionProfile(candidate: EditorCandidate): boolean {
+function explicitExecutionProfile(candidate: EditorCandidate, nativeOutput: boolean): boolean {
   return (
     candidate.endpointKind === "direct" &&
     candidate.capabilities.text === true &&
     candidate.capabilities.contextTokens !== null &&
-    candidate.effort.mode === "set" &&
+    isApplicationEffortSupported(candidate, nativeOutput) &&
     !!candidate.effort.value &&
     !!candidate.effort.supported?.includes(candidate.effort.value)
   );
@@ -202,10 +206,11 @@ function validateExecutionCandidate(
   if (comboNames.has(candidate.model) || comboNames.has(`${candidate.provider}/${candidate.model}`))
     invalid();
   const connection = readyConnection(policy.connections[candidate.id], candidate.provider);
-  if (!explicitExecutionProfile(candidate)) invalid();
+  const nativeOutput = policy.applicationMode === "provider-native-output-v1";
+  if (!explicitExecutionProfile(candidate, nativeOutput)) invalid();
   if (candidate.provider === "openai" && !apiKeyOnly(connection)) invalid();
   try {
-    const contract = resolveApplicationProvider(candidate, connection);
+    const contract = resolveApplicationProvider(candidate, connection, nativeOutput);
     assertApplicationEgress(candidate.provider, contract.endpoint);
   } catch {
     invalid();

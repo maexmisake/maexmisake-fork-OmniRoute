@@ -5,6 +5,7 @@ export type SystemOneFailureKind =
   | "edge"
   | "authentication"
   | "access"
+  | "client_restricted"
   | "rate_limit"
   | "quota"
   | "request"
@@ -320,10 +321,19 @@ function projectedDetails(
 
 function failureKind(status: number, text: string, edge: boolean): SystemOneFailureKind {
   if (edge) return "edge";
+  if (
+    /(?:only (?:available|allowed|supported|accessible)|requires?|restricted to).{0,48}opencode|only (?:be )?(?:used|accessed) (?:through|with|in|from|via) opencode|opencode(?: client)?(?: is)? (?:required|only)|client[_ -]?restrict(?:ed|ion)/i.test(
+      text
+    )
+  )
+    return "client_restricted";
   if (status === 401) return "authentication";
   if (status === 403 || status === 451) return "access";
   if (status === 402) return "quota";
   if (status === 429) {
+    // This private gateway error can describe quota or client eligibility. Do not
+    // convert its wording into proof that an account's allowance was exhausted.
+    if (/free[_ -]*usage[_ -]*limit/i.test(text)) return "unknown";
     if (/rate[_ -]?limit|too many requests/i.test(text)) return "rate_limit";
     return /quota|usage|credit|budget|limit/i.test(text) ? "quota" : "rate_limit";
   }
@@ -354,7 +364,8 @@ export function projectSystemOneFailure(input: SystemOneFailureInput): SystemOne
     message,
     kind,
     authScope: input.authenticated === false ? "anonymous" : "unknown",
-    terminalAccessDenied: [401, 402, 403, 429, 451].includes(status),
+    terminalAccessDenied:
+      kind === "client_restricted" || [401, 402, 403, 429, 451].includes(status),
     details: edge ? {} : details,
   };
 }

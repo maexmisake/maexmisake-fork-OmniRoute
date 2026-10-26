@@ -574,3 +574,92 @@ test("inference-only and URL-borne credentials cannot mutate policy or tier", as
   }
   assert.equal(readStoredDecisionSettings(id).revision, initial);
 });
+
+test("management API rejects unacknowledged or malformed native output policy without writes", async () => {
+  const id = String((await combo()).id);
+  const revision = readStoredDecisionSettings(id).revision;
+  for (const nativeOutput of [
+    undefined,
+    { acknowledgeNoTokenCeiling: false, contextOutputTokens: 64 },
+    { acknowledgeNoTokenCeiling: true },
+    { acknowledgeNoTokenCeiling: true, contextOutputTokens: 0 },
+    { acknowledgeNoTokenCeiling: true, contextOutputTokens: "64" },
+    { acknowledgeNoTokenCeiling: true, contextOutputTokens: 1000001 },
+    { acknowledgeNoTokenCeiling: true, contextOutputTokens: 64, enforceCeiling: true },
+  ]) {
+    assert.equal(
+      (
+        await save(id, {
+          ...policy(),
+          applicationMode: "provider-native-output-v1",
+          nativeOutput,
+        })
+      ).status,
+      400
+    );
+    assert.equal(readStoredDecisionSettings(id).revision, revision);
+  }
+});
+
+test("management API persists explicit native output acknowledgement and planning without inference", async () => {
+  const id = String((await combo()).id);
+  const value: DecisionPolicyEditorValue = {
+    ...policy(),
+    applicationMode: "provider-native-output-v1",
+    nativeOutput: { acknowledgeNoTokenCeiling: true, contextOutputTokens: 64 },
+  };
+  assert.equal((await save(id, value)).status, 200);
+  const response = await policyGET(await session(`/api/combos/${id}/decision-policy`), context(id));
+  const view = await response.json();
+  assert.equal(view.policy.applicationMode, "provider-native-output-v1");
+  assert.deepEqual(view.policy.nativeOutput, value.nativeOutput);
+  assert.deepEqual(view.policy.policy.candidates, value.policy.candidates);
+  assert.equal(view.status, "enabled");
+  for (const secret of secrets) assert.equal(JSON.stringify(view).includes(secret), false);
+  assert.equal(fetches, 0);
+});
+
+test("native execution profiles activate only through exact stored contract validation", async () => {
+  for (const [provider, model, effort, fixed] of [
+    ["codex", "gpt-6-luna", "max", true],
+    ["codex", "gpt-6-sol", "max", false],
+    ["agy", "claude-opus-4-6-thinking", "high", true],
+    ["agy", "gemini-3.8-flash-high", "high", true],
+  ] as const) {
+    const connection = await createProviderConnection({
+      provider,
+      authType: "oauth",
+      name: "synthetic native-output settings account",
+      accessToken: "synthetic-native-output-settings-token",
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      isActive: true,
+      testStatus: "active",
+      providerSpecificData:
+        provider === "codex"
+          ? { workspaceId: "synthetic-workspace" }
+          : { projectId: "synthetic-project" },
+    });
+    const value: DecisionPolicyEditorValue = {
+      ...policy(),
+      applicationMode: "provider-native-output-v1",
+      nativeOutput: { acknowledgeNoTokenCeiling: true, contextOutputTokens: 64 },
+    };
+    value.policy.candidates[0] = {
+      ...value.policy.candidates[0],
+      provider,
+      model,
+      effort: {
+        mode: fixed ? "fixed" : "set",
+        value: effort,
+        supported: [effort],
+        evidence: "Synthetic original fixed/set profile",
+      },
+    };
+    value.connections.light = String(connection.id);
+    const id = String((await combo()).id);
+    assert.equal((await save(id, value)).status, 200, provider + "/" + model);
+    const bounded = { ...value, applicationMode: "bounded-v1", nativeOutput: undefined };
+    if (model !== "gemini-3.8-flash-high") assert.equal((await save(id, bounded)).status, 400);
+    assert.equal(fetches, 0);
+  }
+});

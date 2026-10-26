@@ -81,6 +81,14 @@ import { recoverCodexReasoningReplayRejection } from "./codex/reasoningReplayRej
 import { resolveAppServerConfig } from "./codex/appServerConfig.ts";
 import { getResponsesSubpath } from "./codex/responsesSubpath.ts";
 import { CodexAppServerExecutor } from "./codex-app-server.ts";
+import {
+  assertNativeDecisionCodexInput,
+  nativeDecisionCodexContext,
+  nativeDecisionCodexHeaders,
+  nativeDecisionCodexProjection,
+  NATIVE_DECISION_CODEX_ENDPOINT,
+  requestsNativeDecisionCodex,
+} from "./codex/nativeDecision.ts";
 // Re-exported for external importers (tests + provider services).
 export { isCodexFreePlan, normalizeCodexTools } from "./codex/tools.ts";
 
@@ -830,6 +838,10 @@ export class CodexExecutor extends BaseExecutor {
   }
 
   async execute(input: ExecuteInput) {
+    if (requestsNativeDecisionCodex(input)) {
+      assertNativeDecisionCodexInput(input);
+      return super.execute({ ...input, skipUpstreamRetry: true });
+    }
     const requestBody = enforceCodexResponsesLiteParallelToolCalls(
       input.body,
       input.clientHeaders,
@@ -1161,6 +1173,7 @@ export class CodexExecutor extends BaseExecutor {
     urlIndex = 0,
     credentials: ProviderCredentials | null = null
   ) {
+    if (nativeDecisionCodexContext(model, credentials ?? {})) return NATIVE_DECISION_CODEX_ENDPOINT;
     void model;
     void stream;
     void urlIndex;
@@ -1189,6 +1202,8 @@ export class CodexExecutor extends BaseExecutor {
     model?: string,
     health?: Record<string, KeyHealth>
   ) {
+    if (nativeDecisionCodexContext(model ?? "", credentials))
+      return nativeDecisionCodexHeaders(model!, credentials, stream);
     const isCompactRequest = isCompactResponsesEndpoint(credentials?.requestEndpointPath);
     const headers = super.buildHeaders(
       credentials,
@@ -1316,6 +1331,8 @@ export class CodexExecutor extends BaseExecutor {
     stream: boolean,
     credentials: ProviderCredentials
   ) {
+    if (nativeDecisionCodexContext(model, credentials))
+      return nativeDecisionCodexProjection(model, bodyInput, credentials);
     void stream;
     // Do not mutate the caller's payload in place. Combo quality checks and
     // other post-execute paths still inspect the original request body.

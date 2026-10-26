@@ -35,7 +35,10 @@ export type ApplicationAttempt = {
   parentAttemptId?: string;
   signal: AbortSignal;
   /** Private prepared-provider contract; never accepted from request data. */
-  executionContract?: "agy-gemini-high-v1";
+  executionContract?:
+    "agy-gemini-high-v1" | "agy-opus-fixed-native-output-v1" | "codex-native-output-v1";
+  /** Trusted operator context allowance, never a provider-enforced generation ceiling. */
+  nativeOutput?: { contextOutputTokens: number };
   tools?: ApplicationToolHooks;
   /** Release occupancy without asserting that a started remote call stopped. */
   release?: () => void;
@@ -54,6 +57,13 @@ export type ApplicationAttempt = {
 };
 const attempts = new AsyncLocalStorage<ApplicationAttempt>();
 export const currentApplicationAttempt = () => attempts.getStore();
+const agyContractModels: Readonly<Record<string, string>> = {
+  "agy-gemini-high-v1": "gemini-3.8-flash-high",
+  "agy-opus-fixed-native-output-v1": "claude-opus-4-6-thinking",
+};
+export function isAgyApplicationContract(contract: string | undefined): boolean {
+  return !!contract && Object.hasOwn(agyContractModels, contract);
+}
 /** Keep the audited AGY account namespace when the ordinary alias resolver names its executor. */
 export function applicationProviderIdentity(
   provider: string,
@@ -62,9 +72,10 @@ export function applicationProviderIdentity(
   combo: unknown
 ): string {
   const attempt = currentApplicationAttempt();
-  return attempt?.executionContract === "agy-gemini-high-v1" &&
+  return isAgyApplicationContract(attempt?.executionContract) &&
+    attempt !== undefined &&
     attempt.provider === "agy" &&
-    attempt.model === "gemini-3.8-flash-high" &&
+    agyContractModels[attempt.executionContract!] === attempt.model &&
     attempt.effort === "high" &&
     provider === "antigravity" &&
     model === attempt.model &&

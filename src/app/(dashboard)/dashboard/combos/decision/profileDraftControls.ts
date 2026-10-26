@@ -20,8 +20,8 @@ export const TASK_LABELS: Record<string, string> = {
   complex_code: "Complex code",
   long_context: "Long context",
   image: "Image (unsupported)",
-  tools: "Tools (unsupported)",
-  continuation: "Continuation (unsupported)",
+  tools: "Tools",
+  continuation: "Continuation",
 };
 export function readProfiles(text: string): Candidate[] | null {
   try {

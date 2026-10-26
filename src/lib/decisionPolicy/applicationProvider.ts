@@ -8,15 +8,27 @@ import type { Candidate } from "../../../open-sse/services/decisionPolicy/contra
 import type { ProviderCredentials } from "../../../open-sse/executors/base/validationDispatch.ts";
 import { parseTokenExpiryMs } from "../tokenHealthCheckExpiry";
 import { applicationAgyProvider, isApplicationAgyPair } from "./applicationGemini";
+import {
+  isNativeDecisionCodexPair,
+  assertNativeDecisionCodexCredentials,
+  NATIVE_DECISION_CODEX_ENDPOINT,
+} from "../../../open-sse/executors/codex/nativeDecision.ts";
 
 export type ApplicationProvider = {
   claude: boolean;
-  executionContract?: "agy-gemini-high-v1";
+  executionContract?:
+    "agy-gemini-high-v1" | "agy-opus-fixed-native-output-v1" | "codex-native-output-v1";
   endpoint: string;
   credentials: ProviderCredentials;
 };
-export function isApplicationEffortSupported(candidate: Candidate): boolean {
-  return candidate.effort.mode === "set" || isApplicationAgyPair(candidate);
+export function isApplicationEffortSupported(candidate: Candidate, nativeOutput = false): boolean {
+  return (
+    candidate.effort.mode === "set" ||
+    isApplicationAgyPair(candidate, nativeOutput) ||
+    (nativeOutput &&
+      candidate.provider === "codex" &&
+      isNativeDecisionCodexPair(candidate.model, candidate.effort.value ?? ""))
+  );
 }
 export function isBoundedClaudePair(model: string, effort: string): boolean {
   return (
@@ -59,15 +71,51 @@ function resolveClaudeProvider(
     endpoint: "https://api.anthropic.com/v1/messages?beta=true",
   };
 }
+function resolveCodexProvider(
+  candidate: Candidate,
+  connection: Record<string, unknown>,
+  data: Record<string, unknown>,
+  nativeOutput: boolean
+): ApplicationProvider {
+  if (
+    !nativeOutput ||
+    connection.authType !== "oauth" ||
+    !isNativeDecisionCodexPair(candidate.model, candidate.effort.value ?? "") ||
+    (candidate.model === "gpt-6-luna"
+      ? candidate.effort.mode !== "fixed"
+      : candidate.effort.mode !== "set")
+  )
+    throw new Error("decision_connection_unsupported");
+  const credentials: ProviderCredentials = {
+    connectionId: String(connection.id),
+    accessToken: typeof connection.accessToken === "string" ? connection.accessToken : undefined,
+    refreshToken: typeof connection.refreshToken === "string" ? connection.refreshToken : undefined,
+    expiresAt: String(connection.tokenExpiresAt || connection.expiresAt || ""),
+    ...(connection.apiKey ? { apiKey: String(connection.apiKey) } : {}),
+    providerSpecificData: structuredClone(data),
+  };
+  assertNativeDecisionCodexCredentials(credentials);
+  return {
+    claude: false,
+    executionContract: "codex-native-output-v1",
+    endpoint: NATIVE_DECISION_CODEX_ENDPOINT,
+    credentials,
+  };
+}
 export function resolveApplicationProvider(
   candidate: Candidate,
-  connection: Record<string, unknown>
+  connection: Record<string, unknown>,
+  nativeOutput = false
 ): ApplicationProvider {
-  if (!isApplicationEffortSupported(candidate)) throw new Error("decision_connection_unsupported");
+  if (!isApplicationEffortSupported(candidate, nativeOutput))
+    throw new Error("decision_connection_unsupported");
   const data = (connection.providerSpecificData ?? {}) as Record<string, unknown>;
   if (data.extraApiKeys || data.cliproxyapiMode || data.darioMode)
     throw new Error("decision_connection_unsupported");
-  if (isApplicationAgyPair(candidate)) return applicationAgyProvider(candidate, connection);
+  if (isApplicationAgyPair(candidate, nativeOutput))
+    return applicationAgyProvider(candidate, connection, nativeOutput);
+  if (candidate.provider === "codex")
+    return resolveCodexProvider(candidate, connection, data, nativeOutput);
   if (candidate.provider === "claude") return resolveClaudeProvider(candidate, connection, data);
   if (candidate.provider !== "openai" || connection.authType !== "apikey")
     throw new Error("decision_connection_unsupported");

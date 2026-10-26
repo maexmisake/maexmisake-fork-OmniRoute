@@ -18,7 +18,7 @@ test("RFC9457 diagnostics preserve useful bounded title, detail and problem type
       account_id: "account-123",
     },
   });
-  assert.equal(result.kind, "quota");
+  assert.equal(result.kind, "unknown");
   assert.equal(result.authScope, "unknown");
   assert.equal(result.terminalAccessDenied, true);
   assert.equal(result.details.title, "Free usage limit reached");
@@ -41,14 +41,14 @@ test("nested provider messages and new semantic codes survive without a fixed co
   assert.match(result.message, /Free usage limit reached/);
 });
 
-test("credential-free and credentialed quota errors do not establish account quota", () => {
+test("credential-free and credentialed free-limit errors do not establish quota cause", () => {
   for (const authenticated of [false, true, undefined]) {
     const result = projectSystemOneFailure({
       status: 429,
       authenticated,
       body: { error: { name: "FreeUsageLimitError", message: "Free usage limit reached." } },
     });
-    assert.equal(result.kind, "quota");
+    assert.equal(result.kind, "unknown");
     assert.equal(result.authScope, authenticated === false ? "anonymous" : "unknown");
     assert.equal(result.terminalAccessDenied, true);
     assert.doesNotMatch(result.message, /account quota|invalid key|bad key/i);
@@ -212,7 +212,7 @@ test("URN problem types preserve only the final semantic component", () => {
     },
   });
   assert.equal(result.details.type, "FreeUsageLimitError");
-  assert.equal(result.kind, "quota");
+  assert.equal(result.kind, "unknown");
   assert.doesNotMatch(JSON.stringify(result), /private-account|private-fragment|account=/);
 });
 

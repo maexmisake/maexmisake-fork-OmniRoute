@@ -29,6 +29,9 @@ export type SavedPolicy = {
 };
 export type Draft = {
   enabled: boolean;
+  applicationMode: "bounded-v1" | "provider-native-output-v1";
+  nativeOutputAcknowledged: boolean;
+  contextOutputTokens: string;
   mode: "deterministic" | "native";
   binding: string;
   selectorConnection: string;
@@ -51,6 +54,11 @@ export function draftFromPolicy(policy: DecisionPolicyEditorValue | null): Draft
   const native = selection?.mode === "native" ? selection : null;
   return {
     enabled: policy?.enabled ?? false,
+    applicationMode: policy?.applicationMode ?? "bounded-v1",
+    nativeOutputAcknowledged: policy?.nativeOutput?.acknowledgeNoTokenCeiling === true,
+    contextOutputTokens: policy?.nativeOutput
+      ? String(policy.nativeOutput.contextOutputTokens)
+      : "",
     mode: native ? "native" : "deterministic",
     binding: native ? bindingKey(native) : "",
     selectorConnection: native?.connectionId ?? "",
@@ -87,14 +95,50 @@ export function eligibleSelector(connection: Connection | undefined, binding: Bi
   );
 }
 
-function executionIssues(candidate: Candidate, options: EditorOptions, connectionId: string) {
+const ADJUSTABLE_EFFORTS = ["medium", "high", "xhigh", "max"];
+function executionKeys(provider: string, models: string[], mode: string, efforts: string[]) {
+  return models.flatMap((model) =>
+    efforts.map((effort) => JSON.stringify([provider, model, mode, effort]))
+  );
+}
+const BOUNDED_EXECUTION_PROFILES = new Set([
+  ...executionKeys(
+    "claude",
+    ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+    "set",
+    ADJUSTABLE_EFFORTS
+  ),
+  ...executionKeys("agy", ["gemini-3.8-flash-high"], "set", ["high"]),
+  ...executionKeys("agy", ["gemini-3.8-flash-high"], "fixed", ["high"]),
+]);
+const NATIVE_OUTPUT_EXECUTION_PROFILES = new Set([
+  ...BOUNDED_EXECUTION_PROFILES,
+  ...executionKeys("codex", ["gpt-5.6-sol", "gpt-6-sol"], "set", ADJUSTABLE_EFFORTS),
+  ...executionKeys("codex", ["gpt-6-luna"], "fixed", ["max"]),
+  ...executionKeys("agy", ["claude-opus-4-6-thinking"], "fixed", ["high"]),
+]);
+function supportedExecutionProfile(candidate: Candidate, nativeOutput: boolean): boolean {
+  if (candidate.provider === "openai") return candidate.effort.mode === "set";
+  const profiles = nativeOutput ? NATIVE_OUTPUT_EXECUTION_PROFILES : BOUNDED_EXECUTION_PROFILES;
+  return profiles.has(
+    JSON.stringify([
+      candidate.provider,
+      candidate.model,
+      candidate.effort.mode,
+      candidate.effort.value,
+    ])
+  );
+}
+
+function executionIssues(
+  candidate: Candidate,
+  options: EditorOptions,
+  connectionId: string,
+  nativeOutput: boolean
+) {
   const connection = options.connections.find((row) => row.id === connectionId);
-  const supportedProvider =
-    candidate.provider === "openai" ||
-    (candidate.provider === "claude" &&
-      candidate.model === "claude-opus-5-5" &&
-      ["medium", "high"].includes(candidate.effort.value ?? ""));
-  if (!supportedProvider) return "An execution profile uses an unsupported provider/model/effort.";
+  if (!supportedExecutionProfile(candidate, nativeOutput))
+    return "An execution profile uses an unsupported provider/model/effort for this output policy.";
   if (
     !connection?.active ||
     !connection.credentialPresent ||
@@ -105,12 +149,23 @@ function executionIssues(candidate: Candidate, options: EditorOptions, connectio
     candidate.endpointKind !== "direct" ||
     candidate.capabilities.text !== true ||
     candidate.capabilities.contextTokens === null ||
-    candidate.effort.mode !== "set" ||
     !candidate.effort.value ||
     !candidate.effort.supported?.includes(candidate.effort.value)
   )
     return "Enabled profiles need explicit direct text, context and supported effort declarations.";
   return null;
+}
+function nativeOutputIssues(draft: Draft): string[] {
+  if (draft.applicationMode !== "provider-native-output-v1") return [];
+  const issues: string[] = [];
+  if (!draft.nativeOutputAcknowledged)
+    issues.push(
+      "Acknowledge that provider-native output has no provider-enforced token ceiling before saving."
+    );
+  const allowance = Number(draft.contextOutputTokens);
+  if (!Number.isSafeInteger(allowance) || allowance < 1 || allowance > 1000000)
+    issues.push("Enter an explicit output context-planning allowance from 1 to 1,000,000 tokens.");
+  return issues;
 }
 
 function parseDraft(draft: Draft, options: EditorOptions) {
@@ -130,7 +185,15 @@ function parseDraft(draft: Draft, options: EditorOptions) {
       : { mode: "deterministic" };
   return decisionPolicyEditorSchema.safeParse({
     enabled: draft.enabled,
-    applicationMode: "bounded-v1",
+    applicationMode: draft.applicationMode,
+    ...(draft.applicationMode === "provider-native-output-v1"
+      ? {
+          nativeOutput: {
+            acknowledgeNoTokenCeiling: draft.nativeOutputAcknowledged,
+            contextOutputTokens: Number(draft.contextOutputTokens),
+          },
+        }
+      : {}),
     selection,
     connections: draft.connections,
     policy: {
@@ -153,7 +216,12 @@ function enabledIssues(policy: DecisionPolicyEditorValue, draft: Draft, options:
   if (policy.policy.candidates.length < minimum)
     issues.push(`This enabled mode needs at least ${minimum} explicit model-and-effort profiles.`);
   for (const candidate of policy.policy.candidates) {
-    const issue = executionIssues(candidate, options, draft.connections[candidate.id]);
+    const issue = executionIssues(
+      candidate,
+      options,
+      draft.connections[candidate.id],
+      draft.applicationMode === "provider-native-output-v1"
+    );
     if (issue) issues.push(issue);
   }
   if (!Object.values(policy.policy.taskOrder).some((order) => order.length > 0))
@@ -170,6 +238,9 @@ function enabledIssues(policy: DecisionPolicyEditorValue, draft: Draft, options:
 }
 
 export function validateDraft(draft: Draft, options: EditorOptions) {
+  const outputIssues = nativeOutputIssues(draft);
+  if (outputIssues.length)
+    return { policy: null, candidates: [] as Candidate[], issues: outputIssues };
   const parsed = parseDraft(draft, options);
   if (!parsed.success)
     return {

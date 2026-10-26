@@ -69,8 +69,6 @@ const textAliases = requestBody
   .superRefine((body, context) => {
     if (body.stream_options !== undefined && body.stream !== true)
       context.addIssue({ code: "custom", message: "Stream options require streaming" });
-    if (body.max_tokens === undefined && body.max_completion_tokens === undefined)
-      context.addIssue({ code: "custom", message: "Explicit output reservation required" });
     if (
       body.max_tokens !== undefined &&
       body.max_completion_tokens !== undefined &&
@@ -84,16 +82,41 @@ const textAliases = requestBody
     )
       context.addIssue({ code: "custom", message: "Conflicting effort directives" });
   });
-function normalizeText(raw: unknown, allowEnabledAlias: boolean): ChatPolicyBody | null {
+export type ProviderNativeOutput = { contextOutputTokens: number };
+function normalizeText(
+  raw: unknown,
+  allowEnabledAlias: boolean,
+  nativeOutput?: ProviderNativeOutput
+): ChatPolicyBody | null {
   if (!boundedJson(raw)) return null;
   const parsed = textAliases.safeParse(raw);
   if (!parsed.success) return null;
+  if (nativeOutput) {
+    if (
+      !Number.isSafeInteger(nativeOutput.contextOutputTokens) ||
+      nativeOutput.contextOutputTokens < 1 ||
+      nativeOutput.contextOutputTokens > 1000000 ||
+      parsed.data.max_tokens !== undefined ||
+      parsed.data.max_completion_tokens !== undefined ||
+      parsed.data.stream !== true ||
+      parsed.data.tools?.length ||
+      parsed.data.tool_choice !== undefined ||
+      parsed.data.parallel_tool_calls !== undefined ||
+      parsed.data.messages.some((row) => row.role === "tool" || row.tool_calls?.length)
+    )
+      return null;
+  } else if (
+    parsed.data.max_tokens === undefined &&
+    parsed.data.max_completion_tokens === undefined
+  )
+    return null;
   if (!allowEnabledAlias && parsed.data.reasoning?.enabled !== undefined) return null;
   const { max_tokens, reasoning, ...body } = parsed.data;
   const selectedEffort = body.reasoning_effort ?? reasoning?.effort;
   const normalized = requestBody.safeParse({
     ...body,
-    max_completion_tokens: body.max_completion_tokens ?? max_tokens,
+    max_completion_tokens:
+      nativeOutput?.contextOutputTokens ?? body.max_completion_tokens ?? max_tokens,
     ...(selectedEffort === undefined ? {} : { reasoning_effort: selectedEffort }),
   });
   // Unknown content parts were bounded as plain JSON; detach them before any
@@ -101,8 +124,11 @@ function normalizeText(raw: unknown, allowEnabledAlias: boolean): ChatPolicyBody
   return normalized.success ? structuredClone(normalized.data) : null;
 }
 /** Accept only consistent explicit ingress aliases; never invent an omitted effort. */
-export function normalizeDecisionTextRequest(raw: unknown): ChatPolicyBody | null {
-  return normalizeText(raw, true);
+export function normalizeDecisionTextRequest(
+  raw: unknown,
+  nativeOutput?: ProviderNativeOutput
+): ChatPolicyBody | null {
+  return normalizeText(raw, true, nativeOutput);
 }
 /** Serialized provider requests retain the earlier effort-only wire contract. */
 export function normalizeDecisionTextWire(raw: unknown): ChatPolicyBody | null {
@@ -274,9 +300,10 @@ export function extractRequestFacts(
   options: {
     measureContext: ContextMeasure;
     continuationCandidateId?: string | null;
+    nativeOutput?: ProviderNativeOutput;
   }
 ): FactResult {
-  const body = normalizeDecisionTextRequest(raw);
+  const body = normalizeDecisionTextRequest(raw, options.nativeOutput);
   if (!body || !continuationValid(body))
     return { ok: false, reason: "unsupported_or_unbounded_request" };
   const contents = contentFacts(body);
@@ -312,14 +339,20 @@ export function extractRequestFacts(
       continuationCandidateId: continuation ? options.continuationCandidateId! : null,
       routingDepth: 0,
       state: JSON.stringify({
-        extractor: "bounded-chat-v1",
+        extractor: options.nativeOutput ? "provider-native-output-v1" : "bounded-chat-v1",
         task,
         reasoning,
         images: contents.images,
         tools,
         continuation,
         inputTokens,
-        reservedOutputTokens: body.max_completion_tokens,
+        reservedOutputTokens: options.nativeOutput ? null : body.max_completion_tokens,
+        ...(options.nativeOutput
+          ? {
+              contextOutputTokens: options.nativeOutput.contextOutputTokens,
+              providerEnforcedOutputLimit: false,
+            }
+          : {}),
       }),
     },
   };

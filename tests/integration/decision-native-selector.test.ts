@@ -996,7 +996,7 @@ for (const sample of [
   },
   {
     status: 429,
-    kind: "quota",
+    kind: "unknown",
     outcome: "denied",
     body: {
       title: "FreeUsageLimitError",

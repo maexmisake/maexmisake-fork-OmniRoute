@@ -26,6 +26,8 @@ export function boundedDecisionEnabled(combo: unknown): boolean {
     record(combo.config) &&
     record(combo.config.decisionPolicy) &&
     combo.config.decisionPolicy.enabled === true &&
-    combo.config.decisionPolicy.applicationMode === "bounded-v1"
+    ["bounded-v1", "provider-native-output-v1"].includes(
+      String(combo.config.decisionPolicy.applicationMode)
+    )
   );
 }

@@ -6,7 +6,11 @@ import {
 } from "../../../open-sse/executors/base.ts";
 import { DefaultExecutor } from "../../../open-sse/executors/default.ts";
 import { AntigravityExecutor } from "../../../open-sse/executors/antigravity.ts";
-import { BOUNDED_AGY_MODEL } from "../../../open-sse/executors/antigravity/bounded.ts";
+import {
+  BOUNDED_AGY_MODEL,
+  BOUNDED_AGY_OPUS_MODEL,
+} from "../../../open-sse/executors/antigravity/bounded.ts";
+import { CodexExecutor } from "../../../open-sse/executors/codex.ts";
 import { isCompatibleProviderConnectionId } from "../../shared/utils/compatibleProviderId";
 import { ModelValidationError } from "./http";
 
@@ -27,6 +31,8 @@ interface DispatchFenceOptions<T extends ValidationExecutor> {
   allowNativeClaude?: boolean;
   /** Exact logical AGY/physical Antigravity adapter, private application capability only. */
   allowNativeAgyGemini?: boolean;
+  allowNativeAgyOpus?: boolean;
+  allowNativeCodex?: boolean;
 }
 
 function assertChosenCredentials(
@@ -83,8 +89,10 @@ function isAuditedBaseExecutor(executor: ValidationExecutor): boolean {
 function assertAuditedExecutor(
   executor: ValidationExecutor,
   allowNativeClaude = false,
-  allowNativeAgyGemini = false
+  allowNativeAgyGemini = false,
+  allowNativeCodex = false
 ): void {
+  const execute = executor.execute;
   const providerSupported =
     executor.provider === "openai" ||
     (allowNativeClaude && executor.provider === "claude") ||
@@ -96,8 +104,14 @@ function assertAuditedExecutor(
     executor.provider === "antigravity" &&
     executor.constructor === AntigravityExecutor &&
     Object.getPrototypeOf(executor) === AntigravityExecutor.prototype &&
-    executor.execute === AntigravityExecutor.prototype.execute;
-  if (!audited && !boundedAgy)
+    execute === AntigravityExecutor.prototype.execute;
+  const nativeCodex =
+    allowNativeCodex &&
+    executor.provider === "codex" &&
+    executor.constructor === CodexExecutor &&
+    Object.getPrototypeOf(executor) === CodexExecutor.prototype &&
+    execute === CodexExecutor.prototype.execute;
+  if (!audited && !boundedAgy && !nativeCodex)
     throw new ModelValidationError(
       422,
       "VALIDATION_EXECUTOR_UNSUPPORTED",
@@ -113,23 +127,24 @@ function assertExpectedExecutor<T extends ValidationExecutor>(
   reject: () => never
 ): void {
   if (
-    (options.allowNativeAgyGemini === true && !boundedAgy) ||
+    ((options.allowNativeAgyGemini === true || options.allowNativeAgyOpus === true) &&
+      !boundedAgy) ||
     executor !== options.expectedExecutor ||
     executor.provider !== physicalProvider
   )
     reject();
-  assertAuditedExecutor(executor, options.allowNativeClaude, boundedAgy);
+  assertAuditedExecutor(executor, options.allowNativeClaude, boundedAgy, options.allowNativeCodex);
 }
 function allowsBoundedAgy(
   options: Pick<
     DispatchFenceOptions<ValidationExecutor>,
-    "allowNativeAgyGemini" | "provider" | "modelId"
+    "allowNativeAgyGemini" | "allowNativeAgyOpus" | "provider" | "modelId"
   >
 ): boolean {
   return (
-    options.allowNativeAgyGemini === true &&
     options.provider === "agy" &&
-    options.modelId === BOUNDED_AGY_MODEL
+    ((options.allowNativeAgyGemini === true && options.modelId === BOUNDED_AGY_MODEL) ||
+      (options.allowNativeAgyOpus === true && options.modelId === BOUNDED_AGY_OPUS_MODEL))
   );
 }
 /** Trusted, in-process capability: never constructed from a body/header field. */
@@ -150,7 +165,7 @@ export function createValidationDispatchFence<T extends ValidationExecutor>(
     );
   }
   const validationDispatch: StrictValidationDispatch = {
-    ...(boundedAgy ? { singleAttempt: true as const } : {}),
+    ...(boundedAgy || options.allowNativeCodex ? { singleAttempt: true as const } : {}),
     reject,
     beforeFetch(details) {
       if (

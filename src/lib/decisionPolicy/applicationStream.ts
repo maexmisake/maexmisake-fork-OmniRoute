@@ -9,6 +9,7 @@ import {
 import { claudeReportedUsage } from "./applicationProvider";
 import { BoundedGeminiFrames } from "./geminiResponseProof";
 import { inspectGeminiFunctionCallPart } from "./geminiToolResponseProof";
+import { CodexResponseFrames } from "./codexResponseProof";
 
 function concatFrames(chunks: Uint8Array[], bytes: number): Uint8Array {
   const result = new Uint8Array(bytes);
@@ -62,11 +63,13 @@ class ProviderFrames {
   private usage: Json = {};
   private blocks = new Set<number>();
   private gemini?: BoundedGeminiFrames;
+  private codex?: CodexResponseFrames;
   refused = false;
   constructor(
     private identity: AttemptIdentity,
     private tools?: ApplicationToolHooks
   ) {
+    if (identity.provider === "codex") this.codex = new CodexResponseFrames(identity.model);
     if (identity.provider === "agy")
       this.gemini = new BoundedGeminiFrames(identity.model, {
         ...(tools?.geminiResponse
@@ -74,19 +77,38 @@ class ProviderFrames {
           : {}),
       });
   }
-  accept(text: string): void {
+  get terminalStatus(): number | undefined {
+    return this.codex?.applicationStatus;
+  }
+  get protocolTerminal(): boolean {
+    if (!this.codex?.protocolTerminal) return false;
+    if (this.buffer.trim()) throw new Error("decision_stream_after_terminal");
+    return true;
+  }
+  assertResponseHeaders(headers: Headers): void {
+    this.codex?.assertReportedModel(headers.get("openai-model"));
+  }
+  accept(text: string): string | undefined {
     this.buffer += text;
+    let validated = "";
     let delimiter: RegExpExecArray | null;
     while ((delimiter = /\r?\n\r?\n/.exec(this.buffer))) {
       const frame = this.buffer.slice(0, delimiter.index);
+      const completeFrame = this.buffer.slice(0, delimiter.index + delimiter[0].length);
       this.buffer = this.buffer.slice(delimiter.index + delimiter[0].length);
       if (frame.length > 65536) throw new Error("decision_stream_frame_too_large");
       this.frame(frame);
+      if (this.codex) validated += completeFrame;
     }
     if (this.buffer.length > 65536) throw new Error("decision_stream_frame_too_large");
+    // Native error/refusal frames can contain opaque credentials. Never let
+    // an incomplete raw frame reach even a passthrough downstream consumer.
+    return this.codex ? validated : undefined;
   }
   private frame(frame: string): void {
     if (++this.events > 8192) throw new Error("decision_stream_too_large");
+    if (this.codex?.protocolTerminal && frame.trim())
+      throw new Error("decision_stream_after_terminal");
     const data = frame
       .split(/\r?\n/)
       .filter((line) => line.startsWith("data:"))
@@ -94,7 +116,17 @@ class ProviderFrames {
       .join("\n");
     if (!data) return;
     if (this.stopped) throw new Error("decision_stream_after_terminal");
-    if (this.gemini) {
+    if (this.codex) {
+      const parsed = object(JSON.parse(data));
+      const events = frame
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("event:"))
+        .map((line) => line.slice(6).trim());
+      if (events.length > 1 || (events.length === 1 && events[0] !== parsed.type))
+        throw new Error("decision_stream_invalid");
+      this.codex.accept(parsed);
+      this.refused = this.codex.refused;
+    } else if (this.gemini) {
       const parsed = object(JSON.parse(data));
       this.gemini.accept(parsed);
       this.observeRaw(parsed);
@@ -229,6 +261,7 @@ class ProviderFrames {
     this.refused ||= choice.finish_reason === "content_filter";
   }
   partial() {
+    if (this.codex) return this.codex.partial();
     if (this.gemini) return this.gemini.partial();
     // Input/cache counts describe already-processed input. Cumulative output and
     // cost are not a final bill until the provider terminal and EOF are verified.
@@ -244,6 +277,7 @@ class ProviderFrames {
   }
   result() {
     if (this.buffer.trim()) throw new Error("decision_stream_incomplete");
+    if (this.codex) return this.codex.result();
     if (this.gemini) return this.gemini.result();
     if (!this.stopped) throw new Error("decision_stream_incomplete");
     if (this.identity.provider === "claude")
@@ -315,7 +349,7 @@ class ApplicationStream {
     if (status >= 400) this.clientOutcome = status;
   }
   private successStatus(): number {
-    return this.clientOutcome ?? (this.frames.refused ? 422 : 200);
+    return this.clientOutcome ?? this.frames.terminalStatus ?? (this.frames.refused ? 422 : 200);
   }
   private abort = (): void => {
     this.stop(this.abortStatus());
@@ -336,6 +370,7 @@ class ApplicationStream {
     if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream"))
       throw new Error("decision_stream_content_type");
     this.signal.throwIfAborted();
+    this.frames.assertResponseHeaders(response.headers);
     this.active = true;
     this.rawReader = response.body.getReader();
     this.signal.addEventListener("abort", this.abort, { once: true });
@@ -348,25 +383,38 @@ class ApplicationStream {
         },
         pull: async (controller) => {
           try {
-            this.signal.throwIfAborted();
-            const chunk = await this.rawReader!.read();
-            this.signal.throwIfAborted();
-            if (chunk.done) {
-              this.frames.accept(decoder.decode());
-              const usage = this.frames.result();
-              settleDecisionAttempt(this.identity, { status: response.status, ...usage });
-              this.verifiedClientUsage = clientUsage(usage);
-              this.settled = true;
-              this.tools?.rawComplete();
-              this.rawComplete = true;
-              this.controllers.delete(controller);
-              controller.close();
+            while (true) {
+              this.signal.throwIfAborted();
+              const chunk = await this.rawReader!.read();
+              this.signal.throwIfAborted();
+              if (chunk.done) {
+                this.frames.accept(decoder.decode());
+                this.completeRaw(response.status, controller);
+                return;
+              }
+              bytes += chunk.value.byteLength;
+              if (bytes > 1048576) throw new Error("decision_stream_too_large");
+              const validated = this.frames.accept(decoder.decode(chunk.value, { stream: true }));
+              if (this.frames.protocolTerminal) {
+                // Codex's native protocol can complete while HTTP stays open.
+                // Parse the entire received chunk first: trailing data must not
+                // hide behind this close. This is protocol proof, not raw EOF.
+                // Flush the UTF-8 decoder too: an incomplete trailing codepoint
+                // must not disappear behind a valid protocol terminal.
+                this.frames.accept(decoder.decode());
+                if (!this.frames.protocolTerminal) throw new Error("decision_stream_incomplete");
+                this.assertNativeFrameSafe(response.status);
+                this.completeRaw(response.status, controller, new TextEncoder().encode(validated));
+                void this.rawReader!.cancel().catch(() => {});
+                return;
+              }
+              this.assertNativeFrameSafe(response.status);
+              if (validated === "") continue;
+              controller.enqueue(
+                validated === undefined ? chunk.value : new TextEncoder().encode(validated)
+              );
               return;
             }
-            bytes += chunk.value.byteLength;
-            if (bytes > 1048576) throw new Error("decision_stream_too_large");
-            this.frames.accept(decoder.decode(chunk.value, { stream: true }));
-            controller.enqueue(chunk.value);
           } catch {
             this.fail(controller);
           }
@@ -378,6 +426,33 @@ class ApplicationStream {
       { highWaterMark: 0 }
     );
     return new Response(body, { status: response.status, headers: response.headers });
+  }
+  private completeRaw(
+    status: number,
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    chunk?: Uint8Array
+  ): void {
+    this.settleRaw(status);
+    if (chunk?.byteLength) controller.enqueue(chunk);
+    this.controllers.delete(controller);
+    controller.close();
+  }
+  private settleRaw(status: number): void {
+    const usage = this.frames.result();
+    settleDecisionAttempt(this.identity, { status, ...usage });
+    this.verifiedClientUsage = clientUsage(usage);
+    this.settled = true;
+    this.tools?.rawComplete();
+    this.rawComplete = true;
+  }
+  private assertNativeFrameSafe(status: number): void {
+    const failure = this.frames.terminalStatus;
+    if (failure === undefined || failure < 400) return;
+    // Valid native terminal receipts are independent of their unsafe human
+    // error/refusal text. Preserve that receipt before the static rejection.
+    if (this.frames.protocolTerminal) this.settleRaw(status);
+    this.stop(failure);
+    throw new Error("decision_stream_rejected");
   }
   private fail(controller: ReadableStreamDefaultController<Uint8Array>): void {
     const failure = this.successStatus();

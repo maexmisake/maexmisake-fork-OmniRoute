@@ -19,6 +19,7 @@ import {
 import { useDecisionRoutingEditor } from "./useDecisionRoutingEditor";
 
 import ProfileFields from "./ProfileFields";
+import OutputPolicyFields from "./OutputPolicyFields";
 
 function NativeFields({
   draft,
@@ -278,6 +279,7 @@ export default function DecisionRoutingClient() {
               Enabling requires an authenticated client and compatible application settings.
             </p>
           </Card>
+          <OutputPolicyFields draft={draft} disabled={disabled} update={editor.updateDraft} />
           {draft.mode === "native" && (
             <NativeFields
               draft={draft}

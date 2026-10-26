@@ -17,6 +17,7 @@ export type AttemptIdentity = {
   model: string;
   connectionId: string;
   effort: string;
+  outputPolicy?: "provider-native";
   lane?: "decision" | "execution";
   requestId?: string;
   parentAttemptId?: string;
@@ -412,7 +413,9 @@ function settleInTransaction(identity: AttemptIdentity, usage: AttemptUsage): vo
   const uncachedInput = mergeReported(row.uncached_input_tokens, usage.uncachedInput ?? null);
   const consistent = reasoning === null || output === null || reasoning <= output;
   const visibleOutput =
-    output === null || !consistent || (identity.provider === "claude" && reasoning === null)
+    output === null ||
+    !consistent ||
+    (["claude", "codex"].includes(identity.provider) && reasoning === null)
       ? null
       : output - (reasoning ?? 0);
   const state = status === null ? "unknown" : "completed";
@@ -460,7 +463,7 @@ function settleInTransaction(identity: AttemptIdentity, usage: AttemptUsage): vo
     ).run(input, visibleOutput, reasoning, cacheRead, cacheCreation, identity.id);
   db.prepare(
     `INSERT INTO usage_history(provider,model,connection_id,api_key_id,tokens_input,tokens_output,tokens_reasoning,tokens_cache_read,tokens_cache_creation,status,success,timestamp,provider_cost_usd,decision_attempt_id,combo_strategy,decision_lane,decision_request_id)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'decision-bounded-v1',?,?) ON CONFLICT(decision_attempt_id) DO UPDATE SET tokens_input=excluded.tokens_input,tokens_output=excluded.tokens_output,tokens_reasoning=excluded.tokens_reasoning,tokens_cache_read=excluded.tokens_cache_read,tokens_cache_creation=excluded.tokens_cache_creation,status=excluded.status,success=excluded.success,provider_cost_usd=excluded.provider_cost_usd`
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(decision_attempt_id) DO UPDATE SET tokens_input=excluded.tokens_input,tokens_output=excluded.tokens_output,tokens_reasoning=excluded.tokens_reasoning,tokens_cache_read=excluded.tokens_cache_read,tokens_cache_creation=excluded.tokens_cache_creation,status=excluded.status,success=excluded.success,provider_cost_usd=excluded.provider_cost_usd`
   ).run(
     identity.provider,
     identity.model,
@@ -476,6 +479,9 @@ function settleInTransaction(identity: AttemptIdentity, usage: AttemptUsage): vo
     String(row.created_at),
     cost,
     identity.id,
+    identity.outputPolicy === "provider-native"
+      ? "decision-provider-native-output-v1"
+      : "decision-bounded-v1",
     identity.lane ?? "execution",
     identity.requestId ?? identity.id
   );

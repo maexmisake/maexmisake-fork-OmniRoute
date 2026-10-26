@@ -155,7 +155,7 @@ function EffortFields({
       >
         <option value="set">Set exact effort</option>
         <option value="preserve">Preserve (unsupported here)</option>
-        <option value="fixed">Fixed (unsupported here)</option>
+        <option value="fixed">Fixed profile designation (exact supported slots only)</option>
       </Select>
       <Select
         label={`Effort for ${row.id}`}
@@ -202,7 +202,9 @@ function IdentityFields({ row, draft, options, disabled, edit, update }: Props &
         <option value="">Choose a supported execution provider</option>
         <option value="openai">OpenAI API key</option>
         <option value="claude">Claude OAuth</option>
-        {row.provider && !["openai", "claude"].includes(row.provider) && (
+        <option value="agy">Antigravity OAuth (exact supported slots)</option>
+        <option value="codex">Codex OAuth (provider-native output only)</option>
+        {row.provider && !["openai", "claude", "agy", "codex"].includes(row.provider) && (
           <option value={row.provider}>{row.provider} (unsupported)</option>
         )}
       </Select>
@@ -354,11 +356,13 @@ function TaskFields({
   profiles,
   orders,
   disabled,
+  nativeOutput,
   update,
 }: {
   profiles: Candidate[];
   orders: Record<string, string[]>;
   disabled: boolean;
+  nativeOutput: boolean;
   update: Props["update"];
 }) {
   const tasks = [...new Set([...Object.keys(TASK_LABELS), ...Object.keys(orders)])];
@@ -368,10 +372,13 @@ function TaskFields({
       <p className="text-sm text-text-muted">
         Choose which profiles each task may use, then order them. Empty or omitted categories have
         no route; unresolved is its own category, never a fallback. These are your preferences, not
-        measured model quality. Tool requests use the tools order and only tool-capable profiles; a
-        valid continuation keeps its original pair without a new decision. Image requests remain
-        unsupported regardless of these orders. Custom category data is retained; no current request
-        mapping is assumed.
+        measured model quality. Image requests remain unsupported regardless of these orders. Custom
+        category data is retained; no current request mapping is assumed.
+      </p>
+      <p className="text-sm text-text-muted">
+        {nativeOutput
+          ? "Tool and continuation preferences are retained but do not authorize requests in provider-native output mode."
+          : "Tool requests use the tools order and only tool-capable profiles; a valid continuation keeps its original pair without a new decision."}
       </p>
       {tasks.map((task) => {
         const label = Object.hasOwn(TASK_LABELS, task)
@@ -463,9 +470,11 @@ export default function ProfileFields(props: Props) {
         operator-supplied model ID. This bounded path supports claude-opus-5-5, claude-sonnet-5-5
         and claude-haiku-5-5 at medium/high/xhigh/max, plus exact agy/gemini-3.8-flash-high at High.
         The twelve Claude pairs have synthetic JSON and tool-streaming tests; plain-text streaming
-        tests cover representative pairs. Live account access remains unverified. Tool requests need
-        a profile that declares tool support; image and nonstreaming tool requests are unsupported.
-        Codex and AGY Opus High stay excluded until their output caps are proven.
+        tests cover representative pairs. Live account access remains unverified. In bounded output,
+        Tool requests need a profile that declares tool support; image and nonstreaming tool
+        requests are unsupported. Codex and AGY Opus High stay excluded from bounded output. The
+        distinct provider-native output opt-in permits only their exact original profiles for
+        streaming text, without a provider-enforced token ceiling.
       </p>
       {!editable && (
         <p role="alert" className="mt-3">
@@ -503,6 +512,7 @@ export default function ProfileFields(props: Props) {
             profiles={profiles}
             orders={orders}
             disabled={props.disabled}
+            nativeOutput={props.draft.applicationMode === "provider-native-output-v1"}
             update={props.update}
           />
         </>
