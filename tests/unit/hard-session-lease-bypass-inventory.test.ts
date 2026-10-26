@@ -315,7 +315,10 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "open-sse/handlers/systemOneModels.ts": 1,
     "src/app/api/v1/systemone/dispatch.ts": 1,
     "src/app/api/v1/systemone/route.ts": 1,
-    "src/lib/decisionPolicy/applicationCombo.ts": 2,
+    // The third read screens the explicitly configured tool transport before selection;
+    // it performs no dispatch or account rotation. buildAttempt still re-reads the exact
+    // selected account, rejects active exclusive leases and fences every physical send.
+    "src/lib/decisionPolicy/applicationCombo.ts": 3,
     "src/lib/decisionPolicy/applicationSelection.ts": 2,
   },
 };

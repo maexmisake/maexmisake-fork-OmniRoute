@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
 import { isBoundedClaudeMaxEffort } from "../../services/decisionPolicy/applicationContext.ts";
@@ -367,7 +368,8 @@ export function openaiToClaudeRequest(
           model,
           disabled: credentials?._videoTranscriptSensitive === true,
         },
-        pendingToolUseIds
+        pendingToolUseIds,
+        body.messages.indexOf(msg)
       );
       if (newRole === "assistant") {
         pendingToolUseIds = blocks.filter((b) => b.type === "tool_use").map((b) => String(b.id));
@@ -415,7 +417,10 @@ export function openaiToClaudeRequest(
       return true;
     });
 
-    result.messages = enforceToolResultAdjacency(result.messages);
+    // The bounded tool contract already proved complete, occurrence-bound groups.
+    // The ordinary global-ID repair would bind a later reused ID to its first turn.
+    if (!currentApplicationAttempt()?.tools)
+      result.messages = enforceToolResultAdjacency(result.messages);
 
     // Add cache_control to last assistant message
     for (let i = result.messages.length - 1; i >= 0; i--) {
@@ -605,7 +610,8 @@ function getContentBlocksFromMessage(
   thinkingEnabledForRequest = false,
   isKimiCoding = false,
   thinkingBinding: { provider?: unknown; model?: unknown; disabled?: boolean } = {},
-  pendingToolUseIds: string[] = []
+  pendingToolUseIds: string[] = [],
+  originalMessageIndex = -1
 ) {
   const blocks: ClaudeContentBlock[] = [];
 
@@ -795,11 +801,14 @@ function getContentBlocksFromMessage(
       hasToolUseBlock &&
       !hasThinkingBlock
     ) {
-      const restored = restoreClaudeThinkingBlocks({
-        toolUseIds: blocks.filter((b) => b.type === "tool_use").map((b) => b.id),
-        provider: thinkingBinding.provider,
-        model: thinkingBinding.model,
-      });
+      const boundedTools = currentApplicationAttempt()?.tools;
+      const restored = boundedTools
+        ? boundedTools.restoreThinking(msg, originalMessageIndex)
+        : restoreClaudeThinkingBlocks({
+            toolUseIds: blocks.filter((b) => b.type === "tool_use").map((b) => b.id),
+            provider: thinkingBinding.provider,
+            model: thinkingBinding.model,
+          });
       if (restored) {
         blocks.unshift(...restored);
         hasThinkingBlock = true;

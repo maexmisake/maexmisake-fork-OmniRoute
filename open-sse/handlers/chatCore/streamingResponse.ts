@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 import { projectFailureUsageErrorCode } from "./failureUsage.ts";
 
 export { extractSystemRoleMessages, relocateDirectiveOnlyMessages } from "./claudeSystemRole.ts";
@@ -55,6 +56,7 @@ import {
   buildErrorBody,
   createErrorResult,
   parseUpstreamError,
+  parseRetryAfterHeader,
   formatProviderError,
   projectPublicErrorIdentifier,
   sanitizeErrorMessage,
@@ -135,6 +137,7 @@ type Loose = any;
 export type StreamingDeps = Record<string, Loose>;
 
 export async function runStreamingResponse(deps: StreamingDeps) {
+  const boundedAttempt = currentApplicationAttempt();
   const {
     apiKeyInfo,
     persistAttemptLogs,
@@ -317,6 +320,37 @@ export async function runStreamingResponse(deps: StreamingDeps) {
       onSignatureFailure: reportSignatureFailure,
     });
 
+    if (boundedAttempt && pipelineOutcome.kind === "error") {
+      // The bounded journal has already observed this one physical result.
+      // Return it before ordinary refresh/signature/model/account recovery and
+      // their persistent side effects can run. Public error construction remains canonical.
+      const failure = pipelineOutcome.result;
+      const retryAt = parseRetryAfterHeader(failure.response.headers);
+      const retryAfterMs =
+        failure.retryAfterMs ??
+        (retryAt === null ? null : Math.max(0, Date.parse(retryAt) - Date.now()));
+      void failure.response.body?.cancel().catch(() => {});
+      trackPendingRequest(model, provider, pendingConnId, false, undefined, pendingRequestId);
+      return {
+        response: createErrorResult(
+          failure.response.status,
+          failure.error || "Upstream provider error",
+          retryAfterMs,
+          failure.errorCode,
+          failure.errorType
+        ),
+        carry: {
+          translatedBody,
+          currentModel: pipelineOutcome.model,
+          effectiveServiceTier,
+          finalBody: translatedBody,
+          pipelineRecovered: true,
+          providerHeaders: normalizeHeaders(failure.response.headers),
+          providerResponse: failure.response,
+          providerUrl: "",
+        },
+      };
+    }
     pipelineRecovered = true;
     currentModel = pipelineOutcome.model;
     upstreamDiagnostic = pipelineOutcome.upstreamDiagnostic;

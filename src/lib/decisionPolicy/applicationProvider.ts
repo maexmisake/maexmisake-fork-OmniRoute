@@ -83,15 +83,12 @@ function textBlocks(value: unknown): boolean {
     )
   );
 }
-export function claudeWireFacts(
+function assertClaudeWireKeys(
   wire: Record<string, unknown>,
-  effort: string,
   outputLimit: number,
-  stream = false
-) {
-  const thinking = wire.thinking as Record<string, unknown> | undefined;
-  const output = wire.output_config as Record<string, unknown> | undefined;
-  const messages = wire.messages as Array<Record<string, unknown>> | undefined;
+  stream: boolean,
+  tools: boolean
+): void {
   const allowed = [
     "model",
     "messages",
@@ -103,12 +100,17 @@ export function claudeWireFacts(
     "output_config",
     "context_management",
   ];
+  if (tools) allowed.push("tools", "tool_choice");
   if (
     Object.keys(wire).some((key) => !allowed.includes(key)) ||
     wire.stream !== stream ||
     wire.max_tokens !== outputLimit
   )
     throw new Error("decision_final_request_unsupported");
+}
+function assertClaudeThinking(wire: Record<string, unknown>, effort: string): void {
+  const thinking = wire.thinking as Record<string, unknown> | undefined;
+  const output = wire.output_config as Record<string, unknown> | undefined;
   if (
     thinking?.type !== "adaptive" ||
     output?.effort !== effort ||
@@ -121,12 +123,26 @@ export function claudeWireFacts(
       !["omitted", "summarized"].includes(String(thinking.display)))
   )
     throw new Error("decision_final_request_unsupported");
+}
+export function claudeWireFacts(
+  wire: Record<string, unknown>,
+  effort: string,
+  outputLimit: number,
+  stream = false,
+  toolFacts?: (wire: Record<string, unknown>) => unknown
+) {
+  assertClaudeWireKeys(wire, outputLimit, stream, toolFacts !== undefined);
+  assertClaudeThinking(wire, effort);
   if (
     wire.context_management !== undefined &&
     JSON.stringify(wire.context_management) !==
       JSON.stringify({ edits: [{ type: "clear_thinking_20251015", keep: "all" }] })
   )
     throw new Error("decision_final_request_unsupported");
+  if (wire.system !== undefined && !textBlocks(wire.system))
+    throw new Error("decision_final_request_unsupported");
+  if (toolFacts) return toolFacts(wire);
+  const messages = wire.messages as Array<Record<string, unknown>> | undefined;
   if (
     !Array.isArray(messages) ||
     !messages.every(
@@ -137,9 +153,6 @@ export function claudeWireFacts(
     )
   )
     throw new Error("decision_final_request_unsupported");
-  if (wire.system !== undefined && !textBlocks(wire.system))
-    throw new Error("decision_final_request_unsupported");
-  // Used only to recheck bounded request facts; the actual Messages body is untouched.
   return messages.map((message) => ({ role: message.role, content: message.content }));
 }
 function count(value: unknown): number | null {

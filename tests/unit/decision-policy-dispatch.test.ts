@@ -725,3 +725,20 @@ for (const choice of [
     assert.equal(result.policy?.costs.execution.totalUsd, 0.001);
     await agent.close();
   });
+
+test("standalone fixture never drops newly admitted application tool controls", async () => {
+  const agent = new MockAgent();
+  for (const controls of [
+    { tool_choice: "auto" },
+    { tool_choice: "none" },
+    { parallel_tool_calls: true },
+    { parallel_tool_calls: false },
+  ]) {
+    const result = await dispatchRequest(
+      options(agent, { body: { ...(options(agent).body as object), ...controls } })
+    );
+    assert.equal(result.rejection, "controls_unsupported_in_standalone_fixture");
+    assert.equal(result.physicalDispatches.length, 0);
+  }
+  await agent.close();
+});

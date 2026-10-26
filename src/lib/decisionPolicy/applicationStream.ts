@@ -1,3 +1,5 @@
+import type { ApplicationToolHooks } from "../../../open-sse/services/decisionPolicy/applicationContext.ts";
+import { ClientToolSSEFramer } from "./toolResponseProof";
 import {
   settleDecisionAttempt,
   finishDecisionApplication,
@@ -6,6 +8,15 @@ import {
 } from "../db/decisionAttempts";
 import { claudeReportedUsage } from "./applicationProvider";
 
+function concatFrames(chunks: Uint8Array[], bytes: number): Uint8Array {
+  const result = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
 type Json = Record<string, unknown>;
 function object(value: unknown): Json {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -49,7 +60,10 @@ class ProviderFrames {
   private usage: Json = {};
   private blocks = new Set<number>();
   refused = false;
-  constructor(private identity: AttemptIdentity) {}
+  constructor(
+    private identity: AttemptIdentity,
+    private tools?: ApplicationToolHooks
+  ) {}
   accept(text: string): void {
     this.buffer += text;
     let delimiter: RegExpExecArray | null;
@@ -78,8 +92,36 @@ class ProviderFrames {
         .map((line) => line.slice(6).trim());
       if (events.length !== 1 || events[0] !== parsed.type)
         throw new Error("decision_stream_invalid");
+      this.observeRaw(parsed);
       this.claude(parsed);
     } else this.openai(data);
+  }
+  private observeRaw(event: Json): void {
+    this.tools?.rawEvent(event);
+  }
+  private allowedStop(reason: unknown): boolean {
+    return (
+      [
+        "end_turn",
+        "max_tokens",
+        "stop_sequence",
+        "refusal",
+        "model_context_window_exceeded",
+      ].includes(String(reason)) ||
+      (this.tools !== undefined && reason === "tool_use")
+    );
+  }
+  private allowedBlock(type: unknown): boolean {
+    return (
+      ["text", "thinking", "redacted_thinking"].includes(String(type)) ||
+      (this.tools !== undefined && type === "tool_use")
+    );
+  }
+  private allowedDelta(type: unknown): boolean {
+    return (
+      ["text_delta", "thinking_delta", "signature_delta"].includes(String(type)) ||
+      (this.tools !== undefined && type === "input_json_delta")
+    );
   }
   private claude(data: Json): void {
     const type = data.type;
@@ -121,16 +163,7 @@ class ProviderFrames {
     }
     if (this.blocks.size) throw new Error("decision_stream_incomplete");
     if (delta.stop_reason != null) {
-      if (
-        ![
-          "end_turn",
-          "max_tokens",
-          "stop_sequence",
-          "refusal",
-          "model_context_window_exceeded",
-        ].includes(String(delta.stop_reason))
-      )
-        throw new Error("decision_stream_unsupported");
+      if (!this.allowedStop(delta.stop_reason)) throw new Error("decision_stream_unsupported");
       this.finished = true;
       this.refused = delta.stop_reason === "refusal";
     }
@@ -138,12 +171,10 @@ class ProviderFrames {
   }
   private claudeBlock(data: Json): void {
     const index = count(data.index);
-    if (index === null || index > 31) throw new Error("decision_stream_invalid");
+    if (index === null || index > (this.tools ? 63 : 31))
+      throw new Error("decision_stream_invalid");
     if (data.type === "content_block_start") {
-      if (
-        this.blocks.has(index) ||
-        !["text", "thinking", "redacted_thinking"].includes(String(object(data.content_block).type))
-      )
+      if (this.blocks.has(index) || !this.allowedBlock(object(data.content_block).type))
         throw new Error("decision_stream_unsupported");
       this.blocks.add(index);
       return;
@@ -153,10 +184,7 @@ class ProviderFrames {
       this.blocks.delete(index);
       return;
     }
-    if (
-      data.type !== "content_block_delta" ||
-      !["text_delta", "thinking_delta", "signature_delta"].includes(String(object(data.delta).type))
-    )
+    if (data.type !== "content_block_delta" || !this.allowedDelta(object(data.delta).type))
       throw new Error("decision_stream_unsupported");
   }
   private openai(text: string): void {
@@ -218,6 +246,7 @@ class ProviderFrames {
 class ApplicationStream {
   active = false;
   private settled = false;
+  private rawComplete = false;
   private finalized = false;
   private rawReader?: ReadableStreamDefaultReader<Uint8Array>;
   private clientReader?: ReadableStreamDefaultReader<Uint8Array>;
@@ -231,9 +260,10 @@ class ApplicationStream {
   constructor(
     private identity: AttemptIdentity,
     private signal: AbortSignal,
-    readonly includeUsage: boolean
+    readonly includeUsage: boolean,
+    private tools?: ApplicationToolHooks
   ) {
-    this.frames = new ProviderFrames(identity);
+    this.frames = new ProviderFrames(identity, tools);
   }
   private settleUnknown(): void {
     if (this.settled) return;
@@ -309,6 +339,8 @@ class ApplicationStream {
               settleDecisionAttempt(this.identity, { status: response.status, ...usage });
               this.verifiedClientUsage = clientUsage(usage);
               this.settled = true;
+              this.tools?.rawComplete();
+              this.rawComplete = true;
               this.controllers.delete(controller);
               controller.close();
               return;
@@ -330,21 +362,91 @@ class ApplicationStream {
     return new Response(body, { status: response.status, headers: response.headers });
   }
   private fail(controller: ReadableStreamDefaultController<Uint8Array>): void {
-    this.finalize(this.signal.aborted ? this.abortStatus() : 409);
+    const failure = this.successStatus();
+    this.stop(this.signal.aborted ? this.abortStatus() : failure >= 400 ? failure : 409);
     this.controllers.delete(controller);
-    void this.rawReader?.cancel().catch(() => {});
-    try {
-      controller.error(new Error("decision_stream_rejected"));
-    } catch {
-      /* Already closed. */
-    }
   }
   private noteClientTerminal(chunk: Uint8Array): void {
     this.clientTail += this.clientDecoder.decode(chunk, { stream: true });
     this.clientTerminal ||= /(?:^|\n)data: \[DONE\]\r?\n/.test(this.clientTail);
     this.clientTail = this.clientTail.slice(-4096);
   }
+  private assertClientOpen(): void {
+    this.signal.throwIfAborted();
+    if (this.finalized) throw new Error("decision_stream_rejected");
+  }
+  private wrapTools(response: Response): Response {
+    const reader = response.body!.getReader();
+    this.clientReader = reader;
+    const framer = new ClientToolSSEFramer();
+    const queued: Uint8Array[] = [],
+      held: Uint8Array[] = [];
+    let holding = false,
+      ended = false,
+      heldBytes = 0;
+    const readMore = async () => {
+      this.assertClientOpen();
+      const chunk = await reader.read();
+      this.assertClientOpen();
+      if (chunk.done) {
+        framer.finish();
+        if (!this.rawComplete) throw new Error("decision_stream_incomplete");
+        this.tools!.validateClientComplete(this.successStatus());
+        if (this.successStatus() < 400) this.tools!.commitClientComplete();
+        queued.push(concatFrames(held, heldBytes));
+        ended = true;
+        return;
+      }
+      for (const frame of framer.push(chunk.value)) {
+        const completion = this.tools!.clientFrame(frame.payload, frame.done);
+        holding ||= completion;
+        if (holding) {
+          heldBytes += frame.bytes.byteLength;
+          if (heldBytes > 65536) throw new Error("decision_stream_too_large");
+          held.push(frame.bytes);
+        } else queued.push(frame.bytes);
+      }
+    };
+    const body = new ReadableStream<Uint8Array>(
+      {
+        start: (controller) => {
+          this.controllers.add(controller);
+        },
+        pull: async (controller) => {
+          try {
+            while (!queued.length && !ended) await readMore();
+            this.assertClientOpen();
+            const chunk = queued.shift();
+            if (chunk?.byteLength) {
+              controller.enqueue(chunk);
+              this.noteClientTerminal(chunk);
+            }
+            if (ended && !queued.length) {
+              this.finalize(this.successStatus());
+              this.controllers.delete(controller);
+              controller.close();
+            }
+          } catch {
+            this.fail(controller);
+          }
+        },
+        cancel: () => {
+          this.stop(this.clientTerminal && this.rawComplete ? this.successStatus() : 499);
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    return new Response(body, { status: response.status, headers: this.pendingHeaders(response) });
+  }
+  private pendingHeaders(response: Response): Headers {
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    headers.delete("x-omniroute-routing-cost");
+    headers.set("x-omniroute-routing-cost-status", "pending");
+    return headers;
+  }
   wrap(response: Response): Response {
+    if (this.tools) return this.wrapTools(response);
     this.clientReader = response.body!.getReader();
     const body = new ReadableStream<Uint8Array>(
       {
@@ -384,7 +486,8 @@ class ApplicationStream {
 export function createApplicationStream(
   identity: AttemptIdentity,
   signal: AbortSignal,
-  options?: { include_usage?: boolean }
+  options?: { include_usage?: boolean },
+  tools?: ApplicationToolHooks
 ) {
-  return new ApplicationStream(identity, signal, options?.include_usage === true);
+  return new ApplicationStream(identity, signal, options?.include_usage === true, tools);
 }

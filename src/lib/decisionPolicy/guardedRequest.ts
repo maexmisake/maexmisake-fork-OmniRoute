@@ -377,6 +377,11 @@ class GuardedSession {
   }
 }
 
+function standaloneControlsSupported(body: ChatPolicyBody): boolean {
+  return (
+    body.stream !== true && body.tool_choice === undefined && body.parallel_tool_calls === undefined
+  );
+}
 /** Standalone BaseExecutor physical integration. No legacy combo/core/resolver/fallback is called. */
 export async function runGuardedDecisionRequest(
   options: GuardedRequestOptions
@@ -404,8 +409,8 @@ export async function runGuardedDecisionRequest(
     return rejected("context_unknown");
   }
   if (!extracted.ok) return rejected(extracted.reason);
-  if (extracted.body.stream === true)
-    return rejected("streaming_unsupported_in_standalone_fixture");
+  if (!standaloneControlsSupported(extracted.body))
+    return rejected("controls_unsupported_in_standalone_fixture");
   if (extracted.body.model !== options.routeModel) return rejected("route_model_mismatch");
   try {
     assertStrictDirectEgress();

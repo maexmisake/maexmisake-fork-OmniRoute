@@ -1,6 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { StrictValidationDispatch } from "../../executors/base/validationDispatch.ts";
 
+export type ApplicationToolHooks = {
+  beforeFetch: (wire: Record<string, unknown>) => unknown;
+  restoreThinking: (
+    message: unknown,
+    originalIndex: number
+  ) => import("../claudeThinkingStore.ts").ClaudeSignedThinkingBlock[];
+  preserveWireThinking: (message: unknown, messages: readonly unknown[], index: number) => boolean;
+  rawEvent: (event: Record<string, unknown>) => void;
+  rawComplete: () => void;
+  clientFrame: (payload: unknown, done: boolean) => boolean;
+  validateClientComplete: (status: number) => void;
+  commitClientComplete: () => void;
+};
 export type ApplicationAttempt = {
   id: string;
   keyId: string;
@@ -12,6 +25,7 @@ export type ApplicationAttempt = {
   requestId?: string;
   parentAttemptId?: string;
   signal: AbortSignal;
+  tools?: ApplicationToolHooks;
   /** Release occupancy without asserting that a started remote call stopped. */
   release?: () => void;
   dispatch: StrictValidationDispatch;

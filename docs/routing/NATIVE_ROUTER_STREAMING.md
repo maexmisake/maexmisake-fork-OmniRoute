@@ -15,7 +15,9 @@ is established. Ordinary routing defaults remain unchanged.
 An explicitly enabled `bounded-v1` combo accepts text requests with `stream:true`, an explicit
 `max_tokens`/`max_completion_tokens` cap and an allowed model/effort profile. Optional
 `stream_options.include_usage` is preserved for the OpenAI execution contract. Unsupported options,
-conflicting effort/cap carriers, tools, images and continuations reject before execution. A free
+conflicting effort/cap carriers and images reject before execution. The separately scoped
+[Claude tool continuation contract](NATIVE_ROUTER_TOOLS.md) requires explicit tool-capable profiles;
+other tool transports reject. A free
 Zen selector still requires explicit `jev-1.13-free` configuration and the stored free-tier guard.
 Neither streaming nor a quota error enables paid fallback.
 

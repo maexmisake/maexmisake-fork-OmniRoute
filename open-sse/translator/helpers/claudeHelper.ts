@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 // Claude helper functions for translator
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.ts";
 import { lookupReasoning, recordReplay } from "../../services/reasoningCache.ts";
@@ -663,6 +664,9 @@ export function prepareClaudeRequest(
         // For non-Anthropic providers: only the text replacement is skipped
         // for the latest assistant (if it already has non-empty thinking text);
         // field cleanup (signature strip, type normalization) still runs.
+        // A bounded tool continuation supplies occurrence/account-verified exact
+        // blocks. Never replace those blocks with the ordinary recovery placeholder.
+        if (currentApplicationAttempt()?.tools?.preserveWireThinking(msg, filtered, i)) continue;
         const isLatestAssistant = i === latestAssistantIndex;
         const latestThinkingBlocks: ClaudeContentBlock[] = isLatestAssistant
           ? content.filter(

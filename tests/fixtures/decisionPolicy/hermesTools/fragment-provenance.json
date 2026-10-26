@@ -1,0 +1,113 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "evidenceDateUTC": "2026-10-26",
+  "fragmentFileSHA256": "4e107247d58433637b373f964b8723731f19cc8cd83539f852e9430caf7b85eb",
+  "sourceReceipts": {
+    "repository": "NousResearch/hermes-agent",
+    "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+    "sources": [
+      {
+        "path": "agent/tool_dispatch_helpers.py",
+        "gitBlobSHA": "04585fdd5fb65e07ebe0021e30b121a2e1859c6b",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/tool_dispatch_helpers.py",
+        "sha256": "bf4c6e4af26ba8a93ece9dfa6afa9a2e4d96bfe27ae854bd483a6613306c2cfc",
+        "bytes": 26444,
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/tool_executor.py",
+        "gitBlobSHA": "cb58137a2aced3a76da570c0eb9f3a0aab625bf7",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/tool_executor.py",
+        "sha256": "1b1b67d4b88f73c51dc147d0e0383b36c561d921d278d801326de5ba24b29702",
+        "bytes": 98355,
+        "gitBlobVerified": true
+      },
+      {
+        "path": "LICENSE",
+        "gitBlobSHA": "75410e73319c72cd3e991a501c5455eb78f38375",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/LICENSE",
+        "sha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+        "bytes": 1070,
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/message_metadata.py",
+        "gitBlobSHA": "98d84eb963660cce677720576f5ae9c62a8fabf3",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/message_metadata.py",
+        "sha256": "b7cf8f650d87d468773029482298424b3dee1bc71650918c8377417827266946",
+        "bytes": 16889,
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/reasoning_carriers.py",
+        "gitBlobSHA": "632e61773b4b51973e108da9716c4182af9a27c5",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/reasoning_carriers.py",
+        "sha256": "c21e95fccadfeddc433be1a4837824b4a0e94715e0bf31ba07172d896e772480",
+        "bytes": 7302,
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/message_sanitization.py",
+        "gitBlobSHA": "f0eb59cb49b17870ea4fce3710f4defb761b8f2c",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/message_sanitization.py",
+        "sha256": "4dd904f9a69376fc8801f47b49f829869d5ef49d6bccd0a73d82af84e8f580c5",
+        "bytes": 51279,
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/chat_completion_helpers.py",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/chat_completion_helpers.py",
+        "gitBlobSHA": "b4ca409edb2bc23c696d7a3dee7ee75adf73d143",
+        "sha256": "11ab752ee3cdb7b272d5b48bb93a8cc809d6d459c0f1978e84853634945d1df7",
+        "bytes": 223971,
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/transports/chat_completions.py",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/transports/chat_completions.py",
+        "gitBlobSHA": "9e4ef960801ed5f422b40d658b9bc96e6720feb2",
+        "sha256": "6793be69882fad0eae48f02b2fcc959c0e9718af625202b1095565a2ba1c74de",
+        "bytes": 42708,
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/message_content.py",
+        "gitBlobSHA": "b23656f2382893580982233dbd670065e6eb153e",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/message_content.py",
+        "bytes": 1265,
+        "sha256": "65d45e23dba4d05eab9a7c61de3037f26e4effebf39121e85fd6e084b785123b",
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/turn_api_request.py",
+        "gitBlobSHA": "e4468c52756461d631735a1863886370222dccd3",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/turn_api_request.py",
+        "bytes": 10049,
+        "sha256": "445378fb3f9a2020ed3c68da6f8f75a9883251c4a52f5888584f3ec21177f782",
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/turn_context.py",
+        "gitBlobSHA": "2732c34d08261c25f42142e21c59f6883c2b9aa6",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/turn_context.py",
+        "bytes": 70140,
+        "sha256": "89df9b4ad047d3efff4b3d3514cc4a6eef2ac05d6add105e1e4b354bee4191fa",
+        "gitBlobVerified": true
+      },
+      {
+        "path": "agent/conversation_compression_archive.py",
+        "gitBlobSHA": "fd4af86d88083fd868327cb8488f9227dab653fd",
+        "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/conversation_compression_archive.py",
+        "bytes": 6455,
+        "sha256": "ac7e79f15559cd24cd0efcaa868f8fc0f127ba0bbee280d51433b30e47b00890",
+        "gitBlobVerified": true
+      }
+    ]
+  },
+  "license": "MIT; Copyright (c) 2025 Nous Research",
+  "wholeModulesImported": false,
+  "actualToolsRun": false,
+  "openAISDKWireCapture": false,
+  "extraction": "Exact source lines and original AST bodies; selected append/API cleanup statements are explicitly partial, not full executor/API assembly"
+}

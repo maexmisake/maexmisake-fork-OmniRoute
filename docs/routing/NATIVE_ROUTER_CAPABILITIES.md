@@ -6,7 +6,7 @@ lastUpdated: 2026-10-26
 
 # Bounded native-router capabilities
 
-Evidence date: October 26, 2026. Admitted means the runtime allows the explicitly configured contract. All twelve Claude pairs have exact JSON application-handler tests with synthetic providers. SSE tests cover representative Opus/Sonnet Medium/High pairs and an explicit OpenAI fixture, not the complete model/effort/transport cross-product. It does not prove account access, live OAuth interoperability, billed cost or model-selection quality. Saving a profile never runs a provider request.
+Evidence date: October 26, 2026. Admitted means the runtime allows the explicitly configured contract. All twelve Claude pairs have exact JSON and signed tool-SSE application-handler round trips with synthetic providers. Plain-text SSE tests cover representative pairs and an explicit OpenAI fixture, not the complete cross-product of every request option. This does not prove account access, live OAuth interoperability, billed cost or model-selection quality. Saving a profile never runs a provider request.
 
 ## Execution contracts
 
@@ -39,9 +39,9 @@ The fixture uses original request-builder fragments from [Hermes commit 749cb638
 
 An explicit fixture projection turns the captured SDK kwargs into JSON for the actual application handler. The Python OpenAI SDK is absent and was not installed. This proves request assembly plus the declared projection and application behavior, not SDK HTTP serialization, headers/retries, the full client driver or an installed Hermes version. Stream flags and sanitized-message collaborators supplied by the fixture are labeled as substitutions.
 
-The custom profile's original default-Medium method executes in the fixture. Its Medium directive remains hard: a synthetic free Jev decision can choose Opus or Sonnet at Medium and then one exact execution. A configured output cap is required. The source-derived default-stream body now has an actual-handler positive fixture. Tools/continuation requests and omitted caps remain rejected with zero dispatches. Stream flags are still fixture-supplied from the pinned driver contract, not execution of its complete streaming loop. The full Hermes agent is not yet compatible by default.
+The custom profile's original default-Medium method executes in the fixture. Its Medium directive remains hard: a synthetic free Jev decision can choose matching Medium pairs and then one exact execution. A configured output cap is required. The source-derived stream/tool request and tool-result constructors now have an actual-handler positive continuation fixture. Omitted caps and unproven execution transports still reject. Stream-driver collaborators remain explicitly supplied; neither the full driver nor the installed SDK executes. The full Hermes agent is not yet compatible by default.
 
-The overall decision-plus-execution deadline remains 30 seconds. Automatic OAuth refresh, tool continuation, broader execution contracts, optional-feature coexistence, recovery/evaluation UX and quality validation remain unfinished. No raw message excerpt was newly sent to a decision provider; live content-aware classification retains its separate privacy decision.
+The overall decision-plus-execution deadline remains 30 seconds per request. Scoped Claude tool continuation is described in [its contract](NATIVE_ROUTER_TOOLS.md): the origin stays pinned, each continuation needs fresh admission and explicit continuation-policy membership, and signed replay loss rejects. Automatic OAuth refresh, broader execution contracts, optional-feature coexistence, recovery/evaluation UX and quality validation remain unfinished. No raw message excerpt was newly sent to a decision provider; live content-aware classification retains its separate privacy decision.
 
 ## Text streaming boundary
 

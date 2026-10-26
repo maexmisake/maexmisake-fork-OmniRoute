@@ -44,6 +44,8 @@ const requestBody = z
       )
       .max(64)
       .optional(),
+    tool_choice: z.enum(["auto", "none"]).optional(),
+    parallel_tool_calls: z.boolean().optional(),
     stream: z.boolean().optional(),
     stream_options: z.object({ include_usage: z.boolean() }).strict().optional(),
     reasoning_effort: effort.optional(),
@@ -192,21 +194,42 @@ function contentFacts(body: ChatPolicyBody) {
   // boundedJson already bounds the entire request; never silently truncate task evidence.
   return { images, text };
 }
+function toolResultValid(
+  row: ChatPolicyBody["messages"][number],
+  offered: Set<string>,
+  answered: Set<string>
+): boolean {
+  if (!row.tool_call_id || !offered.has(row.tool_call_id) || answered.has(row.tool_call_id))
+    return false;
+  answered.add(row.tool_call_id);
+  return true;
+}
+function beginToolGroup(
+  row: ChatPolicyBody["messages"][number],
+  offered: Set<string>,
+  answered: Set<string>
+): boolean {
+  if (offered.size !== answered.size) return false;
+  offered.clear();
+  answered.clear();
+  if (row.tool_calls?.length && row.role !== "assistant") return false;
+  for (const call of row.tool_calls ?? []) {
+    if (offered.has(call.id)) return false;
+    offered.add(call.id);
+  }
+  return true;
+}
 function continuationValid(body: ChatPolicyBody): boolean {
   const offered = new Set<string>(),
     answered = new Set<string>();
   for (const row of body.messages) {
-    for (const call of row.tool_calls ?? []) {
-      if (row.role !== "assistant" || offered.has(call.id)) return false;
-      offered.add(call.id);
-    }
-    if (row.role === "tool") {
-      if (!row.tool_call_id || !offered.has(row.tool_call_id) || answered.has(row.tool_call_id))
-        return false;
-      answered.add(row.tool_call_id);
-    }
+    const valid =
+      row.role === "tool"
+        ? toolResultValid(row, offered, answered)
+        : beginToolGroup(row, offered, answered);
+    if (!valid) return false;
   }
-  return [...offered].every((id) => answered.has(id));
+  return offered.size === answered.size;
 }
 function classifyTask(
   text: string,
@@ -243,7 +266,7 @@ export function extractRequestFacts(
     return { ok: false, reason: "unsupported_or_unbounded_request" };
   const contents = contentFacts(body);
   if (!contents) return { ok: false, reason: "unsupported_or_unbounded_request" };
-  const continuation = body.messages.some((row) => row.role === "tool");
+  const continuation = body.messages.at(-1)?.role === "tool";
   if (continuation && !options.continuationCandidateId)
     return { ok: false, reason: "continuation_unknown" };
   const inputTokens = options.measureContext(structuredClone(body));

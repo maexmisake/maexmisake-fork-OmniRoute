@@ -1,3 +1,8 @@
+import { ApplicationTools, applicationToolRequest } from "./applicationTools";
+import {
+  canonicalToolJSON,
+  type InspectedToolRequest,
+} from "../../../open-sse/services/decisionPolicy/toolContract.ts";
 import { createApplicationStream } from "./applicationStream";
 import { assertNativeConnectionUnleased } from "./exclusiveLease";
 import { prepareNativeStage, type NativeStage } from "./applicationSelection";
@@ -45,6 +50,7 @@ import {
   assertApplicationEgress as assertEgress,
   resolveApplicationProvider,
   assertReadyClaudeOAuth,
+  isBoundedClaudePair,
   claudeWireFacts,
   claudeReportedUsage,
 } from "./applicationProvider";
@@ -78,6 +84,7 @@ function rejectedAttempt(
 }
 export type AutomaticPlan = {
   sourcePolicy: string;
+  toolRequest?: InspectedToolRequest;
   comboId: string;
   name: string;
   config: z.infer<typeof configuration>;
@@ -115,27 +122,69 @@ export async function prepareAutomaticCombo(
   createValidationPluginFence().assertIdle();
   if (!parsed.success) return automaticRejection("invalid_configuration");
   if (!keyId) return automaticRejection("authentication_required");
-  if (!validTextFacts(clientInput) || !validTextFacts(body))
-    return automaticRejection("request_facts_unsupported");
+  const admission = preparedApplicationInput(
+    clientInput,
+    body,
+    settings.echoRequestedModelName === true
+  );
+  if (admission.reason) return automaticRejection(admission.reason);
+  const toolRequest = admission.toolRequest;
   // Only explicit exact names in this initial lane; aliases/nesting never fall into legacy execution.
   return {
     comboId: String(combo.id),
+    toolRequest,
     name: model,
     config: parsed.data,
     sourcePolicy: JSON.stringify((combo.config as Record<string, unknown>).decisionPolicy),
   };
 }
-function validTextFacts(raw: unknown) {
+function prepareToolInput(
+  clientInput: unknown,
+  body: unknown
+): InspectedToolRequest | undefined | null {
+  const client = applicationToolRequest(clientInput),
+    working = applicationToolRequest(body);
+  if (!client || !working) return null;
+  const usesTools =
+    !!client.body.tools?.length ||
+    client.body.messages.some((row) => row.role === "tool" || row.tool_calls?.length);
+  if (!usesTools) return undefined;
+  if (
+    canonicalToolJSON({ ...client.body, stream: client.body.stream === true }) !==
+    canonicalToolJSON({ ...working.body, stream: working.body.stream === true })
+  )
+    return null;
+  return client;
+}
+function preparedApplicationInput(
+  client: unknown,
+  body: unknown,
+  echo: boolean
+): { toolRequest?: InspectedToolRequest; reason?: string } {
+  const toolRequest = prepareToolInput(client, body);
+  if (toolRequest === null) return { reason: "request_facts_unsupported" };
+  if (toolRequest) return echo ? { reason: "tool_model_echo_unsupported" } : { toolRequest };
+  return validTextFacts(client) && validTextFacts(body)
+    ? {}
+    : { reason: "request_facts_unsupported" };
+}
+function validRequestFacts(raw: unknown, tools?: ApplicationTools) {
   const facts = extractRequestFacts(raw, {
     measureContext: (body) =>
       Buffer.byteLength(JSON.stringify(body), "utf8") + body.messages.length * 256,
+    continuationCandidateId: tools?.continuation?.binding.candidateId,
   });
-  return facts.ok &&
-    !facts.facts.images &&
-    !facts.facts.tools &&
-    !facts.body.messages.some((row) => row.role === "tool" || row.tool_calls?.length)
-    ? facts
-    : null;
+  if (!facts.ok || facts.facts.images) return null;
+  if (
+    !tools &&
+    (facts.facts.tools ||
+      facts.body.messages.some((row) => row.role === "tool" || row.tool_calls?.length))
+  )
+    return null;
+  return facts;
+}
+function validTextFacts(raw: unknown) {
+  return validRequestFacts(raw);
 }
 
 function matchesOpenAiWireContract(
@@ -276,6 +325,36 @@ function reportedApplicationUsage(provider: string, data: Record<string, unknown
     cacheCreation: numberOrNull(prompt?.cache_creation_tokens, true),
   };
 }
+function reserveApplicationAttempt(
+  identity: AttemptIdentity,
+  native?: NativeStage,
+  tools?: ApplicationTools
+): void {
+  if (tools?.continuation) tools.claim(identity);
+  else if (native) native.handover(identity);
+  else reserveDecisionAttempt(identity);
+}
+function attachTools(
+  tools: ApplicationTools | undefined,
+  identity: AttemptIdentity,
+  stamp: string
+) {
+  return tools?.attach(identity, stamp);
+}
+function assertToolsFresh(tools: ApplicationTools | undefined, identity: AttemptIdentity): void {
+  tools?.assertFresh(identity);
+}
+function finalToolFacts(wire: Record<string, unknown>, tools?: ApplicationTools) {
+  if (!tools) return wire.tools ? { tools: wire.tools } : {};
+  const body = tools.request.body;
+  return {
+    tools: body.tools,
+    ...(body.tool_choice === undefined ? {} : { tool_choice: body.tool_choice }),
+    ...(body.parallel_tool_calls === undefined
+      ? {}
+      : { parallel_tool_calls: body.parallel_tool_calls }),
+  };
+}
 async function buildAttempt(
   plan: AutomaticPlan,
   candidate: Candidate,
@@ -285,7 +364,8 @@ async function buildAttempt(
   trace: Array<{ phase: string; id?: string; reason: string }>,
   native?: NativeStage,
   streaming = false,
-  streamOptions?: unknown
+  streamOptions?: unknown,
+  toolsSession?: ApplicationTools
 ): Promise<ApplicationAttempt> {
   const connectionId = plan.config.connections[candidate.id];
   assertNativeConnectionUnleased(connectionId);
@@ -345,6 +425,7 @@ async function buildAttempt(
       assertNativeConnectionUnleased(connectionId);
       if (reserved) assertDecisionLease(identity);
       native?.assertFresh();
+      assertToolsFresh(toolsSession, identity);
       plugins.assertIdle();
       assertUncappedDecision(
         keyId,
@@ -374,18 +455,20 @@ async function buildAttempt(
     expectedCredentials: contract.credentials,
     allowNativeClaude: contract.claude,
   });
-  if (native) native.handover(identity);
-  else reserveDecisionAttempt(identity);
+  reserveApplicationAttempt(identity, native, toolsSession);
   reserved = true;
+  const toolHooks = attachTools(toolsSession, identity, stamp);
   const stream = streaming
     ? createApplicationStream(
         identity,
         signal,
-        streamOptions as { include_usage?: boolean } | undefined
+        streamOptions as { include_usage?: boolean } | undefined,
+        toolHooks
       )
     : undefined;
   return {
     stream,
+    tools: toolHooks,
     ...identity,
     signal,
     release: () => releaseDecisionAttempt(identity),
@@ -438,16 +521,25 @@ async function buildAttempt(
         )
           throw new Error("decision_identity_changed");
         const messages = contract.claude
-          ? claudeWireFacts(wire, candidate.effort.value!, outputLimit, streaming)
+          ? claudeWireFacts(
+              wire,
+              candidate.effort.value!,
+              outputLimit,
+              streaming,
+              toolHooks?.beforeFetch
+            )
           : wire.messages;
-        const finalFacts = validTextFacts({
-          model: plan.name,
-          messages,
-          stream: false,
-          max_completion_tokens: wire.max_completion_tokens ?? wire.max_tokens,
-          ...(wire.tools ? { tools: wire.tools } : {}),
-          reasoning_effort: candidate.effort.value,
-        });
+        const finalFacts = validRequestFacts(
+          {
+            model: plan.name,
+            messages,
+            stream: false,
+            max_completion_tokens: wire.max_completion_tokens ?? wire.max_tokens,
+            ...finalToolFacts(wire, toolsSession),
+            reasoning_effort: candidate.effort.value,
+          },
+          toolsSession
+        );
         if (
           !finalFacts ||
           (wire.max_completion_tokens ?? wire.max_tokens) !== outputLimit ||
@@ -532,7 +624,8 @@ function releaseAttempt(attempt: ApplicationAttempt | undefined): void {
     // Cleanup failure cannot reopen routing. Durable pending usage expires to unknown.
   }
 }
-type ApplicationSelectionMode = "no-route" | "native" | "sole-eligible" | "deterministic";
+type ApplicationSelectionMode =
+  "no-route" | "native" | "sole-eligible" | "deterministic" | "continuation-pin";
 function applicationSelectionMode(
   plan: AutomaticPlan,
   eligibleCount: number
@@ -593,6 +686,71 @@ function completedResponse(
   result.headers.set("x-omniroute-decision-candidate", candidate.id);
   return native ? native.annotate(result) : annotateNoDecision(result, mode, attempt);
 }
+type SelectionState = { mode: ApplicationSelectionMode; native?: NativeStage };
+async function supportedToolCandidates(
+  plan: AutomaticPlan,
+  candidates: Candidate[],
+  trace: Array<{ phase: string; id?: string; reason: string }>
+) {
+  const allowed: Candidate[] = [];
+  for (const candidate of candidates) {
+    try {
+      if (
+        candidate.provider !== "claude" ||
+        !isBoundedClaudePair(candidate.model, candidate.effort.value ?? "")
+      )
+        throw new Error("unsupported");
+      const row = await getProviderConnectionById(plan.config.connections[candidate.id]);
+      if (!row) throw new Error("unsupported");
+      resolveApplicationProvider(candidate, row);
+      allowed.push(candidate);
+    } catch {
+      trace.push({ phase: "eligibility", id: candidate.id, reason: "tool_execution_unproven" });
+    }
+  }
+  return allowed;
+}
+async function selectApplicationCandidate(
+  plan: AutomaticPlan,
+  keyId: string,
+  signal: AbortSignal,
+  tools: ApplicationTools | undefined,
+  facts: NonNullable<ReturnType<typeof validRequestFacts>>,
+  state: SelectionState,
+  trace: Array<{ phase: string; id?: string; reason: string }>
+): Promise<Candidate> {
+  const snapshot = await candidateSnapshot(plan, keyId);
+  if (tools?.continuation) {
+    const binding = tools.continuation.binding;
+    const pinned = eligibleCandidates(plan.config.policy, facts.facts, snapshot, trace).find(
+      (candidate) =>
+        candidate.id === binding.candidateId &&
+        candidate.provider === binding.provider &&
+        candidate.model === binding.model &&
+        candidate.effort.value === binding.effort &&
+        plan.config.connections[candidate.id] === binding.connectionId
+    );
+    if (!pinned) throw new Error("decision_no_route");
+    if (!(await supportedToolCandidates(plan, [pinned], trace)).length)
+      throw new Error("decision_no_route");
+    state.mode = "continuation-pin";
+    trace.push({ phase: "selection", id: pinned.id, reason: "continuation_pin" });
+    return pinned;
+  }
+  let eligible = eligibleCandidates(plan.config.policy, facts.facts, snapshot, trace);
+  if (tools) eligible = await supportedToolCandidates(plan, eligible, trace);
+  if (!eligible[0]) throw new Error("decision_no_route");
+  state.mode = applicationSelectionMode(plan, eligible.length);
+  if (state.mode === "native") {
+    state.native = await prepareNativeStage(plan, eligible, keyId, signal);
+    return state.native.select(facts.facts);
+  }
+  traceNoDecisionSelection(trace, eligible[0], state.mode);
+  return eligible[0];
+}
+function prepareTools(plan: AutomaticPlan, keyId: string) {
+  return plan.toolRequest ? new ApplicationTools(plan, keyId, plan.toolRequest) : undefined;
+}
 export async function executeAutomaticCombo(
   plan: AutomaticPlan,
   body: Record<string, unknown>,
@@ -607,27 +765,26 @@ export async function executeAutomaticCombo(
   const callerSignal = signal;
   signal = AbortSignal.any([signal, AbortSignal.timeout(plan.config.policy.timeoutMs)]);
   let attempt: ApplicationAttempt | undefined;
-  let native: NativeStage | undefined;
+  const state: SelectionState = { mode: "no-route" };
   let streamHandedOff = false;
   // A configured selector is not an observed selection before eligibility succeeds.
-  let mode: ApplicationSelectionMode = "no-route";
+
   try {
     signal.throwIfAborted();
     if (body.model !== plan.name) return automaticRejection();
-    const extracted = validTextFacts(body);
+    const tools = prepareTools(plan, keyId);
+    const extracted = validRequestFacts(body, tools);
     if (!extracted) return automaticRejection();
-    const snapshot = await candidateSnapshot(plan, keyId);
     const trace: Array<{ phase: string; id?: string; reason: string }> = [];
-    const eligible = eligibleCandidates(plan.config.policy, extracted.facts, snapshot, trace);
-    let candidate = eligible[0];
-    if (!candidate) throw new Error("decision_no_route");
-    mode = applicationSelectionMode(plan, eligible.length);
-    if (mode === "native") {
-      native = await prepareNativeStage(plan, eligible, keyId, signal);
-      candidate = await native.select(extracted.facts);
-    } else {
-      traceNoDecisionSelection(trace, candidate, mode);
-    }
+    const candidate = await selectApplicationCandidate(
+      plan,
+      keyId,
+      signal,
+      tools,
+      extracted,
+      state,
+      trace
+    );
     if (await getComboByName(`${candidate.provider}/${candidate.model}`))
       throw new Error("decision_no_route");
     attempt = await buildAttempt(
@@ -637,9 +794,10 @@ export async function executeAutomaticCombo(
       signal,
       extracted.body.max_completion_tokens,
       trace,
-      native,
+      state.native,
       extracted.body.stream === true,
-      extracted.body.stream_options
+      extracted.body.stream_options,
+      tools
     );
     let response = await withApplicationAttempt(attempt, () =>
       dispatch(
@@ -656,17 +814,19 @@ export async function executeAutomaticCombo(
       );
     response = await reportedClaudeClientUsage(response, attempt);
     signal.throwIfAborted();
-    const annotated = completedResponse(response, attempt, candidate, mode, native);
+    const annotated = completedResponse(response, attempt, candidate, state.mode, state.native);
     if (attempt.stream?.active && response.ok) {
       streamHandedOff = true;
       return attempt.stream.wrap(annotated);
     }
     return annotated;
   } catch (error) {
-    const status = failureStatus(signal, callerSignal, native);
-    native?.finishFailure(status);
+    const status = failureStatus(signal, callerSignal, state.native);
+    state.native?.finishFailure(status);
     const response = rejectedAttempt(attempt, error, status);
-    return native ? native.annotate(response) : annotateNoDecision(response, mode, attempt);
+    return state.native
+      ? state.native.annotate(response)
+      : annotateNoDecision(response, state.mode, attempt);
   } finally {
     if (!streamHandedOff) releaseAttempt(attempt);
   }
