@@ -1,4 +1,7 @@
-import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
+import {
+  applicationProviderIdentity,
+  currentApplicationAttempt,
+} from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
 import {
   prepareAutomaticCombo,
   executeAutomaticCombo,
@@ -1644,6 +1647,12 @@ async function handleSingleModelChat(
     clientRawRequest?.headers
   );
   if (resolved.error) return resolved.error;
+  resolved.provider = applicationProviderIdentity(
+    resolved.provider,
+    resolved.model,
+    modelStr,
+    resolved.combo
+  );
   const automaticAttempt = currentApplicationAttempt();
   if (
     automaticAttempt &&

@@ -1,0 +1,5 @@
+{
+  "enabled": false,
+  "base_url": "https://relay.example.invalid/v1",
+  "combo": "replace-with-exact-enabled-combo"
+}

@@ -55,6 +55,7 @@ import {
   assertApplicationEgress,
   resolveApplicationProvider,
   assertReadyClaudeOAuth,
+  isApplicationEffortSupported,
 } from "./applicationProvider";
 import type { AutomaticPlan } from "./applicationCombo";
 
@@ -143,13 +144,14 @@ async function validateExecutionBindings(
       !connection ||
       connection.provider !== candidate.provider ||
       connection.isActive !== true ||
-      candidate.effort.mode !== "set"
+      !isApplicationEffortSupported(candidate)
     )
       throw new Error("decision_binding_unsupported");
     const contract = resolveApplicationProvider(candidate, connection);
     assertApplicationEgress(candidate.provider, contract.endpoint);
-    if (contract.claude) {
-      assertReadyClaudeOAuth(contract.credentials);
+    if (contract.executionContract) assertApplicationEgress("antigravity", contract.endpoint);
+    if (contract.claude || contract.executionContract) {
+      if (contract.claude) assertReadyClaudeOAuth(contract.credentials);
       if ((await getExecutor(candidate.provider)).needsRefresh(contract.credentials))
         throw new Error("decision_oauth_unsupported");
     }

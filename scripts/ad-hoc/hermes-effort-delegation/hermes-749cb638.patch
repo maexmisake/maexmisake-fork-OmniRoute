@@ -1,0 +1,26 @@
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -1461,6 +1461,13 @@
+         from providers import get_provider_profile
+         _profile = get_provider_profile(agent.provider)
+ 
++    # Optional OmniRoute client integration: never silently use the legacy
++    # path if this deliberately selected relay profile is absent/unavailable.
++    if (agent.provider or "").strip().lower() == "omniroute-delegated" and (
++        _profile is None or _profile.name != "omniroute-delegated"
++    ):
++        raise ValueError("omniroute_delegation_profile_unavailable")
++
+     _ephemeral_out = _consume_ephemeral_max_output(agent)
+     from agent.reasoning_carriers import shape_wire_carriers
+     api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url)
+@@ -1521,6 +1528,9 @@
+ 
+ 
+ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
++    # This optional relay integration supports only the reviewed chat contract.
++    if (agent.provider or "").strip().lower() == "omniroute-delegated" and agent.api_mode != "chat_completions":
++        raise ValueError("omniroute_delegation_api_mode_unsupported")
+     # One-shot continuation override — consumed exactly once, on the FIRST
+     # request this call builds (only one api_mode branch runs per invocation).
+     reasoning_config = _reasoning_config_for_wire(agent)

@@ -23,16 +23,16 @@ Neither streaming nor a quota error enables paid fallback.
 
 Selection and execution use the existing application path. With multiple eligible choices, the
 native selector makes one non-streaming Choice request, then one guarded execution. A sole eligible
-choice makes no decision request. The Claude execution body keeps exact adaptive thinking,
+choice makes no decision request. Thirteen original text choices are admitted: twelve Claude pairs and `agy/gemini-3.8-flash-high` at High. Only the twelve Claude choices support tools and continuation; Gemini is guarded text SSE only, with no tools or nonstreaming path. The separate explicit OpenAI API-key text lane is not an original-pool substitute. The Claude execution body keeps exact adaptive thinking,
 `output_config.effort`, model, OAuth account and output cap. Its ordinary response translator
-produces the client-facing Chat Completions stream. No parallel gateway was added.
+produces the client-facing Chat Completions stream. The exact AGY lane uses its existing Cloud Code formatter with a ready OAuth/project binding, exact High, an unchanged output cap and truthful application identification. Unsupported credentials, compatibility fingerprints or late wire changes reject before dispatch. No parallel gateway was added.
 
 ## Completion and accounting
 
 The raw provider tap validates bounded UTF-8/SSE framing, exact model, permitted text/thinking
 events and genuine provider completion. It does not trust a translator's synthesized terminal
 marker as provider evidence. Input/cache counts already reported can be retained on interruption;
-final output and cost remain unknown until completion. Unknown cost is never zero. Fixture costs
+final output and cost remain unknown until completion. AGY reports visible candidate output and thoughts separately; absent thought usage is not inferred from a total. Its response contract supplies no exact USD receipt, so even a successful AGY execution keeps cost unknown. Unknown cost is never zero. Fixture costs
 exercise accounting and are not vendor prices.
 
 The returned cost-status header stays `pending`; already-sent headers are not updated at completion. The journal carries the final receipt. Decision and execution journal rows
@@ -62,9 +62,6 @@ exact usage, missing usage, refusal, malformed/truncated streams, cancellation a
 Final run counts and hashes are recorded in private Gravewire; overlapping reviewer runs are not
 added together as independent coverage.
 
-The [pinned Hermes fixture](../../tests/fixtures/decisionPolicy/hermesPinned/README.md) executes
-selected original source builders and declares its JSON projection/stream-driver substitutions.
-It is not a full SDK or agent run. OpenAI Python SDK execution is still unrun in this executor;
-official hash-locked package fetching stopped at DNS failure before installing a package. The production build remains blocked by the previously recorded SWC environment restriction;
-visual browser checks were not performed. No security setting, dependency version, real account or live
-configuration was changed for these tests.
+The earlier [pinned Hermes source fixture](../../tests/fixtures/decisionPolicy/hermesPinned/README.md) uses declared projection/stream-driver substitutions. The later [installed SDK fixture](../../tests/integration/decision-hermes-installed-sdk.test.ts) independently passes **15/15**, using actual OpenAI SDK 2.54.0/HTTPX 0.28.1 on standalone Python 3.12 and a bounded in-memory bridge into the real handler. It covers SDK JSON/SSE parsing, tool assembly/continuation, terminal denial, cancellation, honest costs and effort-profile cases. This is not a TCP/TLS server test or full installed Hermes runtime; the pinned full agent requires Python 3.14. The optional [effort-delegation extension](HERMES_EFFORT_DELEGATION.md) has separate **22/22** source-builder checks and remains uninstalled.
+
+The earlier SDK attempt stopped before installation at DNS failure. A subsequent ordinary hash-locked installation succeeded using the environment's existing standard proxy configuration, without changing trust/security settings or package versions. That supersedes the old unrun status; it does not resolve the separate production build's SWC ownership restriction. A compatible production build and visual browser checks remain unverified. No real account or live configuration changed for these tests.

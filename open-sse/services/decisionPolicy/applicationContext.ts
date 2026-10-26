@@ -25,6 +25,8 @@ export type ApplicationAttempt = {
   requestId?: string;
   parentAttemptId?: string;
   signal: AbortSignal;
+  /** Private prepared-provider contract; never accepted from request data. */
+  executionContract?: "agy-gemini-high-v1";
   tools?: ApplicationToolHooks;
   /** Release occupancy without asserting that a started remote call stopped. */
   release?: () => void;
@@ -43,6 +45,25 @@ export type ApplicationAttempt = {
 };
 const attempts = new AsyncLocalStorage<ApplicationAttempt>();
 export const currentApplicationAttempt = () => attempts.getStore();
+/** Keep the audited AGY account namespace when the ordinary alias resolver names its executor. */
+export function applicationProviderIdentity(
+  provider: string,
+  model: unknown,
+  requestedModel: string,
+  combo: unknown
+): string {
+  const attempt = currentApplicationAttempt();
+  return attempt?.executionContract === "agy-gemini-high-v1" &&
+    attempt.provider === "agy" &&
+    attempt.model === "gemini-3.8-flash-high" &&
+    attempt.effort === "high" &&
+    provider === "antigravity" &&
+    model === attempt.model &&
+    requestedModel === `agy/${attempt.model}` &&
+    !combo
+    ? "agy"
+    : provider;
+}
 export function isBoundedClaudeMaxEffort(
   provider: string | undefined,
   model: string | undefined,

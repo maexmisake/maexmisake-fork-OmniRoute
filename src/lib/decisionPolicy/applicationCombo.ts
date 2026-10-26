@@ -22,11 +22,13 @@ import { eligibleCandidates } from "../../../open-sse/services/decisionPolicy/el
 import {
   extractRequestFacts,
   normalizeDecisionTextRequest,
+  type ChatPolicyBody,
 } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import {
   currentApplicationAttempt,
   withApplicationAttempt,
   type ApplicationAttempt,
+  type ApplicationToolHooks,
 } from "../../../open-sse/services/decisionPolicy/applicationContext.ts";
 import { errorResponse } from "../../../open-sse/utils/error.ts";
 import { getComboByName } from "../db/combos";
@@ -51,9 +53,13 @@ import {
   resolveApplicationProvider,
   assertReadyClaudeOAuth,
   isBoundedClaudePair,
+  isApplicationEffortSupported,
   claudeWireFacts,
   claudeReportedUsage,
+  type ApplicationProvider,
 } from "./applicationProvider";
+import { applicationAgyWireFacts, supportsApplicationAgyRequest } from "./applicationGemini";
+import { assertBoundedAgyCredentials } from "../../../open-sse/executors/antigravity/bounded.ts";
 
 function rejectedAttempt(
   attempt: ApplicationAttempt | undefined,
@@ -355,6 +361,78 @@ function finalToolFacts(wire: Record<string, unknown>, tools?: ApplicationTools)
       : { parallel_tool_calls: body.parallel_tool_calls }),
   };
 }
+type FinalWireOptions = {
+  contract: ApplicationProvider;
+  candidate: Candidate;
+  outputLimit: number;
+  streaming: boolean;
+  streamOptions: unknown;
+  originalBody: ChatPolicyBody;
+  toolHooks?: ApplicationToolHooks;
+};
+function finalApplicationWire(
+  wire: Record<string, unknown>,
+  headers: Headers,
+  options: FinalWireOptions
+) {
+  const { contract, candidate, outputLimit, streaming, streamOptions, originalBody, toolHooks } =
+    options;
+  if (contract.executionContract) {
+    const messages = applicationAgyWireFacts(
+      wire,
+      headers,
+      contract.credentials,
+      originalBody,
+      outputLimit
+    );
+    return { messages, output: outputLimit, messageCount: messages.length };
+  }
+  if (wire.stream !== streaming) throw new Error("decision_identity_changed");
+  if (!contract.claude && !validOpenAiWire(wire, candidate, outputLimit, streaming, streamOptions))
+    throw new Error("decision_identity_changed");
+  const messages = contract.claude
+    ? claudeWireFacts(wire, candidate.effort.value!, outputLimit, streaming, toolHooks?.beforeFetch)
+    : wire.messages;
+  if (!Array.isArray(messages) || !Array.isArray(wire.messages))
+    throw new Error("decision_final_request_unsupported");
+  return {
+    messages,
+    output: wire.max_completion_tokens ?? wire.max_tokens,
+    messageCount: wire.messages.length,
+  };
+}
+function validOpenAiWire(
+  wire: Record<string, unknown>,
+  candidate: Candidate,
+  outputLimit: number,
+  streaming: boolean,
+  streamOptions: unknown
+): boolean {
+  return (
+    matchesOpenAiWireContract(wire, candidate, outputLimit, streaming, streamOptions) &&
+    Object.keys(wire).every((key) =>
+      [
+        "model",
+        "messages",
+        "stream",
+        "stream_options",
+        "reasoning_effort",
+        "reasoning",
+        "max_tokens",
+        "max_completion_tokens",
+        "prompt_cache_key",
+      ].includes(key)
+    )
+  );
+}
+function physicalApplicationProvider(provider: string, contract: ApplicationProvider): string {
+  return contract.executionContract ? "antigravity" : provider;
+}
+function assertApplicationEgress(provider: string, contract: ApplicationProvider, url: string) {
+  assertEgress(provider, url);
+  if (contract.executionContract)
+    assertEgress(physicalApplicationProvider(provider, contract), url);
+}
 async function buildAttempt(
   plan: AutomaticPlan,
   candidate: Candidate,
@@ -362,6 +440,7 @@ async function buildAttempt(
   signal: AbortSignal,
   outputLimit: number,
   trace: Array<{ phase: string; id?: string; reason: string }>,
+  originalBody: ChatPolicyBody,
   native?: NativeStage,
   streaming = false,
   streamOptions?: unknown,
@@ -375,7 +454,7 @@ async function buildAttempt(
     connection.provider !== candidate.provider ||
     connection.isActive !== true ||
     !candidate.effort.value ||
-    candidate.effort.mode !== "set"
+    !isApplicationEffortSupported(candidate)
   )
     throw new Error("decision_binding_unsupported");
   const key = await getApiKeyById(keyId);
@@ -387,6 +466,7 @@ async function buildAttempt(
   )
     throw new Error("decision_connection_unauthorized");
   const contract = resolveApplicationProvider(candidate, connection);
+  const physicalProvider = physicalApplicationProvider(candidate.provider, contract);
   const executor = await getExecutor(candidate.provider);
   const identity: AttemptIdentity = {
     id: randomUUID(),
@@ -416,7 +496,7 @@ async function buildAttempt(
   );
   const stamp = authorityStamp(identity, plan.sourcePolicy);
   const endpoint = new URL(contract.endpoint);
-  assertEgress(candidate.provider, endpoint.href);
+  assertApplicationEgress(candidate.provider, contract, endpoint.href);
   const plugins = createValidationPluginFence();
   let reserved = false;
   const assertFresh = () => {
@@ -436,8 +516,9 @@ async function buildAttempt(
       );
       if (authorityStamp(identity, plan.sourcePolicy) !== stamp)
         throw new Error("decision_authority_changed");
-      if (contract.claude) {
-        assertReadyClaudeOAuth(contract.credentials);
+      if (contract.claude || contract.executionContract) {
+        if (contract.claude) assertReadyClaudeOAuth(contract.credentials);
+        else assertBoundedAgyCredentials(contract.credentials);
         if (executor.needsRefresh(contract.credentials))
           throw new Error("decision_oauth_unsupported");
       }
@@ -454,6 +535,7 @@ async function buildAttempt(
     expectedExecutor: executor,
     expectedCredentials: contract.credentials,
     allowNativeClaude: contract.claude,
+    allowNativeAgyGemini: contract.executionContract === "agy-gemini-high-v1",
   });
   reserveApplicationAttempt(identity, native, toolsSession);
   reserved = true;
@@ -469,6 +551,7 @@ async function buildAttempt(
   return {
     stream,
     tools: toolHooks,
+    ...(contract.executionContract ? { executionContract: contract.executionContract } : {}),
     ...identity,
     signal,
     release: () => releaseDecisionAttempt(identity),
@@ -482,12 +565,12 @@ async function buildAttempt(
       },
       beforeFetch(details) {
         assertFresh();
-        assertEgress(candidate.provider, details.url);
+        assertApplicationEgress(candidate.provider, contract, details.url);
         const wire = typeof details.body === "string" ? JSON.parse(details.body) : null;
         const headers = new Headers(details.headers);
         if (
           authorityStamp(identity, plan.sourcePolicy) !== stamp ||
-          details.provider !== candidate.provider ||
+          details.provider !== physicalProvider ||
           details.model !== candidate.model ||
           details.credentials.connectionId !== connectionId ||
           (["apiKey", "accessToken", "refreshToken"] as const).some(
@@ -499,42 +582,24 @@ async function buildAttempt(
           headers.has("x-api-key") ||
           headers.has("api-key") ||
           details.url !== endpoint.href ||
-          wire?.model !== candidate.model ||
-          (!contract.claude &&
-            !matchesOpenAiWireContract(wire, candidate, outputLimit, streaming, streamOptions)) ||
-          wire?.stream !== streaming ||
-          (!contract.claude &&
-            Object.keys(wire ?? {}).some(
-              (key) =>
-                ![
-                  "model",
-                  "messages",
-                  "stream",
-                  "stream_options",
-                  "reasoning_effort",
-                  "reasoning",
-                  "max_tokens",
-                  "max_completion_tokens",
-                  "prompt_cache_key",
-                ].includes(key)
-            ))
+          wire?.model !== candidate.model
         )
           throw new Error("decision_identity_changed");
-        const messages = contract.claude
-          ? claudeWireFacts(
-              wire,
-              candidate.effort.value!,
-              outputLimit,
-              streaming,
-              toolHooks?.beforeFetch
-            )
-          : wire.messages;
+        const validated = finalApplicationWire(wire, headers, {
+          contract,
+          candidate,
+          outputLimit,
+          streaming,
+          streamOptions,
+          originalBody,
+          toolHooks,
+        });
         const finalFacts = validRequestFacts(
           {
             model: plan.name,
-            messages,
+            messages: validated.messages,
             stream: false,
-            max_completion_tokens: wire.max_completion_tokens ?? wire.max_tokens,
+            max_completion_tokens: validated.output,
             ...finalToolFacts(wire, toolsSession),
             reasoning_effort: candidate.effort.value,
           },
@@ -542,10 +607,10 @@ async function buildAttempt(
         );
         if (
           !finalFacts ||
-          (wire.max_completion_tokens ?? wire.max_tokens) !== outputLimit ||
+          validated.output !== outputLimit ||
           candidate.capabilities.contextTokens === null ||
           Buffer.byteLength(JSON.stringify(wire), "utf8") +
-            wire.messages.length * 256 +
+            validated.messageCount * 256 +
             outputLimit >
             candidate.capabilities.contextTokens
         )
@@ -687,25 +752,51 @@ function completedResponse(
   return native ? native.annotate(result) : annotateNoDecision(result, mode, attempt);
 }
 type SelectionState = { mode: ApplicationSelectionMode; native?: NativeStage };
-async function supportedToolCandidates(
+async function assertExecutionContract(
+  plan: AutomaticPlan,
+  candidate: Candidate,
+  requiresTools: boolean,
+  body: ChatPolicyBody
+) {
+  if (!isApplicationEffortSupported(candidate)) throw new Error("unsupported");
+  if (
+    requiresTools &&
+    (candidate.provider !== "claude" ||
+      !isBoundedClaudePair(candidate.model, candidate.effort.value ?? ""))
+  )
+    throw new Error("unsupported");
+  const row = await getProviderConnectionById(plan.config.connections[candidate.id]);
+  if (!row || row.provider !== candidate.provider || row.isActive !== true)
+    throw new Error("unsupported");
+  const contract = resolveApplicationProvider(candidate, row);
+  if (contract.executionContract && !supportsApplicationAgyRequest(body))
+    throw new Error("unsupported");
+}
+async function supportedExecutionCandidates(
   plan: AutomaticPlan,
   candidates: Candidate[],
-  trace: Array<{ phase: string; id?: string; reason: string }>
+  trace: Array<{ phase: string; id?: string; reason: string }>,
+  requiresTools: boolean,
+  body: ChatPolicyBody
 ) {
   const allowed: Candidate[] = [];
   for (const candidate of candidates) {
+    // Reject recursion before an unsupported contract can hide it and turn a
+    // native selection into a sole-eligible execution. Hard exclusions ran first.
+    if (
+      (await getComboByName(candidate.model)) ||
+      (await getComboByName(`${candidate.provider}/${candidate.model}`))
+    )
+      throw new Error("decision_recursion_rejected");
     try {
-      if (
-        candidate.provider !== "claude" ||
-        !isBoundedClaudePair(candidate.model, candidate.effort.value ?? "")
-      )
-        throw new Error("unsupported");
-      const row = await getProviderConnectionById(plan.config.connections[candidate.id]);
-      if (!row) throw new Error("unsupported");
-      resolveApplicationProvider(candidate, row);
+      await assertExecutionContract(plan, candidate, requiresTools, body);
       allowed.push(candidate);
     } catch {
-      trace.push({ phase: "eligibility", id: candidate.id, reason: "tool_execution_unproven" });
+      trace.push({
+        phase: "eligibility",
+        id: candidate.id,
+        reason: requiresTools ? "tool_execution_unproven" : "execution_contract_unproven",
+      });
     }
   }
   return allowed;
@@ -731,14 +822,20 @@ async function selectApplicationCandidate(
         plan.config.connections[candidate.id] === binding.connectionId
     );
     if (!pinned) throw new Error("decision_no_route");
-    if (!(await supportedToolCandidates(plan, [pinned], trace)).length)
+    if (!(await supportedExecutionCandidates(plan, [pinned], trace, true, facts.body)).length)
       throw new Error("decision_no_route");
     state.mode = "continuation-pin";
     trace.push({ phase: "selection", id: pinned.id, reason: "continuation_pin" });
     return pinned;
   }
   let eligible = eligibleCandidates(plan.config.policy, facts.facts, snapshot, trace);
-  if (tools) eligible = await supportedToolCandidates(plan, eligible, trace);
+  eligible = await supportedExecutionCandidates(
+    plan,
+    eligible,
+    trace,
+    tools !== undefined,
+    facts.body
+  );
   if (!eligible[0]) throw new Error("decision_no_route");
   state.mode = applicationSelectionMode(plan, eligible.length);
   if (state.mode === "native") {
@@ -794,6 +891,7 @@ export async function executeAutomaticCombo(
       signal,
       extracted.body.max_completion_tokens,
       trace,
+      extracted.body,
       state.native,
       extracted.body.stream === true,
       extracted.body.stream_options,

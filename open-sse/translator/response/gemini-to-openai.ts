@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
 import {
@@ -295,6 +296,16 @@ function emitFunctionCallPart(
   });
 }
 
+function isBoundedAgyTextOnly(): boolean {
+  const attempt = currentApplicationAttempt();
+  return (
+    attempt?.executionContract === "agy-gemini-high-v1" &&
+    attempt.provider === "agy" &&
+    attempt.model === "gemini-3.8-flash-high" &&
+    attempt.effort === "high"
+  );
+}
+
 // Convert Gemini response chunk to OpenAI format
 export function geminiToOpenAIResponse(chunk, state) {
   if (!chunk) return null;
@@ -478,6 +489,11 @@ export function geminiToOpenAIResponse(chunk, state) {
           ? consumeTextualReasoningTags(partText, state, results)
           : partText;
         if (!afterReasoning) continue;
+        // This prepared text-only lane never promotes assistant prose to a tool call.
+        if (isBoundedAgyTextOnly()) {
+          emitTextDelta(afterReasoning, state, results);
+          continue;
+        }
 
         let accumulated = (state.textualToolCallBuffer || "") + afterReasoning;
 

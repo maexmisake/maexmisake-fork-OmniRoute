@@ -12,7 +12,7 @@ quality. Ordinary routing defaults and the historical 23-choice pool remain unch
 
 ## Request and selection
 
-The first tool slice uses the existing `bounded-v1` application path, Chat Completions text SSE,
+The twelve original Claude model/effort choices support this tool contract. The thirteenth admitted text choice, AGY Gemini High, is text SSE only and cannot enter tools or continuation. The tool path uses the existing `bounded-v1` application path, Chat Completions text SSE,
 an explicit output cap and an explicitly configured Claude model/effort profile with tools enabled.
 Tool selection supports `auto` and `none`, with bounded declared function schemas and optional
 `parallel_tool_calls`. Other tool controls, images, nonstreaming tools and unproven execution
@@ -68,23 +68,18 @@ invented signature. The supported native ordering is signed-thinking blocks, the
 calls. Backwards transitions reject instead of silently changing ordering. Integer tool arguments
 outside JavaScript's safe range reject rather than changing their meaning for a Python client.
 
-Pinned Hermes source constructors and request builders are used with explicit synthetic
-collaborators. The fixture executes no actual tool, installed agent or OpenAI SDK HTTP exchange.
-The custom Hermes main path defaults unset effort to explicit Medium; that remains a hard client
-constraint. Reasoning disabled/`none` is not effort delegation. No verified user-facing omission
-setting is prescribed, so default Hermes must not be advertised as delegating effort automatically.
+Pinned Hermes source constructors and request builders execute with explicit synthetic collaborators. A later actual OpenAI SDK 2.54.0/HTTPX 0.28.1 fixture on standalone Python 3.12 independently passes **15/15**, including SDK tool-call assembly, original result constructors and a second SDK request through the actual handler with the same account/model/effort and no second decision. Synthetic results are supplied; no tool runs. It does not execute the complete installed Hermes agent, whose pinned runtime requires Python 3.14.
 
-The nine Codex and two `agy` execution choices still need exact bounded transport contracts.
-Automatic OAuth refresh, broader optional-feature coexistence, compatible production build/browser
-checks and live free-Zen validation remain separate work. No real prompt excerpt was newly sent to
-a decision provider, no security setting was weakened and no live configuration was changed.
+The ordinary Hermes custom path turns unset effort into explicit Medium; that remains a hard constraint. The new optional [effort-delegation extension](HERMES_EFFORT_DELEGATION.md), independently checked **22/22**, preserves explicit effort/Off and ordinary defaults while allowing intentional unset-default omission for one approved relay/combo. Its dedicated profile and two pinned guards are mandatory and remain uninstalled. SDK fixtures demonstrate omitted effort stays absent across both tool requests; the trusted continuation still pins the original selected pair. Off is not delegation and rejects when that pair cannot honor it.
+
+The nine Codex OAuth choices and AGY Opus High remain excluded for the precise [execution-contract gaps](NATIVE_ROUTER_CAPABILITIES.md). Gemini High has a guarded text-only SSE contract, not tool support. Automatic OAuth refresh, broader optional-feature coexistence, compatible production build/browser checks and live free-Zen validation remain separate work. No real prompt excerpt was newly sent to a decision provider, no security setting was weakened and no live configuration changed.
 
 ## Offline acceptance and limits
 
-All twelve admitted Claude model/effort pairs have synthetic tool round trips through the actual
+At the preceding October 26 tool-continuation checkpoint, all twelve admitted Claude model/effort pairs have synthetic tool round trips through the actual
 handler, including the two Max-effort exception boundaries. The pinned Hermes High constructor is
-kept distinct from synthetic requests with adjusted efforts. Independent actual-handler review
-passes fourteen adversarial cases; the final root selection passes 1,154 checks across sixty files.
+kept distinct from synthetic requests with adjusted efforts. That checkpoint
+passed fourteen independent adversarial cases and 1,154 selected checks across sixty files. Those historical counts do not include the later SDK/effort-extension or AGY additions.
 The whole repository suite is unrun.
 
 Core compilation and scoped lint pass. Strict core retains eighteen diagnostics byte-identical to

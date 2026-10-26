@@ -25,6 +25,13 @@ import { persistCreditBalance, getAllPersistedCreditBalances } from "@/lib/db/cr
 import { setConnectionRateLimitUntil } from "@/lib/db/providers";
 import { markAntigravityModelQuotaExhausted } from "../services/antigravityFamilyCooldown.ts";
 import { cleanModelName } from "./antigravity/modelResolution.ts";
+import {
+  assertBoundedAgyInput,
+  boundedAgyContext,
+  boundedAgyHeaders,
+  boundedAgyProjection,
+  requestsBoundedAgy,
+} from "./antigravity/bounded.ts";
 export { cleanModelName } from "./antigravity/modelResolution.ts";
 import { resolveAntigravityOutputCap } from "./antigravityOutputCap.ts";
 export { MAX_ANTIGRAVITY_OUTPUT_TOKENS } from "./antigravityOutputCap.ts";
@@ -158,9 +165,10 @@ type AntigravityChunkContent = Record<string, unknown> & {
 type AntigravityRequestEnvelope = Record<string, unknown> & {
   project: string;
   model?: string;
-  userAgent: "antigravity";
-  requestType: "agent" | "image_gen";
-  requestId: string;
+  // The opt-in Code Assist projection omits legacy client-identity fields.
+  userAgent?: "antigravity";
+  requestType?: "agent" | "image_gen";
+  requestId?: string;
   request: Record<string, unknown>;
   enabledCreditTypes?: string[];
 };
@@ -621,7 +629,13 @@ export class AntigravityExecutor extends BaseExecutor {
     return `${baseUrl}/v1internal:streamGenerateContent?alt=sse`;
   }
 
-  buildHeaders(credentials: AntigravityCredentials, _stream = true): Record<string, string> {
+  buildHeaders(
+    credentials: AntigravityCredentials,
+    _stream = true,
+    _clientHeaders?: Record<string, string>,
+    model = "gemini-3.8-flash-high"
+  ): Record<string, string> {
+    if (boundedAgyContext(model, credentials)) return boundedAgyHeaders(model, credentials);
     const clientProfile = getAntigravityClientProfile(credentials);
     const raw = {
       ...getAntigravityContentHeaders(clientProfile, credentials.accessToken),
@@ -639,6 +653,8 @@ export class AntigravityExecutor extends BaseExecutor {
     modelIdOverride?: string,
     signal?: AbortSignal
   ): Promise<AntigravityRequestEnvelope | Response> {
+    if (boundedAgyContext(model, credentials))
+      return boundedAgyProjection(model, body, credentials);
     // Project ID resolution: prefer OAuth-stored projectId over incoming body.project
     // to avoid stale/wrong client-side values causing 404/403 from Cloud Code endpoints.
     // Opt-in escape hatch: set OMNIROUTER_ALLOW_BODY_PROJECT_OVERRIDE=1.
@@ -1228,6 +1244,10 @@ export class AntigravityExecutor extends BaseExecutor {
    * exactly the same single call as before (zero extra upstream requests).
    */
   async execute(input: ExecuteInput) {
+    if (requestsBoundedAgy(input)) {
+      assertBoundedAgyInput(input);
+      return super.execute({ ...input, skipUpstreamRetry: true });
+    }
     const physicalSendCounter: AntigravityPhysicalSendCounter = { value: 0 };
     await resolveAntigravityClientVersion(getAntigravityClientProfile(input.credentials));
 

@@ -7,6 +7,7 @@ import {
   type AttemptIdentity,
 } from "../db/decisionAttempts";
 import { claudeReportedUsage } from "./applicationProvider";
+import { BoundedGeminiFrames } from "./geminiResponseProof";
 
 function concatFrames(chunks: Uint8Array[], bytes: number): Uint8Array {
   const result = new Uint8Array(bytes);
@@ -59,11 +60,14 @@ class ProviderFrames {
   private finished = false;
   private usage: Json = {};
   private blocks = new Set<number>();
+  private gemini?: BoundedGeminiFrames;
   refused = false;
   constructor(
     private identity: AttemptIdentity,
     private tools?: ApplicationToolHooks
-  ) {}
+  ) {
+    if (identity.provider === "agy") this.gemini = new BoundedGeminiFrames(identity.model);
+  }
   accept(text: string): void {
     this.buffer += text;
     let delimiter: RegExpExecArray | null;
@@ -84,7 +88,10 @@ class ProviderFrames {
       .join("\n");
     if (!data) return;
     if (this.stopped) throw new Error("decision_stream_after_terminal");
-    if (this.identity.provider === "claude") {
+    if (this.gemini) {
+      this.gemini.accept(object(JSON.parse(data)));
+      this.refused = this.gemini.refused;
+    } else if (this.identity.provider === "claude") {
       const parsed = object(JSON.parse(data));
       const events = frame
         .split(/\r?\n/)
@@ -214,6 +221,7 @@ class ProviderFrames {
     this.refused ||= choice.finish_reason === "content_filter";
   }
   partial() {
+    if (this.gemini) return this.gemini.partial();
     // Input/cache counts describe already-processed input. Cumulative output and
     // cost are not a final bill until the provider terminal and EOF are verified.
     const usage =
@@ -227,7 +235,9 @@ class ProviderFrames {
     return { ...usage, output: null, cost: null, reasoning: null };
   }
   result() {
-    if (this.buffer.trim() || !this.stopped) throw new Error("decision_stream_incomplete");
+    if (this.buffer.trim()) throw new Error("decision_stream_incomplete");
+    if (this.gemini) return this.gemini.result();
+    if (!this.stopped) throw new Error("decision_stream_incomplete");
     if (this.identity.provider === "claude")
       return { ...claudeReportedUsage(this.usage), cost: cost(this.usage.cost) };
     const completion = this.usage.completion_tokens_details as Json | undefined;

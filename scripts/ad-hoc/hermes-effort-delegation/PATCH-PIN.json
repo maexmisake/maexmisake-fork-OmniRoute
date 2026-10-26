@@ -1,0 +1,35 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "target": "agent/chat_completion_helpers.py",
+  "originalSHA256": "11ab752ee3cdb7b272d5b48bb93a8cc809d6d459c0f1978e84853634945d1df7",
+  "patchedSHA256": "a6fe04d0f602096573c75508ba9ef23f99f00394d2595cb8006c2a351a631fc1",
+  "patchSHA256": "cdf57c0d0fa8066081eaffea439f4384bec3ccbe6e10e4406eaf5c5a35a799a2",
+  "guards": [
+    {
+      "function": "_build_chat_completions_kwargs",
+      "anchor": "    with contextlib.suppress(Exception):\n        from providers import get_provider_profile\n        _profile = get_provider_profile(agent.provider)\n",
+      "after": true,
+      "addition": "\n    # Optional OmniRoute client integration: never silently use the legacy\n    # path if this deliberately selected relay profile is absent/unavailable.\n    if (agent.provider or \"\").strip().lower() == \"omniroute-delegated\" and (\n        _profile is None or _profile.name != \"omniroute-delegated\"\n    ):\n        raise ValueError(\"omniroute_delegation_profile_unavailable\")\n"
+    },
+    {
+      "function": "_build_api_kwargs_for_mode",
+      "anchor": "    # One-shot continuation override — consumed exactly once, on the FIRST\n",
+      "after": false,
+      "addition": "    # This optional relay integration supports only the reviewed chat contract.\n    if (agent.provider or \"\").strip().lower() == \"omniroute-delegated\" and agent.api_mode != \"chat_completions\":\n        raise ValueError(\"omniroute_delegation_api_mode_unsupported\")\n"
+    }
+  ],
+  "functions": {
+    "_build_chat_completions_kwargs": {
+      "originalSHA256": "020457f7605b0cbf598201f17a225d2ec38dd0e15ab4f4c9beeb4b9a5a991d20",
+      "patchedSHA256": "91f69fd86d894325e7114610ba4ec0f8dd5329045733e9048c2adc4f5a32b673"
+    },
+    "_build_api_kwargs_for_mode": {
+      "originalSHA256": "a7add7180cc09bca872d0fcd40fc5355946c4abb54ac87660c7d1e38e259a6be",
+      "patchedSHA256": "705c8bb07594b74f0aebabae5a7f58e0316e8c06720d9e32c90aa7cc70fe3882"
+    }
+  },
+  "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/chat_completion_helpers.py",
+  "installationPerformed": false,
+  "ordinaryCustomChanged": false
+}

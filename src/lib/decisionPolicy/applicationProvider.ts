@@ -7,12 +7,17 @@ import {
 import type { Candidate } from "../../../open-sse/services/decisionPolicy/contract.ts";
 import type { ProviderCredentials } from "../../../open-sse/executors/base/validationDispatch.ts";
 import { parseTokenExpiryMs } from "../tokenHealthCheckExpiry";
+import { applicationAgyProvider, isApplicationAgyPair } from "./applicationGemini";
 
 export type ApplicationProvider = {
   claude: boolean;
+  executionContract?: "agy-gemini-high-v1";
   endpoint: string;
   credentials: ProviderCredentials;
 };
+export function isApplicationEffortSupported(candidate: Candidate): boolean {
+  return candidate.effort.mode === "set" || isApplicationAgyPair(candidate);
+}
 export function isBoundedClaudePair(model: string, effort: string): boolean {
   return (
     (model === "claude-opus-5-5" && ["medium", "high", "xhigh", "max"].includes(effort)) ||
@@ -28,36 +33,42 @@ export function assertReadyClaudeOAuth(credentials: ProviderCredentials): void {
   )
     throw new Error("decision_oauth_unsupported");
 }
+function resolveClaudeProvider(
+  candidate: Candidate,
+  connection: Record<string, unknown>,
+  data: Record<string, unknown>
+): ApplicationProvider {
+  if (
+    connection.authType !== "oauth" ||
+    !isBoundedClaudePair(candidate.model, candidate.effort.value ?? "")
+  )
+    throw new Error("decision_connection_unsupported");
+  // OAuth tokens stay on the canonical existing native Messages transport.
+  if (Object.keys(data).length !== 0) throw new Error("decision_connection_unsupported");
+  const credentials: ProviderCredentials = {
+    accessToken: typeof connection.accessToken === "string" ? connection.accessToken : undefined,
+    refreshToken: typeof connection.refreshToken === "string" ? connection.refreshToken : undefined,
+    expiresAt: String(connection.tokenExpiresAt || connection.expiresAt || ""),
+    ...(connection.apiKey ? { apiKey: String(connection.apiKey) } : {}),
+    connectionId: String(connection.id),
+  };
+  assertReadyClaudeOAuth(credentials);
+  return {
+    claude: true,
+    credentials,
+    endpoint: "https://api.anthropic.com/v1/messages?beta=true",
+  };
+}
 export function resolveApplicationProvider(
   candidate: Candidate,
   connection: Record<string, unknown>
 ): ApplicationProvider {
+  if (!isApplicationEffortSupported(candidate)) throw new Error("decision_connection_unsupported");
   const data = (connection.providerSpecificData ?? {}) as Record<string, unknown>;
   if (data.extraApiKeys || data.cliproxyapiMode || data.darioMode)
     throw new Error("decision_connection_unsupported");
-  if (candidate.provider === "claude") {
-    if (
-      connection.authType !== "oauth" ||
-      !isBoundedClaudePair(candidate.model, candidate.effort.value ?? "")
-    )
-      throw new Error("decision_connection_unsupported");
-    // OAuth tokens stay on the canonical existing native Messages transport.
-    if (Object.keys(data).length !== 0) throw new Error("decision_connection_unsupported");
-    const credentials: ProviderCredentials = {
-      accessToken: typeof connection.accessToken === "string" ? connection.accessToken : undefined,
-      refreshToken:
-        typeof connection.refreshToken === "string" ? connection.refreshToken : undefined,
-      expiresAt: String(connection.tokenExpiresAt || connection.expiresAt || ""),
-      ...(connection.apiKey ? { apiKey: String(connection.apiKey) } : {}),
-      connectionId: String(connection.id),
-    };
-    assertReadyClaudeOAuth(credentials);
-    return {
-      claude: true,
-      credentials,
-      endpoint: "https://api.anthropic.com/v1/messages?beta=true",
-    };
-  }
+  if (isApplicationAgyPair(candidate)) return applicationAgyProvider(candidate, connection);
+  if (candidate.provider === "claude") return resolveClaudeProvider(candidate, connection, data);
   if (candidate.provider !== "openai" || connection.authType !== "apikey")
     throw new Error("decision_connection_unsupported");
   const base =

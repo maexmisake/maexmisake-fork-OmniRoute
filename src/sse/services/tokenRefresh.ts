@@ -1,4 +1,5 @@
 import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
+import { assertBoundedAgyCredentials } from "@omniroute/open-sse/executors/antigravity/bounded.ts";
 import { assertReadyClaudeOAuth } from "@/lib/decisionPolicy/applicationProvider";
 // Re-export from open-sse with local logger
 import * as log from "../utils/logger";
@@ -259,6 +260,15 @@ export async function checkAndRefreshToken(provider: string, credentials: any) {
       credentials.connectionId === automatic.connectionId
     ) {
       assertReadyClaudeOAuth(credentials);
+      return credentials;
+    }
+    if (
+      automatic.executionContract === "agy-gemini-high-v1" &&
+      provider === "agy" &&
+      provider === automatic.provider &&
+      credentials.connectionId === automatic.connectionId
+    ) {
+      assertBoundedAgyCredentials(credentials);
       return credentials;
     }
     if (

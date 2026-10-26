@@ -1,0 +1,89 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "fragments": [
+    {
+      "path": "agent/chat_completion_helpers.py",
+      "qualifiedName": "_consume_ephemeral_reasoning_off",
+      "startLine": 1276,
+      "endLine": 1290,
+      "source": "def _consume_ephemeral_reasoning_off(agent) -> bool:\n    \"\"\"Consume the one-shot \"answer without thinking\" continuation flag.\n\n    Set by the length-continuation path when a request returned reasoning but NO\n    visible content (thinking ate the output cap); continuation turns never replay\n    prior reasoning, so thinking ON would re-burn the budget. When True the caller\n    overrides the wire reasoning_config with ``{\"enabled\": False, \"effort\": \"none\"}``\n    for exactly the next call. Prompt-cache cost is bounded to ONE cold prefix write\n    on config-sensitive providers (Anthropic, OpenAI) — far cheaper than four futile\n    full-budget continuations.\n    \"\"\"\n    consumed = bool(getattr(agent, \"_ephemeral_reasoning_off\", False))\n    if consumed:\n        agent._ephemeral_reasoning_off = False\n    return consumed\n",
+      "sha256": "d5281dfd499f12d7a363cf2d72fc802a39d1ce9e256572f036f41b3a2e7fa208",
+      "sourceKind": "byte-verified-local-whole-module",
+      "wholeModuleSHA256": "11ab752ee3cdb7b272d5b48bb93a8cc809d6d459c0f1978e84853634945d1df7"
+    },
+    {
+      "path": "agent/chat_completion_helpers.py",
+      "qualifiedName": "_reasoning_config_for_wire",
+      "startLine": 1293,
+      "endLine": 1341,
+      "source": "def _reasoning_config_for_wire(agent):\n    \"\"\"``agent.reasoning_config`` with the one-shot reasoning-off override applied.\n\n    Once the route has answered a disable with \"reasoning is mandatory\"\n    (``agent._reasoning_disable_rejected``), every disable — configured or\n    the one-shot continuation override — is dropped for the rest of the\n    session: the request goes out without a reasoning config and the route\n    applies its own default.\n    \"\"\"\n    cfg = agent.reasoning_config\n    ephemeral_off = _consume_ephemeral_reasoning_off(agent)\n    if getattr(agent, \"_reasoning_effort_rejected\", False):\n        # The route rejected the configured reasoning LEVEL itself (#100536: ``reasoning.effort:\n        # max`` on an enabled config). Omit the reasoning fields for the rest of the session —\n        # the route default — as the auxiliary ladder does; resending would 400 identically.\n        agent._wire_reasoning_config = None\n        return None\n    if cfg is None:\n        # Unset effort: the profile's default (custom/OpenAI-compatible: medium) rather than the\n        # route's own, recorded below as what went out so a rejection of it lands in the branch above.\n        from agent.reasoning_params import unset_reasoning_default\n        cfg = unset_reasoning_default(agent)\n    if getattr(agent, \"_reasoning_disable_rejected\", False):\n        # The route rejects disables. Resend exactly what the session has\n        # been sending — the user's own config — so the retry lands on the\n        # same provider cache key as every prior request. Only a config that\n        # is itself a disable changes, and that session has never sent\n        # anything else, so nothing warm is lost: a route that said the\n        # disable is *mandatory-on* gets the floor effort (closest to what\n        # the user asked for); a relay that does not know the field gets\n        # nothing (route default).\n        if isinstance(cfg, dict) and (\n            cfg.get(\"enabled\") is False or cfg.get(\"effort\") == \"none\"\n        ):\n            if getattr(agent, \"_reasoning_floor_required\", False):\n                from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT\n                floored = {**cfg, \"enabled\": True, \"effort\": REASONING_FLOOR_EFFORT}\n                agent._wire_reasoning_config = floored\n                return floored\n            agent._wire_reasoning_config = None\n            return None\n        agent._wire_reasoning_config = cfg\n        return cfg\n    if ephemeral_off:\n        cfg = {**(cfg or {}), \"enabled\": False, \"effort\": \"none\"}\n    # What actually went out: the reasoning-rejection rung reads it to tell a rejected\n    # disable (drop the disable) from a rejected level (drop the reasoning fields).\n    agent._wire_reasoning_config = cfg\n    return cfg\n",
+      "sha256": "5ce74629d7657ea80b506da4e435c0338805846078171307c42e504ef415a46e",
+      "sourceKind": "byte-verified-local-whole-module",
+      "wholeModuleSHA256": "11ab752ee3cdb7b272d5b48bb93a8cc809d6d459c0f1978e84853634945d1df7"
+    },
+    {
+      "path": "agent/chat_completion_helpers.py",
+      "qualifiedName": "_build_api_kwargs_for_mode",
+      "startLine": 1523,
+      "endLine": 1540,
+      "source": "def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:\n    # One-shot continuation override — consumed exactly once, on the FIRST\n    # request this call builds (only one api_mode branch runs per invocation).\n    reasoning_config = _reasoning_config_for_wire(agent)\n    if tools_for_api is None:\n        tools_for_api = agent.tools\n    # The one place request_overrides are consumed: static /fast values are already pinned\n    # in agent.request_overrides; auto/cold windows layer the fast override per request.\n    request_overrides = effective_request_overrides(agent)\n    if agent.api_mode == \"anthropic_messages\":\n        return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)\n    if agent.api_mode == \"bedrock_converse\":\n        return _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config)\n    # Rotation-stable logical cache scope shared by every OpenAI-wire branch\n    # (memoized on the agent); anthropic/bedrock above don't use it.\n    cache_scope_id = _prompt_cache_scope_for_agent(agent)\n    builder = _build_codex_kwargs if agent.api_mode == \"codex_responses\" else _build_chat_completions_kwargs\n    return builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)\n",
+      "sha256": "a7add7180cc09bca872d0fcd40fc5355946c4abb54ac87660c7d1e38e259a6be",
+      "sourceKind": "byte-verified-local-whole-module",
+      "wholeModuleSHA256": "11ab752ee3cdb7b272d5b48bb93a8cc809d6d459c0f1978e84853634945d1df7"
+    },
+    {
+      "path": "agent/chat_completion_helpers.py",
+      "qualifiedName": "build_api_kwargs",
+      "startLine": 1504,
+      "endLine": 1520,
+      "source": "def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:\n    \"\"\"Build the keyword arguments dict for the active API mode.\n\n    Wraps the per-api_mode builder so the conversation-affinity headers (OpenCode's\n    ``x-opencode-session``, a custom provider's opt-in ``session_affinity_header``) ride on\n    every request regardless of transport (chat_completions / codex_responses /\n    anthropic_messages). No-op for every other provider.\n    \"\"\"\n    from agent.opencode_affinity import merge_session_affinity_headers\n\n    kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)\n    return merge_session_affinity_headers(\n        kwargs,\n        getattr(agent, \"provider\", None),\n        getattr(agent, \"base_url\", None),\n        getattr(agent, \"session_id\", None),\n    )\n",
+      "sha256": "5f01aa78352dcd9a6ab14e011481e7fb627aeb95c3f80ec9b9721fda1f2ba35c",
+      "sourceKind": "byte-verified-local-whole-module",
+      "wholeModuleSHA256": "11ab752ee3cdb7b272d5b48bb93a8cc809d6d459c0f1978e84853634945d1df7"
+    },
+    {
+      "path": "agent/reasoning_effort.py",
+      "qualifiedName": "requested_effort",
+      "startLine": 186,
+      "endLine": 191,
+      "source": "def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:\n    \"\"\"The user's explicit effort, or None (absent/malformed config, no effort, or reasoning\n    disabled) — callers then omit the wire field.\"\"\"\n    if not isinstance(reasoning_config, dict) or reasoning_config.get(\"enabled\") is False:\n        return None\n    return str(reasoning_config.get(\"effort\") or \"\").strip().lower() or None\n",
+      "sha256": "c11bec0c910fc8dfd84b3cf2421816233c8ab9437dac6d36b492080a96f58816",
+      "sourceKind": "byte-verified-local-whole-module",
+      "wholeModuleSHA256": "050b8d56b474f24aaa0a63e542554f0382ffc49431ba769133157f617e5a8c6f"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_is_openai_api_base_url",
+      "startLine": 256,
+      "endLine": 264,
+      "source": "def _is_openai_api_base_url(base_url: Any) -> bool:\n    \"\"\"True only for the exact api.openai.com host (implies ``prompt_cache_key`` support).\n\n    Not a substring match: Azure / strict compat endpoints stay opt-in via ``supports_prompt_cache_key``.\n    \"\"\"\n    try:\n        return (urlparse(str(base_url or \"\").strip()).hostname or \"\").lower() == \"api.openai.com\"\n    except Exception:\n        return False\n",
+      "sha256": "5ca95c0ad405a2a9d5b44ba8940f0be17b203675dcd8c1c059137de2907d9523",
+      "sourceKind": "byte-verified-local-whole-module",
+      "wholeModuleSHA256": "6793be69882fad0eae48f02b2fcc959c0e9718af625202b1095565a2ba1c74de"
+    },
+    {
+      "path": "agent/reasoning_params.py",
+      "qualifiedName": "unset_reasoning_default",
+      "startLine": 42,
+      "endLine": 75,
+      "source": "def unset_reasoning_default(agent) -> dict | None:\n    \"\"\"Reasoning config for a main-loop request whose ``agent.reasoning_effort`` is unset.\n    Asks the active provider profile (``ProviderProfile.default_reasoning_config``; the custom /\n    OpenAI-compatible profile answers medium) so a route's own default never silently applies —\n    kimi-k3 behind a relay defaults to ``max``, 3x the reasoning tokens of medium. Resolved at\n    request time, so ``/model`` and fallback activation re-evaluate it. None keeps the field off\n    the wire: a non chat-completions transport, a profile without a default (those decide inside\n    ``build_api_kwargs_extras``), a model the catalog / ``model_overrides`` mark\n    ``supports_reasoning: false``, or a local Ollama model whose ``/api/show`` lacks ``thinking``.\n    \"\"\"\n    if getattr(agent, \"api_mode\", None) != \"chat_completions\":\n        return None\n    provider = str(getattr(agent, \"provider\", \"\") or \"\")\n    model = str(getattr(agent, \"model\", \"\") or \"\")\n    try:\n        from providers import get_provider_profile\n        profile = get_provider_profile(provider)\n        default = profile.default_reasoning_config(model) if profile is not None else None\n    except Exception:\n        return None\n    if not default:\n        return None\n    try:\n        from agent.models_dev import get_model_capabilities\n        caps = get_model_capabilities(provider, model, allow_network=False)\n    except Exception:\n        caps = None\n    if caps is not None and caps.supports_reasoning is False:\n        return None\n    # ``_ollama_num_ctx`` is only ever set for a server detected as Ollama (agent_init); Ollama\n    # 400s ``reasoning_effort`` on a model pulled without the thinking capability.\n    if getattr(agent, \"_ollama_num_ctx\", None) and not agent._ollama_supports_thinking_cached():\n        return None\n    return dict(default)\n",
+      "sha256": "3f0d145a3eb6e37a706a7208b6f9a009a9c53321ce33b1027e3ffa944f79fd19",
+      "sourceKind": "previously-retrieved-official-web-rendered-fragment",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/reasoning_params.py#L42",
+      "wholeModuleSHA256": null,
+      "rawArchiveAttempt": "normal urllib pinned raw URL returned429; not retried"
+    },
+    {
+      "path": "providers/base.py",
+      "qualifiedName": "ProviderProfile.fixtureFieldSubset",
+      "startLine": 142,
+      "endLine": 243,
+      "source": "@dataclass\nclass ProviderProfile:\n    name: str\n    api_mode: str = \"chat_completions\"\n    aliases: tuple = ()\n    display_name: str = \"\"       # e.g. \"GMI Cloud\" — shown in picker/labels\n    hidden: bool = False\n    env_vars: tuple = ()\n    base_url: str = \"\"\n    auth_type: str = \"api_key\"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk\n    supports_health_check: bool = True  # False → doctor skips /models probe for this provider\n    supports_model_listing: bool = True\n    supports_prompt_cache_key: bool = False\n    fixed_temperature: Any = None\n    default_max_tokens: int | None = None\n",
+      "sha256": "89a975329db65f726d2374aa553b6bd7b0e5f81c4dcd915cac16306d6843803f",
+      "sourceKind": "actual-declaration-field-subset-with-original-dataclass-semantics",
+      "wholeModuleSHA256": "4ab4b237b91c6b928b86f46bc220e4d6af9b2a2a04ded5cf8a39fff213378b76",
+      "omitted": "Other profile fields and all I/O methods are excluded; needed pure methods come from prior pinned fixture"
+    }
+  ]
+}

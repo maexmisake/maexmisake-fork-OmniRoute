@@ -1,0 +1,25 @@
+{
+  "scope": "Installed standalone SDK protocol fixture; not full Hermes runtime",
+  "hermesPin": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "python": "3.12.14",
+  "openai": "2.54.0",
+  "httpx": "0.28.1",
+  "requirementsSHA256": "ac10fe650f8e51152e9654065c2b6c17eb2113109405a447d7f509a9d2670464",
+  "selectedWheelsSHA256": "714553f042eff84ba489043c023d5589aaaa5e86e4d5ea79bc4cb06b0c958f74",
+  "installation": "One ordinary official direct-wheel installation, required locked hashes, no index/dependency resolution, zero pip retries; standard existing proxy/cert environment preserved without value disclosure",
+  "distributionCount": 17,
+  "hashedInstalledFilesVerified": 1939,
+  "unhashedRECORDEntriesNotClaimedVerified": 1806,
+  "moduleSHA256": {
+    "openai/__init__.py": "8769bb411ef74e94741002a95e05d3792f2b2c445f1cfd8fb73852b68609166e",
+    "openai/_base_client.py": "5539c83d01c27e1bbf1ad34e59cc872202feb6c8bf81b56fadbeeb2b81a3e869",
+    "openai/_streaming.py": "3178ebb721f4ff3cda6d479520ba2bddcdc7096e2a99827c6a0bc150fe44534a",
+    "openai/resources/chat/completions/completions.py": "f2fbad0d47459c97eacf48ff79b983c92c5f968aaa2b0454aff9cd2a5462477a",
+    "openai/lib/streaming/chat/_completions.py": "df1c194a233bb80dfb1aac694a04cd5906defe29c279c2641d846de2aa8d2aa4",
+    "httpx/_transports/mock.py": "3d3a34779ebb4484d7c46ae48ba90deffebbc300317f088c0dcb972626428c4a",
+    "httpx/_client.py": "c43f941baefe58c91e96d00039e1868fe719d91453026d7db1647194563bff8d"
+  },
+  "providerCalls": 0,
+  "fullHermesExecuted": false,
+  "python314Available": false
+}

@@ -682,6 +682,42 @@ test("selector recursion is rejected before decision dispatch", async () => {
   assert.equal(decisionCalls.length, d);
   assert.equal(executionCalls.length, e);
 });
+test("qualified combo recursion is rejected before contract filtering", async () => {
+  const model = "fixture-qualified-recursion";
+  const combo = await getComboByName("fixture-native-selector");
+  const config = combo!.config as { decisionPolicy: FixturePolicy };
+  const provider = config.decisionPolicy.policy.candidates[0].provider;
+  await createCombo({
+    name: `${provider}/${model}`,
+    strategy: "priority",
+    models: ["claude/claude-opus-5-5"],
+    config: {},
+  });
+  await mutateConfig((c) => (c.policy.candidates[0].model = model));
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  const response = await POST(request());
+  await response.text();
+  assert.equal(response.status, 409);
+  assert.equal(decisionCalls.length, d);
+  assert.equal(executionCalls.length, e);
+  assert.equal(readDecisionAttempts(key.id).length, 0);
+});
+test("hard-ineligible recursive candidate does not block the permitted sole choice", async () => {
+  await mutateConfig((c) => {
+    c.policy.candidates[0].model = "fixture-native-selector";
+    c.policy.candidates[0].capabilities.text = null;
+  });
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  const response = await POST(request());
+  await response.text();
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-omniroute-selection-mode"), "sole-eligible");
+  assert.equal(decisionCalls.length, d);
+  assert.equal(executionCalls.length, e + 1);
+  assert.equal(readDecisionAttempts(key.id).length, 1);
+});
 test("oversize decision response is terminal and does not invent usage", async () => {
   largeResponse = true;
   const d = decisionCalls.length,

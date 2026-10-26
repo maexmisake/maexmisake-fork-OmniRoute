@@ -1,0 +1,4 @@
+name: omniroute-effort-delegation
+kind: model-provider
+version: 0.1.0
+description: Experimental exact-target OmniRoute effort delegation; requires pinned client patch

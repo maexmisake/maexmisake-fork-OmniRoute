@@ -1,0 +1,18 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "fragmentFileSHA256": "54305c8bc999d39ca3681532314d7be6402731fe745e8b3e97365118cd8bdfb8",
+  "license": "MIT; upstream notice retained in LICENSE",
+  "fullHermesExecuted": false,
+  "wholeModulesImported": false,
+  "renderedFragmentBoundary": "unset_reasoning_default is the previously retrieved official web-rendered fragment; no raw whole-file/Git-blob hash claimed",
+  "declaredSubstitutions": [
+    "synthetic parsed reasoning state and agent; no CLI/config/credentials",
+    "original base field subset; other profile fields/I/O methods omitted",
+    "closed provider/affinity/capability/auxiliary/carrier import facades",
+    "identity message sanitization and carrier shaping",
+    "default-resolver capabilities return unknown with allow_network=False, never false",
+    "explicit driver streaming flags supplied separately"
+  ],
+  "sourceURLPrefix": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/"
+}
