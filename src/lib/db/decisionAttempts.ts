@@ -190,7 +190,9 @@ export function decisionAdmissionBlocked(
   target: AdmissionTarget = {}
 ): boolean {
   const db = getDbInstance();
-  if (sharedDecisionStorage()) db.immediate(() => expireDecisionLeases(keyId));
+  // Expiry cleanup belongs to atomic native reservation, not ordinary admission.
+  // started/unknown share liability flags; reserved/cancelled are both ignored.
+  // Taking a writer lock here needlessly blocks unrelated WAL readers.
   const limits = applicableTokenLimits(keyId, target);
   const requestedLimits = new Set(limits.map((limit) => limit.id));
   const requestedComboCapped =

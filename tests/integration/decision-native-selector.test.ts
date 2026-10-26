@@ -538,6 +538,12 @@ test("zero eligible candidates remains no-route without any provider request", a
   const response = await POST(request());
   await response.text();
   assert.equal(response.status, 409);
+  assert.equal(response.headers.get("x-omniroute-selection-mode"), "no-route");
+  assert.equal(response.headers.get("x-omniroute-decision-status"), "no-decision");
+  assert.equal(response.headers.has("x-omniroute-decision-request"), false);
+  assert.equal(response.headers.has("x-omniroute-decision-confidence"), false);
+  assert.equal(response.headers.has("x-omniroute-routing-cost"), false);
+  assert.equal(readDecisionAttempts(key.id).length, 0);
   assert.equal(decisionCalls.length, d);
   assert.equal(executionCalls.length, e);
 });

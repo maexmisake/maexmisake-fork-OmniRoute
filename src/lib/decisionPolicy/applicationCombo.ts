@@ -509,7 +509,7 @@ function releaseAttempt(attempt: ApplicationAttempt | undefined): void {
     // Cleanup failure cannot reopen routing. Durable pending usage expires to unknown.
   }
 }
-type ApplicationSelectionMode = "native" | "sole-eligible" | "deterministic";
+type ApplicationSelectionMode = "no-route" | "native" | "sole-eligible" | "deterministic";
 function applicationSelectionMode(
   plan: AutomaticPlan,
   eligibleCount: number
@@ -566,7 +566,8 @@ export async function executeAutomaticCombo(
   signal = AbortSignal.any([signal, AbortSignal.timeout(plan.config.policy.timeoutMs)]);
   let attempt: ApplicationAttempt | undefined;
   let native: NativeStage | undefined;
-  let mode = applicationSelectionMode(plan, 0);
+  // A configured selector is not an observed selection before eligibility succeeds.
+  let mode: ApplicationSelectionMode = "no-route";
   try {
     signal.throwIfAborted();
     if (body.model !== plan.name) return automaticRejection();

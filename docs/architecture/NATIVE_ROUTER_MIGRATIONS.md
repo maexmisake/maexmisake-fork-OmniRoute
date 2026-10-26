@@ -12,16 +12,30 @@ files use the existing namespace convention and are recorded as `nr-213` through
 `nr-216`. They load automatically after core migrations, without an environment
 change. The `nr` namespace is reserved; optional extra directories remain separate.
 
-## Verified upstream boundary
+## Verified upstream boundary and later correction
 
-On 26 October 2026, the inspected upstream default
-[`release/v3.8.53` at `81e48878`](https://github.com/cheaper-inference/OmniRoute/tree/81e48878b90fb309ede580bca8b97c6953a2fc62/src/lib/db/migrations)
-and [`main` at `edab7c3a`](https://github.com/cheaper-inference/OmniRoute/tree/edab7c3a59bf7d6f040d581dbda3a46adbee0d57/src/lib/db/migrations)
-end at numeric `212`. All 209 inspected upstream core SQL blobs match the chosen
-published v3.8.52 base `ad6f33f66bda34eba98645d3bfdabbde294bc843`.
-The specific reported upstream `213` collision was not established at these heads.
-This namespace prevents future collisions; it does not establish an existing
-upstream `213`, synchronize branches or merge upstream history.
+The earlier comparison pinned
+[`release/v3.8.53` source at `81e48878`](https://github.com/cheaper-inference/OmniRoute/tree/81e48878b90fb309ede580bca8b97c6953a2fc62/src/lib/db/migrations)
+and [`main` source at `edab7c3a`](https://github.com/cheaper-inference/OmniRoute/tree/edab7c3a59bf7d6f040d581dbda3a46adbee0d57/src/lib/db/migrations).
+Those immutable trees end at numeric `212`; all 209 core SQL blobs match the
+chosen v3.8.52 base `ad6f33f66bda34eba98645d3bfdabbde294bc843`.
+Calling that result the current upstream branch state was too broad.
+
+A read-only correction on 26 October 2026 verified that commit
+[`860ebfad`](https://github.com/cheaper-inference/OmniRoute/commit/860ebfad6e357cbaf0d918c19ae790de0f95ed69),
+merged through [PR #13102](https://github.com/cheaper-inference/OmniRoute/pull/13102)
+on **25 October at 22:56:30 UTC**, adds
+[`213_api_key_preferred_connections.sql`](https://github.com/cheaper-inference/OmniRoute/blob/db6db55ba8bca51a96d347b9f3cc6399725f2c4b/src/lib/db/migrations/213_api_key_preferred_connections.sql).
+Its inclusion is verified at later commit
+`db6db55ba8bca51a96d347b9f3cc6399725f2c4b`: 210 core SQL files through `213`,
+with all prior 209 blobs unchanged. The addition was merged on October 25,
+not October 26. No exact earlier branch-observation time is inferred.
+
+The native namespace therefore avoids a confirmed numeric-version overlap with
+upstream `213` as well as future collisions. This is evidence of distinct SQL
+identities sharing a number, not a newly reproduced Git merge conflict or a live
+upgrade test. This distribution still pins the older base; it does not import
+the later upstream migration, synchronize branches or rewrite applied history.
 
 ## Existing feature databases
 
