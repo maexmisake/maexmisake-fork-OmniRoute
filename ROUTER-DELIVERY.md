@@ -27,11 +27,11 @@ The structured controls pass **19/19 UI behavior tests**, including full form-on
 
 ## Modes and exact bindings
 
-| Mode                  | Behavior                                                                                                                                                            |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ordinary combos       | Existing behavior; this prototype does not activate itself.                                                                                                         |
-| Bounded deterministic | Eligibility first, explicit task preference order, zero decision calls and at most one execution.                                                                   |
-| Bounded native        | Eligibility first, one Choice decision over allowed model-and-effort options, then at most one exact execution. Invalid, unknown, refused or denied decisions stop. |
+| Mode                  | Behavior                                                                                                                                                                                                                             |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Ordinary combos       | Existing behavior; this prototype does not activate itself.                                                                                                                                                                          |
+| Bounded deterministic | Eligibility first, explicit task preference order, zero decision calls and at most one execution.                                                                                                                                    |
+| Bounded native        | Eligibility first. Two or more options: one Choice decision, then at most one exact execution. One option: explicit sole-eligible execution with no decision. Zero options or an invalid, unknown, refused or denied decision: stop. |
 
 | Selector provider config ID             | Exact requested and required returned model ID |
 | --------------------------------------- | ---------------------------------------------- |
