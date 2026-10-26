@@ -1,12 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeDecisionTextRequest } from "../../open-sse/services/decisionPolicy/requestFacts.ts";
+import {
+  normalizeDecisionTextRequest,
+  normalizeDecisionTextWire,
+} from "../../open-sse/services/decisionPolicy/requestFacts.ts";
 const source = () => ({
   model: "synthetic-text-combo",
   messages: [{ role: "user", content: "Synthetic text only" }],
   stream: false,
   max_tokens: 128,
   reasoning: { effort: "high" },
+});
+test("configured positive enabled High normalizes without mutating caller-owned carriers", () => {
+  const reasoning = Object.freeze({ enabled: true, effort: "high" });
+  const body = Object.freeze({ ...source(), reasoning_effort: "high", reasoning });
+  const before = JSON.stringify(body);
+  const normalized = normalizeDecisionTextRequest(body);
+  assert.ok(normalized);
+  assert.equal(normalized.reasoning_effort, "high");
+  assert.equal(Object.hasOwn(normalized, "reasoning"), false);
+  assert.equal(JSON.stringify(body), before);
+  assert.deepEqual(body.reasoning, { enabled: true, effort: "high" });
+});
+test("configured positive enabled High can be the sole explicit effort carrier", () => {
+  const normalized = normalizeDecisionTextRequest({
+    ...source(),
+    reasoning: { enabled: true, effort: "high" },
+  });
+  assert.ok(normalized);
+  assert.equal(normalized.reasoning_effort, "high");
 });
 test("explicit text aliases normalize to one exact immutable canonical contract", () => {
   const body = source();
@@ -44,6 +66,13 @@ test("equivalent duplicate carriers preserve meaning; contradictions are rejecte
   assert.equal(normalizeDecisionTextRequest({ ...valid, reasoning_effort: "medium" }), null);
 });
 for (const reasoning of [
+  { enabled: true },
+  { enabled: true, effort: "none" },
+  { enabled: true, effort: "medium" },
+  { enabled: true, effort: "high", unknown: true },
+  { enabled: "true", effort: "high" },
+  { enabled: null, effort: "high" },
+  null,
   { enabled: false },
   { effort: "high", enabled: false },
   { effort: "high", unknown: true },
@@ -91,4 +120,55 @@ test("canonical multipart text is deeply detached from the caller's own data", (
   assert.equal(part.text, "Before synthetic text");
   part.text = "Another caller edit";
   assert.equal((content[0] as { text: string }).text, "After synthetic text");
+});
+test("ingress omission and explicit Off retain their existing distinct meanings", () => {
+  const { reasoning: _reasoning, ...omitted } = source();
+  const delegated = normalizeDecisionTextRequest(omitted);
+  assert.ok(delegated);
+  assert.equal(Object.hasOwn(delegated, "reasoning_effort"), false);
+  const off = normalizeDecisionTextRequest({ ...omitted, reasoning_effort: "none" });
+  assert.ok(off);
+  assert.equal(off.reasoning_effort, "none");
+});
+test("new enabled carrier cannot evaluate a nested accessor or strip a hidden value", () => {
+  let reads = 0;
+  const reasoning = Object.defineProperty({ effort: "high" }, "enabled", {
+    enumerable: true,
+    get() {
+      reads++;
+      return true;
+    },
+  });
+  assert.equal(normalizeDecisionTextRequest({ ...source(), reasoning }), null);
+  assert.equal(reads, 0);
+  const hidden = Object.defineProperty({ enabled: true, effort: "high" }, "privateUnknown", {
+    enumerable: false,
+    value: true,
+  });
+  assert.equal(normalizeDecisionTextRequest({ ...source(), reasoning: hidden }), null);
+});
+test("ingress compatibility does not authorize enabled on the serialized provider wire", () => {
+  const reasoning = Object.freeze({ enabled: true, effort: "high" });
+  const body = Object.freeze({ ...source(), reasoning_effort: "high", reasoning });
+  const initial = JSON.stringify(body);
+  assert.ok(normalizeDecisionTextRequest(body));
+  assert.equal(normalizeDecisionTextWire(body), null);
+  assert.equal(JSON.stringify(body), initial);
+  const canonical = normalizeDecisionTextRequest(body);
+  assert.deepEqual(normalizeDecisionTextWire(canonical), canonical);
+});
+test("strict wire retains the old effort-only aliases and contradiction checks", () => {
+  const wire = { ...source(), reasoning_effort: "high", max_completion_tokens: 128 };
+  const initial = JSON.stringify(wire);
+  assert.equal(normalizeDecisionTextWire(wire)?.reasoning_effort, "high");
+  assert.equal(normalizeDecisionTextWire({ ...wire, reasoning: { effort: "medium" } }), null);
+  assert.equal(
+    normalizeDecisionTextWire({ ...wire, reasoning: { enabled: false, effort: "high" } }),
+    null
+  );
+  assert.equal(
+    normalizeDecisionTextWire({ ...wire, reasoning: { effort: "high", unknown: true } }),
+    null
+  );
+  assert.equal(JSON.stringify(wire), initial);
 });

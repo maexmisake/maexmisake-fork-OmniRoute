@@ -21,7 +21,7 @@ import {
 import { eligibleCandidates } from "../../../open-sse/services/decisionPolicy/eligibility.ts";
 import {
   extractRequestFacts,
-  normalizeDecisionTextRequest,
+  normalizeDecisionTextWire,
   type ChatPolicyBody,
 } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import {
@@ -209,7 +209,7 @@ function matchesOpenAiWireContract(
   // Preserve every actual effort/output carrier for the same strict alias check.
   // Only this already-allowlisted provider-generated cache field is outside it.
   const { prompt_cache_key: _cache, ...body } = wire;
-  const normalized = normalizeDecisionTextRequest(body);
+  const normalized = normalizeDecisionTextWire(body);
   return (
     normalized !== null &&
     normalized.reasoning_effort === candidate.effort.value &&

@@ -169,13 +169,14 @@ def project(captured, driver):
 
 
 def run(case):
+    configured_reasoning = {"configured-reasoning-high", "configured-reasoning-conflict"}
     configured_controls = {"configured-temperature", "configured-top-p",
                            "configured-strict-absent", "configured-strict-false",
                            "configured-strict-true"}
     allowed = {"explicit-medium", "explicit-high", "default-medium", "omitted-cap",
                "stream-tools", "default-stream", "nonstream-tools", "tool-continuation",
                "unknown-provider", "unknown-import", "socket-canary",
-               "extra-body-collision"} | configured_controls
+               "extra-body-collision"} | configured_controls | configured_reasoning
     if case not in allowed:
         raise ClosedBoundaryError("unknown fixture case")
     profile = SimpleNamespace(name="custom", fixed_temperature=None, default_max_tokens=None,
@@ -235,6 +236,13 @@ def run(case):
             overrides = {"temperature": 0.7}
         if case == "configured-top-p":
             overrides = {"top_p": 0.9}
+        if case in configured_reasoning:
+            # Explicit synthetic request_overrides, merged by the original profile.
+            # The original CustomProfile independently emits top-level High.
+            overrides = {"extra_body": {"reasoning": {
+                "enabled": True,
+                "effort": "medium" if case == "configured-reasoning-conflict" else "high",
+            }}}
         messages = [{"role": "user", "content": "Explain a synthetic lamp."}]
         if case == "tool-continuation":
             messages.extend([
@@ -256,7 +264,7 @@ def run(case):
         captured.update(value)
 
     capture_create(**kwargs)
-    driver = {"stream": True, "stream_options": {"include_usage": True}} if case in {"stream-tools", "default-stream"} | configured_controls else {"stream": False}
+    driver = {"stream": True, "stream_options": {"include_usage": True}} if case in {"stream-tools", "default-stream"} | configured_controls | configured_reasoning else {"stream": False}
     return {
         "case": case, "pin": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
         "proofKind": "original-source-kwargs-plus-declared-fixture-JSON-projection",

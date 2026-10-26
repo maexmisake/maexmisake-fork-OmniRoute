@@ -33,3 +33,21 @@ Ten SDK cases check both captured kwargs and actual SDK request bytes before the
 | `strict: true`     | True preserved on client wire and native tool             | Unsupported: handler 409, zero decision/execution |
 
 Allowed Claude cases retain two eligible Claude choices and use one decision plus one execution. The isolated AGY controls use a sole AGY candidate, so valid absence uses zero decisions and one execution; a supported Claude alternate cannot hide an AGY rejection. Unsupported cases must reach the actual handler after SDK serialization and create no provider-attempt journal records. Empty journals are not treated as reported zero-cost usage. The fixtures do not claim live provider acceptance, honored Gemini sampling, structured-output quality or full Hermes compatibility.
+
+## Nested effort and original higher tiers
+
+The current 37-case suite preserves the earlier thirty controls cases and adds
+three configured nested-effort cases plus four XHigh/Max tool loops. The nested
+cases pass the original builder's explicit extra_body override through actual SDK
+serialization: matching High is admitted for Claude and sole AGY; conflicting
+Medium is rejected before any provider attempt. No post-builder body injection
+or ordinary-Hermes default claim is used. The final serialized OpenAI request
+still rejects a late enabled flag through a distinct wire validator.
+
+The four higher-tier loops use only original Claude model/effort variants.
+Explicit xhigh/max remain exact on both requests. Delegation omits effort on both
+while a mock Jev choice selects the original pair among eight explicit fixture
+options, then continuation pins account/model/effort/cap without another decision.
+The test-only wide pool defaults off and every earlier case retains its original
+pool. Synthetic prices and unknown receipts remain distinct; there is no live
+provider or full-Hermes claim.

@@ -108,6 +108,7 @@ CASES = {
     "missing-profile", "wrong-profile", "profile-lookup-error",
     "wrong-destination", "lookalike-destination", "wrong-combo", "disabled",
     "unsupported-api-mode", "unpatched-missing-profile", "override-medium",
+    "explicit-xhigh", "explicit-max", "ordinary-custom-xhigh", "ordinary-custom-max",
 }
 
 
@@ -202,6 +203,8 @@ def run(incoming):
         reasoning = {"enabled": True, "effort": "medium"}
     if case in ("explicit-high", "ordinary-custom-high", "missing-profile", "wrong-profile", "profile-lookup-error", "unpatched-missing-profile", "recovery-effort-rejected"):
         reasoning = {"enabled": True, "effort": "high"}
+    if case in ("explicit-xhigh", "ordinary-custom-xhigh", "explicit-max", "ordinary-custom-max"):
+        reasoning = {"enabled": True, "effort": case.rsplit("-", 1)[1]}
     if case in ("explicit-off", "ordinary-custom-off", "recovery-disable-rejected"):
         reasoning = {"enabled": False, "effort": "none"}
     if case == "explicit-none":

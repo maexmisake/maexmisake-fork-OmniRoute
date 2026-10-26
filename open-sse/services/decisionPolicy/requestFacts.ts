@@ -54,11 +54,17 @@ const requestBody = z
   .strict();
 // These are explicit ordinary chat aliases, not permission to accept arbitrary
 // reasoning/sampling controls or infer an absent output reservation.
+const reasoningAlias = z
+  .object({ effort, enabled: z.literal(true).optional() })
+  .strict()
+  .refine((value) => value.enabled === undefined || value.effort !== "none", {
+    message: "Enabled reasoning requires an explicit thinking effort",
+  });
 const textAliases = requestBody
   .partial({ max_completion_tokens: true })
   .extend({
     max_tokens: z.number().int().positive().max(1000000).optional(),
-    reasoning: z.object({ effort }).strict().optional(),
+    reasoning: reasoningAlias.optional(),
   })
   .superRefine((body, context) => {
     if (body.stream_options !== undefined && body.stream !== true)
@@ -78,10 +84,11 @@ const textAliases = requestBody
     )
       context.addIssue({ code: "custom", message: "Conflicting effort directives" });
   });
-export function normalizeDecisionTextRequest(raw: unknown): ChatPolicyBody | null {
+function normalizeText(raw: unknown, allowEnabledAlias: boolean): ChatPolicyBody | null {
   if (!boundedJson(raw)) return null;
   const parsed = textAliases.safeParse(raw);
   if (!parsed.success) return null;
+  if (!allowEnabledAlias && parsed.data.reasoning?.enabled !== undefined) return null;
   const { max_tokens, reasoning, ...body } = parsed.data;
   const selectedEffort = body.reasoning_effort ?? reasoning?.effort;
   const normalized = requestBody.safeParse({
@@ -92,6 +99,14 @@ export function normalizeDecisionTextRequest(raw: unknown): ChatPolicyBody | nul
   // Unknown content parts were bounded as plain JSON; detach them before any
   // downstream working-copy transformation can mutate caller-owned objects.
   return normalized.success ? structuredClone(normalized.data) : null;
+}
+/** Accept only consistent explicit ingress aliases; never invent an omitted effort. */
+export function normalizeDecisionTextRequest(raw: unknown): ChatPolicyBody | null {
+  return normalizeText(raw, true);
+}
+/** Serialized provider requests retain the earlier effort-only wire contract. */
+export function normalizeDecisionTextWire(raw: unknown): ChatPolicyBody | null {
+  return normalizeText(raw, false);
 }
 export type ChatPolicyBody = z.infer<typeof requestBody>;
 export type ContextMeasure = (body: Readonly<ChatPolicyBody>) => number | null;

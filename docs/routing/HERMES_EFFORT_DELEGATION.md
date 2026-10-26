@@ -13,7 +13,7 @@ An optional, disabled-by-default client prototype is available under
 [scripts/ad-hoc/hermes-effort-delegation](../../scripts/ad-hoc/hermes-effort-delegation/README.md).
 It uses a dedicated API-key relay profile and a small patch pinned to Hermes
 `749cb638ff43f9ce5333c186a1e4f67d473aa4f2`. It changes only the profile's default:
-an enabled exact relay/combo can omit effort, while explicit Medium, High and off
+an enabled exact relay/combo can omit effort, while explicit Medium, High, XHigh, Max and off
 remain explicit. Recovery omission is retained. No private provenance field is
 added to the wire.
 
@@ -35,3 +35,20 @@ continuation uses the trusted original model/account/effort without a new
 decision; a conflicting explicit effort or reasoning-off must fail closed if
 that pair cannot honor it. Catalog entries and these synthetic checks do not
 establish real account availability or live provider compatibility.
+
+The current source-builder suite passes 24 cases. The actual installed-SDK suite
+passes 37 cases through the real application handler, including literal XHigh/Max
+and deliberate omission over two-request tool loops. The wide fixture pool uses
+only original Claude Medium/High/XHigh/Max pairs; it is not live capability or
+quality evidence. One mock native choice is followed by two separately accounted
+executions with the same pinned identity and output cap. Explicit effort is
+present on both client requests; delegated omission is absent on both. Max is
+not renamed to XHigh. These tests do not install the profile or execute the full
+Hermes runtime/plugin loader.
+
+A separately configured original-builder request can also carry redundant nested
+`reasoning: {enabled: true, effort: "high"}`. The router accepts consistent
+explicit intent at ingress and canonicalizes it without forwarding enabled to
+the provider. Enabled-only, false, contradictory, unknown and unsupported sampling
+controls remain rejected. This is configured fragment/SDK evidence, not a claim
+that ordinary full-agent default traffic emits this envelope.

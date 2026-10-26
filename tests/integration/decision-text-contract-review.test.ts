@@ -241,6 +241,38 @@ test("independent POST preserves equal output and effort aliases, no-decision ac
   assert.equal(decisionCalls, d);
   assert.equal(executionCalls, e + 2);
 });
+test("independent POST accepts enabled High ingress without forwarding the flag", async () => {
+  const d = decisionCalls,
+    e = executionCalls;
+  const input = {
+    ...body(),
+    reasoning_effort: "high",
+    reasoning: Object.freeze({ effort: "high", enabled: true }),
+  };
+  for (const message of input.messages) Object.freeze(message);
+  Object.freeze(input.messages);
+  Object.freeze(input);
+  const original = JSON.stringify(input);
+  const response = await POST(request(input));
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(response.headers.get("x-omniroute-selection-mode"), "sole-eligible");
+  assert.equal(decisionCalls, d);
+  assert.equal(executionCalls, e + 1);
+  assert.equal(lastExecution?.model, "gpt-5.4");
+  const nested = lastExecution?.reasoning as Record<string, unknown> | undefined;
+  assert.equal(lastExecution?.reasoning_effort ?? nested?.effort, "high");
+  assert.equal(Object.hasOwn(nested ?? {}, "enabled"), false);
+  assert.equal(lastExecution?.max_completion_tokens ?? lastExecution?.max_tokens, 64);
+  assert.equal(JSON.stringify(input), original);
+  const rows = readDecisionAttempts(key.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lane, "execution");
+  assert.equal(rows[0].connection_id, executionId);
+  assert.equal(rows[0].model, "gpt-5.4");
+  assert.equal(rows[0].effort, "high");
+  assert.equal(rows[0].application_status, 200);
+  assert.equal(rows[0].cost_usd, 0.007); // Synthetic reported receipt, not a provider price.
+});
 test("independent POST rejects raw contradictions and unknown nested controls before every synthetic send", async () => {
   const d = decisionCalls,
     e = executionCalls;
@@ -248,7 +280,7 @@ test("independent POST rejects raw contradictions and unknown nested controls be
     { reasoning_effort: "high", reasoning: { effort: "high", enabled: false } },
     { reasoning_effort: "high", reasoning: { effort: "high", unrecognized: false } },
     { reasoning_effort: "high", reasoning: { effort: "medium" } },
-    { reasoning: { effort: "high", enabled: true } },
+    { reasoning: { effort: "none", enabled: true } },
     { max_completion_tokens: 65 },
     { max_tokens: null },
     { max_tokens: 1000001 },

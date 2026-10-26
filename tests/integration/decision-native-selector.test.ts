@@ -1680,6 +1680,19 @@ for (const [label, aliases] of [
   ["token overflow", { max_completion_tokens: undefined, max_tokens: Number.MAX_SAFE_INTEGER + 1 }],
   ["bounded token ceiling", { max_completion_tokens: 1000001 }],
   ["invalid nested effort", { reasoning: { effort: "turbo" } }],
+  ["enabled without explicit effort", { reasoning: { enabled: true } }],
+  ["enabled false without effort", { reasoning: { enabled: false } }],
+  ["enabled with none", { reasoning: { enabled: true, effort: "none" } }],
+  ["enabled null", { reasoning: { enabled: null, effort: "high" } }],
+  ["enabled string", { reasoning: { enabled: "true", effort: "high" } }],
+  [
+    "enabled conflicts with explicit High",
+    { reasoning_effort: "high", reasoning: { enabled: true, effort: "medium" } },
+  ],
+  [
+    "enabled carries unknown property",
+    { reasoning: { enabled: true, effort: "high", privateUnknown: true } },
+  ],
   [
     "unknown stream options remain unsupported",
     { stream: true, stream_options: { include_usage: true, privateUnknown: true } },
@@ -1698,6 +1711,7 @@ for (const [label, aliases] of [
     assert.ok(response.status >= 400);
     assert.equal(decisionCalls.length, d);
     assert.equal(executionCalls.length, e);
+    assert.equal(readDecisionAttempts(key.id).length, 0);
   });
 }
 test("Hermes-shaped text normalization does not mutate caller-owned nested input in the actual handler", async () => {
@@ -1897,6 +1911,7 @@ for (const change of [
   "secondary-output-conflict",
   "secondary-effort-conflict",
   "nested-effort-extra",
+  "nested-enabled-extra",
   "equal-secondary-carriers",
 ]) {
   test(`final text wire ${change} preserves every selected effort and reserved output carrier`, async () => {
@@ -1916,6 +1931,8 @@ for (const change of [
         return { ...wire, reasoning: { effort: "medium" } };
       if (change === "nested-effort-extra")
         return { ...wire, reasoning: { effort: "high", privateExtra: true } };
+      if (change === "nested-enabled-extra")
+        return { ...wire, reasoning: { enabled: true, effort: "high" } };
       return {
         ...wire,
         max_completion_tokens: 4096,

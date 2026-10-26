@@ -77,6 +77,28 @@ for (const effort of ["medium", "high"]) {
     assert.deepEqual(result.capturedKwargs, original.capturedKwargs);
   });
 }
+for (const effort of ["xhigh", "max"])
+  test(`original ${effort} is preserved literally through the optional-profile source builder`, () => {
+    const result = capture("explicit-" + effort);
+    const original = capture("ordinary-custom-" + effort);
+    assert.equal(result.ok, true);
+    assert.equal(result.capturedKwargs?.reasoning_effort, effort);
+    assert.equal(result.body?.reasoning_effort, effort);
+    assert.deepEqual(result.wireReasoningConfig, { enabled: true, effort });
+    assert.deepEqual(result.capturedKwargs, original.capturedKwargs);
+    assert.equal(result.fullHermesExecuted, false);
+    for (const name of [
+      "build_api_kwargs",
+      "_build_api_kwargs_for_mode",
+      "_reasoning_config_for_wire",
+      "_build_chat_completions_kwargs",
+      "_build_kwargs_from_profile",
+    ])
+      assert.ok(
+        result.executedSourceFunctions?.some((value) => value.endsWith(":" + name)),
+        name
+      );
+  });
 
 for (const name of ["explicit-off", "explicit-none", "recovery-off"]) {
   test(`${name} remains explicit reasoning none, never default delegation`, () => {

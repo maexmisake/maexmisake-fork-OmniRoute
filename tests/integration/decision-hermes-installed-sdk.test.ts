@@ -40,11 +40,13 @@ let POST: (request: Request) => Promise<Response>;
 let key: Awaited<ReturnType<typeof createApiKey>>;
 let comboId: string, selectorId: string, sonnetId: string, opusId: string, agyId: string;
 let delegated = false;
+let widePool = false;
 let agy = false,
   agyParallel = false,
   agyRefuse = false;
 let agyIdMode = "explicit",
   agyOriginId = "";
+let configuredReasoningText = false;
 let configuredSchema: Record<string, unknown> | undefined;
 let checkConfiguredStrict = false,
   configuredStrict: boolean | undefined;
@@ -99,8 +101,9 @@ function candidate(family: string, value: string) {
     effort: { mode: "set", value, supported: [value], evidence: "Synthetic explicit pair" },
   };
 }
-function config() {
-  const ids = ["opus-medium", "sonnet-medium", "opus-high", "sonnet-high"];
+function config(wide = false) {
+  const levels = wide ? ["medium", "high", "xhigh", "max"] : ["medium", "high"];
+  const ids = levels.flatMap((value) => [`opus-${value}`, `sonnet-${value}`]);
   return {
     decisionPolicy: {
       enabled: true,
@@ -117,12 +120,10 @@ function config() {
       ),
       policy: {
         version: 1,
-        candidates: [
-          candidate("opus", "medium"),
-          candidate("sonnet", "medium"),
-          candidate("opus", "high"),
-          candidate("sonnet", "high"),
-        ],
+        candidates: levels.flatMap((value) => [
+          candidate("opus", value),
+          candidate("sonnet", value),
+        ]),
         taskOrder: { explanation: ids, reasoning: ids, tools: ids, continuation: ids },
         unknownQuota: "allow",
         decisionFailure: "stop",
@@ -184,7 +185,7 @@ function agyParts(): Array<Record<string, unknown>> {
 function agyResponse() {
   const parts = agyRefuse
     ? [{ text: "Synthetic safety refusal" }]
-    : executions === 1
+    : executions === 1 && !configuredReasoningText
       ? agyParts()
       : [{ text: "Synthetic SDK OK" }];
   return new Response(
@@ -309,7 +310,9 @@ before(async () => {
         (agy
           ? ["agy-high", "sonnet-high"]
           : delegated
-            ? ["opus-medium", "sonnet-medium", "opus-high", "sonnet-high"]
+            ? (widePool ? ["medium", "high", "xhigh", "max"] : ["medium", "high"]).flatMap(
+                (value) => [`opus-${value}`, `sonnet-${value}`]
+              )
             : [`opus-${effort}`, `sonnet-${effort}`]
         ).sort()
       );
@@ -349,14 +352,18 @@ before(async () => {
       assert.equal(body.project, "synthetic-sdk-agy-project");
       assert.equal(body.request.generationConfig.maxOutputTokens, 64);
       assert.equal(body.request.generationConfig.thinkingConfig.thinkingLevel, "high");
-      const declaration = body.request.tools[0].functionDeclarations[0];
-      assert.equal(declaration.name, "synthetic_tool");
-      const expectedSchema = configuredSchema ?? { type: "object", properties: {} };
-      assert.deepEqual(declaration.parametersJsonSchema, expectedSchema);
-      assert.equal(
-        Object.hasOwn(declaration.parametersJsonSchema, "additionalProperties"),
-        Object.hasOwn(expectedSchema, "additionalProperties")
-      );
+      if (configuredReasoningText) {
+        assert.equal(body.request.tools, undefined);
+      } else {
+        const declaration = body.request.tools[0].functionDeclarations[0];
+        assert.equal(declaration.name, "synthetic_tool");
+        const expectedSchema = configuredSchema ?? { type: "object", properties: {} };
+        assert.deepEqual(declaration.parametersJsonSchema, expectedSchema);
+        assert.equal(
+          Object.hasOwn(declaration.parametersJsonSchema, "additionalProperties"),
+          Object.hasOwn(expectedSchema, "additionalProperties")
+        );
+      }
       return agyResponse();
     }
     assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-sonnet-oauth");
@@ -449,11 +456,13 @@ beforeEach(async () => {
   agyRefuse = false;
   agyIdMode = "explicit";
   agyOriginId = "";
+  configuredReasoningText = false;
   configuredSchema = undefined;
   checkConfiguredStrict = false;
   configuredStrict = undefined;
   effort = "high";
   delegated = false;
+  widePool = false;
   decisions = 0;
   executions = 0;
   denial = 0;
@@ -818,6 +827,90 @@ for (const value of ["medium", "high"])
     assert.equal(decisions, 1);
     assert.equal(executions, 1);
   });
+for (const value of ["xhigh", "max"])
+  for (const omit of [false, true])
+    test(
+      `installed SDK ${omit ? "delegates omitted effort to" : "preserves explicit"} original Claude ${value} across the pinned tool loop`,
+      options,
+      async () => {
+        widePool = true;
+        delegated = omit;
+        effort = value;
+        missingCost = omit && value === "max";
+        await updateCombo(comboId, { config: config(true) });
+        const capture = effortSource(omit ? "delegated-unset" : `explicit-${value}`, true);
+        assert.equal(Object.hasOwn(capture.capturedKwargs, "reasoning_effort"), !omit);
+        assert.equal(capture.capturedKwargs.reasoning_effort, omit ? undefined : value);
+        const { result, requests, observations } = await sdk(capture, "tool-loop");
+        assert.equal(
+          result.ok,
+          true,
+          JSON.stringify({ error: result.errorClass, observations, decisions, executions })
+        );
+        assert.equal(requests.length, 2);
+        assert.equal(observations.length, 2);
+        for (const request of requests) {
+          assert.equal(Object.hasOwn(request, "reasoning_effort"), !omit);
+          assert.equal(request.reasoning_effort, omit ? undefined : value);
+          assert.equal(request.reasoning, undefined);
+          assert.equal(request.max_tokens, 64);
+        }
+        for (const observation of observations) assert.equal(observation.status, 200);
+        assert.equal(
+          decisions,
+          1,
+          "only the initial request selects among the eligible original pairs"
+        );
+        assert.equal(executions, 2);
+        assert.equal(wires.length, 2);
+        for (const wire of wires) {
+          assert.equal(wire.model, "claude-sonnet-5-5");
+          assert.equal((wire.output_config as { effort: string }).effort, value);
+          assert.equal(wire.max_tokens, 64);
+          assert.equal(Object.hasOwn(wire, "temperature"), false);
+        }
+        const summaries = result.summaries as Array<{ callCount: number; content: string }>;
+        assert.equal(summaries[0].callCount, 2);
+        assert.equal(summaries[1].callCount, 0);
+        assert.equal(summaries[1].content, "Synthetic SDK OK");
+        const rows = readDecisionAttempts(key.id);
+        const decision = rows.filter((row) => row.lane === "decision");
+        const execution = rows.filter((row) => row.lane === "execution");
+        assert.equal(rows.length, 3);
+        assert.equal(decision.length, 1);
+        assert.equal(decision[0].cost_usd, 0);
+        assert.equal(execution.length, 2);
+        for (const row of execution) {
+          assert.equal(row.provider, "claude");
+          assert.equal(row.model, "claude-sonnet-5-5");
+          assert.equal(row.connection_id, sonnetId);
+          assert.equal(row.effort, value);
+          assert.equal(row.application_status, 200);
+          assert.equal(row.state, "completed");
+          assert.equal(row.cost_usd, missingCost ? null : 0.003);
+        }
+        assert.equal(readToolContinuations(key.id, comboId).length, 1);
+        assert.equal(readToolContinuations(key.id, comboId)[0].state, "consumed");
+        assert.equal(result.fullHermesExecuted, false);
+        controlTraces.push({
+          control: "original-claude-wide-effort",
+          effort: value,
+          requestEffort: omit ? "omitted" : "explicit",
+          decisions,
+          executions,
+          handlerStatuses: observations.map((row) => row.status),
+          journal: rows.map((row) => ({
+            lane: row.lane,
+            provider: row.provider,
+            model: row.model,
+            effort: row.effort,
+            state: row.state,
+            applicationStatus: row.application_status,
+            costUsd: row.cost_usd,
+          })),
+        });
+      }
+    );
 for (const caseName of ["explicit-off", "recovery-off"])
   test(`installed SDK does not turn ${caseName} into enabled thinking`, options, async () => {
     const capture = effortSource(caseName, false);
@@ -1014,6 +1107,104 @@ const configuredControls = [
   ["strict-false", "configured-strict-false", false],
   ["strict-true", "configured-strict-true", true],
 ] as const;
+for (const provider of ["claude", "agy"] as const)
+  test(
+    `configured Hermes nested enabled High reaches SDK and ${provider} text contract`,
+    options,
+    async () => {
+      const capture = source("configured-reasoning-high");
+      assert.equal(capture.capturedKwargs.reasoning_effort, "high");
+      assert.deepEqual(capture.capturedKwargs.extra_body, {
+        reasoning: { enabled: true, effort: "high" },
+      });
+      for (const name of [
+        "_build_chat_completions_kwargs",
+        "_build_kwargs_from_profile",
+        "_base_kwargs",
+      ])
+        assert.ok(
+          capture.executedSourceFunctions.some((entry: string) => entry.endsWith(":" + name))
+        );
+      if (provider === "agy") {
+        configuredReasoningText = true;
+        await configureAgy(false, true);
+      }
+      const { result, requests, observations } = await sdk(capture, "stream");
+      const rows = readDecisionAttempts(key.id);
+      controlTraces.push({
+        provider,
+        control: "configured-nested-enabled-high",
+        handlerStatus: observations[0]?.status ?? null,
+        decisions,
+        executions,
+        journal: rows.map((row) => ({
+          lane: row.lane,
+          provider: row.provider,
+          state: row.state,
+          httpStatus: row.http_status,
+          applicationStatus: row.application_status,
+          costUsd: row.cost_usd,
+        })),
+      });
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].reasoning_effort, "high");
+      assert.deepEqual(requests[0].reasoning, { enabled: true, effort: "high" });
+      assert.equal(requests[0].max_tokens, 64);
+      assert.equal(requests[0].stream, true);
+      assert.deepEqual(requests[0].stream_options, { include_usage: true });
+      assert.equal(observations.length, 1);
+      assert.equal(
+        observations[0].status,
+        200,
+        JSON.stringify({ result, observations, decisions, executions })
+      );
+      assert.equal(result.ok, true);
+      assert.equal((result.summaries as Array<{ content: string }>)[0].content, "Synthetic SDK OK");
+      assert.equal(decisions, provider === "agy" ? 0 : 1);
+      assert.equal(executions, 1);
+      assert.equal(rows.length, provider === "agy" ? 1 : 2);
+      const execution = rows.filter((row) => row.lane === "execution");
+      assert.equal(execution.length, 1);
+      assert.equal(execution[0].provider, provider);
+      assert.equal(
+        execution[0].model,
+        provider === "agy" ? BOUNDED_AGY_MODEL : "claude-sonnet-5-5"
+      );
+      assert.equal(execution[0].connection_id, provider === "agy" ? agyId : sonnetId);
+      assert.equal(execution[0].effort, "high");
+      assert.equal(execution[0].application_status, 200);
+      assert.equal(execution[0].cost_usd, provider === "agy" ? null : 0.003);
+      assert.equal(
+        rows.find((row) => row.lane === "decision")?.cost_usd,
+        provider === "agy" ? undefined : 0
+      );
+      assert.equal(readToolContinuations(key.id, comboId).length, 0);
+      assert.equal(result.fullHermesExecuted, false);
+    }
+  );
+test(
+  "configured Hermes conflicting nested effort reaches SDK then rejects before any provider attempt",
+  options,
+  async () => {
+    const capture = source("configured-reasoning-conflict");
+    assert.equal(capture.capturedKwargs.reasoning_effort, "high");
+    assert.deepEqual(capture.capturedKwargs.extra_body, {
+      reasoning: { enabled: true, effort: "medium" },
+    });
+    const { result, requests, observations } = await sdk(capture, "stream");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].reasoning_effort, "high");
+    assert.deepEqual(requests[0].reasoning, { enabled: true, effort: "medium" });
+    assert.equal(observations.length, 1);
+    assert.equal(observations[0].status, 409);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 409);
+    assert.equal(decisions, 0);
+    assert.equal(executions, 0);
+    assert.equal(readDecisionAttempts(key.id).length, 0);
+    assert.equal(readToolContinuations(key.id, comboId).length, 0);
+  }
+);
 for (const provider of ["claude", "agy"] as const)
   for (const [control, fixtureCase, configuredValue] of configuredControls)
     test(`configured Hermes ${control} reaches SDK and ${provider} contract`, options, async () => {
