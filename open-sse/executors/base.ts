@@ -1387,7 +1387,10 @@ export class BaseExecutor {
         // routing mode (grouped/raw/combo) and the native passthrough share,
         // before fingerprinting and CCH signing serialize the body.
         if (this.provider === "claude" || usesClaudeCodeProtocol) {
-          finalizeClaudeBodyConstraints(transformedBody as Record<string, unknown>);
+          finalizeClaudeBodyConstraints(
+            transformedBody as Record<string, unknown>,
+            automatic?.provider === "claude"
+          );
         }
 
         // Delegated Context Editing (opt-in): attach the clear_tool_uses strategy so

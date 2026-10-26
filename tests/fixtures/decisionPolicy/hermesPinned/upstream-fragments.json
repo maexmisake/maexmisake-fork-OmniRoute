@@ -1,0 +1,190 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "fragments": [
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_add_prompt_cache_key",
+      "startLine": 77,
+      "endLine": 116,
+      "source": "def _add_prompt_cache_key(\n    api_kwargs: dict[str, Any], *, messages: list[dict[str, Any]],\n    tools: list[dict[str, Any]] | None, supports_prompt_cache_key: bool,\n    session_id: str | None = None, cache_scope_id: str | None = None,\n) -> None:\n    \"\"\"Add a content-addressed ``prompt_cache_key`` only for a capable endpoint.\n\n    ``cache_scope_id`` (compression-lineage root) beats ``session_id`` so the key\n    survives compression rotation. A caller-supplied key is authoritative but is\n    bounded to OpenAI's 64-char cap in place. Shares the Responses transport's hash\n    so equivalent prefixes hit one bucket across modes.\n\n    ``cache_scope_id``, when provided, is the rotation-stable logical scope (compression-lineage root \u2014\n    agent/prompt_cache_scope.py) and takes precedence over the physical ``session_id`` so the key survives\n    context-compression session rotation (#79017).\n    \"\"\"\n    # Stable prompt-cache routing for the Codex/Responses aux path, mirroring the main transport\n    # (agent/transports/codex.py::build_kwargs, which sets prompt_cache_key =\n    # _content_cache_key(instructions, tools)). Without this, MoA acting-aggregator and other auxiliary\n    # Responses calls stay cache-cold while the main Responses transport is warm (issue #53735). The key is\n    # content-addressed from the static prefix (instructions + tool schemas) so it stays warm across\n    # turns/fires. Guard the top-level field the same way the main transport does: xAI Responses takes the\n    # key in extra_body (not top-level) and GitHub/Copilot Responses opts out of cache-key routing entirely\n    # \u2014 for those hosts, skip it here.\n    from agent.transports.codex import (\n        _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key\n    )\n\n    containers = [c for c in (api_kwargs, api_kwargs.get(\"extra_body\")) if isinstance(c, dict) and \"prompt_cache_key\" in c]\n    if containers:\n        for c in containers:\n            _bound_prompt_cache_key_field(c)\n        return\n    if not supports_prompt_cache_key:\n        return\n    cache_key = _content_cache_key(\n        _static_prompt_instructions(messages), tools, _cache_scope_from_session_id(cache_scope_id or session_id),\n    )\n    if cache_key:\n        api_kwargs[\"prompt_cache_key\"] = cache_key\n",
+      "sha256": "775f9fef4d0ecf798f9f9d0cf723298d005b3f73ee137d293e3c93b59bf70da7"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_reasoning_config_for_model",
+      "startLine": 158,
+      "endLine": 167,
+      "source": "def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:\n    \"\"\"Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.\n\n    Hermes' internal effort set extends the wire vocabulary with ``ultra`` (the /reasoning command documents\n    none..xhigh|max|ultra). OpenAI- compatible wires \u2014 OpenRouter chief among them \u2014 accept exactly\n    max|xhigh|high|medium|low|minimal|none and reject the extension with HTTP 400 (#89503). Clamp against\n    the declared wire vocabulary via the shared policy in ``agent.reasoning_effort``; provider profiles with\n    narrower sets clamp again downstream.\n    \"\"\"\n    return clamp_reasoning_config(reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS)\n",
+      "sha256": "2fb91fab510b0ca70774e29a5097663a9947f2308d6c06a8d992893a74e421b3"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_build_gemini_thinking_config",
+      "startLine": 170,
+      "endLine": 223,
+      "source": "def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:\n    \"\"\"Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig.\"\"\"\n    from agent.gemini_native_adapter import gemini_uses_thinking_level\n\n    if not isinstance(reasoning_config, dict):\n        return None\n    normalized_model = (model or \"\").strip().lower().removeprefix(\"google/\")\n    # Gemini-only; Gemma/PaLM on the same provider 400 on the field even as ``{\"includeThoughts\": False}``.\n    # ``thinking_config`` is a Gemini-only request parameter. The same ``gemini`` provider also serves Gemma\n    # (and historically PaLM/Bard); those reject the field with HTTP 400 \"Unknown name 'thinking_config':\n    # Cannot find field\" \u2014 including the polite ``{\"includeThoughts\": False}`` form. Omit the field entirely\n    # on non-Gemini models. (#17426)\n    if not normalized_model.startswith(\"gemini\"):\n        return None\n    effort = str(reasoning_config.get(\"effort\", \"medium\") or \"medium\").strip().lower()\n    if normalized_model.startswith(\"gemini-4\"):\n        # Gemini 4 always thinks: a disable request gets the floor level with thoughts hidden.\n        disabled = reasoning_config.get(\"enabled\") is False or effort == \"none\"\n        level = \"low\" if disabled else clamp_effort(effort, GEMINI4_THINKING_LEVELS)\n        return {\"includeThoughts\": not disabled, \"thinkingLevel\": level if level in GEMINI4_THINKING_LEVELS else \"medium\"}\n    if reasoning_config.get(\"enabled\") is False or effort == \"none\":\n        # ``includeThoughts: False`` only omits thought parts from the returned\n        # response; the model may still reason internally and bill thought\n        # tokens against maxOutputTokens, starving small budgets (title\n        # generation's 64 tokens). Bound thinking as low as each family allows:\n        # Gemini 2.5 documents ``thinkingBudget: 0`` as the off switch, while\n        # Gemini 3+ deprecated that field in favour of the ``thinkingLevel``\n        # string enum (which has no \"none\"), so use its lowest universally\n        # supported level \u2014 \"low\" (3.6's \"minimal\" is not accepted by 3.7+ /\n        # 3.1 Pro). ``_thinking_requests_output_headroom`` keeps the small\n        # budget intact for this hidden-thoughts path. (#91927)\n        config: dict[str, Any] = {\"includeThoughts\": False}\n        if normalized_model.startswith(\"gemini-2.5-\"):\n            config[\"thinkingBudget\"] = 0\n        elif gemini_uses_thinking_level(normalized_model):\n            config[\"thinkingLevel\"] = \"low\"\n        return config\n    thinking_config: dict[str, Any] = {\"includeThoughts\": True}\n    # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.\n    if normalized_model.startswith(\"gemini-2.5-\"):\n        return thinking_config\n    if effort not in {\"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultra\"}:\n        effort = \"medium\"\n    # Gemini 3 Pro is strict (low/high); every other thinking-level model (3.x Flash, Gemini 4 Argon)\n    # documents low/medium/high, and \"minimal\" is not universal (Argon 400s on it). Clamp Hermes' wider\n    # effort set to what each family accepts so we never forward an undocumented level verbatim.\n    if gemini_uses_thinking_level(normalized_model):\n        if \"pro\" in normalized_model:\n            thinking_config[\"thinkingLevel\"] = \"high\" if effort in _HIGH_EFFORTS else \"low\"\n        else:\n            thinking_config[\"thinkingLevel\"] = (\n                \"low\" if effort in {\"minimal\", \"low\"} else \"high\" if effort in _HIGH_EFFORTS else \"medium\"\n            )\n    return thinking_config\n",
+      "sha256": "58d41261aef97088104584c7f1752a640ff9460a87e5eb05a3065f0122422937"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_raise_gemini_thinking_max_tokens",
+      "startLine": 241,
+      "endLine": 248,
+      "source": "def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None, requested: Any) -> Any:\n    \"\"\"Raise Gemini output caps that thinking tokens (billed against max_tokens) would otherwise exhaust.\"\"\"\n    thinking_config = _build_gemini_thinking_config(model, reasoning_config)\n    if not thinking_config:\n        return requested\n    from agent.gemini_native_adapter import _effective_gemini_max_output_tokens\n\n    return _effective_gemini_max_output_tokens(requested, thinking_config)\n",
+      "sha256": "749590cbb038081cf58ffa5b883cd19f8560b43955d71d56874a469d9631fd3b"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_swap_developer_role",
+      "startLine": 354,
+      "endLine": 361,
+      "source": "def _swap_developer_role(sanitized: list, model_lower: str) -> list:\n    \"\"\"GPT-5/Codex models take a ``developer`` role instead of ``system``.\"\"\"\n    if (\n        sanitized and isinstance(sanitized[0], dict) and sanitized[0].get(\"role\") == \"system\"\n        and any(p in model_lower for p in DEVELOPER_ROLE_MODELS)\n    ):\n        return [{**sanitized[0], \"role\": \"developer\"}, *sanitized[1:]]\n    return sanitized\n",
+      "sha256": "0b80f8543950a6f0980a84255b880c5d86651796c2e2b7aefb7c1019e72dc343"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_apply_max_tokens",
+      "startLine": 364,
+      "endLine": 372,
+      "source": "def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:\n    \"\"\"Preserve internal task/recovery budgets and provider protocol exceptions.\"\"\"\n    max_tokens_fn = params.get(\"max_tokens_param_fn\")\n    for candidate in (params.get(\"ephemeral_max_output_tokens\"), params.get(\"max_tokens\")):\n        if candidate is not None and max_tokens_fn:\n            api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, candidate)))\n            return\n    if profile_max and max_tokens_fn:\n        api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))\n",
+      "sha256": "027351580e76bf83288ae69312b9cbb601ce82d2f9d13a205331c6cdf565b9b8"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_base_kwargs",
+      "startLine": 376,
+      "endLine": 396,
+      "source": "def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile: Any = None) -> dict[str, Any]:\n    \"\"\"Shared ``{model, messages[, temperature][, timeout][, tools]}`` scaffold for both build paths.\n\n    ``temperature`` is profile-path only: ``fixed_temperature`` beats the caller's; ``OMIT_TEMPERATURE`` sends none.\n    \"\"\"\n    api_kwargs: dict[str, Any] = {\"model\": model, \"messages\": sanitized}\n    if profile is not None:\n        from providers.base import OMIT_TEMPERATURE\n\n        if profile.fixed_temperature is OMIT_TEMPERATURE:\n            pass\n        elif profile.fixed_temperature is not None:\n            api_kwargs[\"temperature\"] = profile.fixed_temperature\n        elif params.get(\"temperature\") is not None:\n            api_kwargs[\"temperature\"] = params[\"temperature\"]\n    if params.get(\"timeout\") is not None:\n        api_kwargs[\"timeout\"] = params[\"timeout\"]\n    if tools:\n        # Moonshot/Kimi uses a stricter JSON Schema flavor; rewriting here also covers aggregator routes.\n        api_kwargs[\"tools\"] = sanitize_moonshot_tools(tools) if is_moonshot_model(model) else tools\n    return api_kwargs\n",
+      "sha256": "d3610553b186dbaea6eed2151c8e5e26814548df99611b970019b208744bd9ff"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "_finish_kwargs",
+      "startLine": 399,
+      "endLine": 405,
+      "source": "def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *, supports_prompt_cache_key: bool) -> dict[str, Any]:\n    \"\"\"Tail shared by both build paths: content-addressed prompt_cache_key, then return.\"\"\"\n    _add_prompt_cache_key(\n        api_kwargs, messages=sanitized, tools=api_kwargs.get(\"tools\"), supports_prompt_cache_key=supports_prompt_cache_key,\n        session_id=params.get(\"session_id\"), cache_scope_id=params.get(\"cache_scope_id\"),\n    )\n    return api_kwargs\n",
+      "sha256": "3dc5b8ba909f355c71a4f0ca26cbf81ce2bde7bc9c1aa7002e81e03b1915b619"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "ChatCompletionsTransport.build_kwargs",
+      "startLine": 553,
+      "endLine": 636,
+      "source": "    def build_kwargs(\n        self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **params,\n    ) -> dict[str, Any]:\n        \"\"\"Build chat.completions.create() kwargs.\n\n        With ``provider_profile`` every quirk comes from the profile; the legacy flag\n        path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.\n        \"\"\"\n        _profile = params.get(\"provider_profile\")\n        # Read before convert_messages strips the key; only a profile that asks for it consumes it.\n        params[\"data_use\"] = data_use_requirement(messages)\n        sanitized = self.convert_messages(\n            messages, model=model, base_url=params.get(\"base_url\"), provider_profile=_profile,\n            provider=params.get(\"provider_name\"),\n        )\n        if _profile:\n            return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)\n\n        sanitized = _swap_developer_role(sanitized, params.get(\"model_lower\", (model or \"\").lower()))\n        api_kwargs = _base_kwargs(model, sanitized, tools, params)\n\n        is_kimi = params.get(\"is_kimi\", False)\n        supports_reasoning = params.get(\"supports_reasoning\", False)\n        reasoning_config = _reasoning_config_for_model(model, params.get(\"reasoning_config\"))\n        _apply_max_tokens(api_kwargs, model, reasoning_config, params)\n\n        # Kimi / TokenHub by host (agents with no registered profile): top-level reasoning_effort (unless thinking disabled).\n        thinking_off = isinstance(reasoning_config, dict) and reasoning_config.get(\"enabled\") is False\n        _e = requested_effort(reasoning_config)\n        if is_kimi and not thinking_off:\n            # K3 = low/high/max (server default high), K2-era = low/medium/high (default medium).\n            _supported = kimi_supported_efforts(model)\n            is_k3 = _supported is KIMI_K3_EFFORTS\n            api_kwargs[\"reasoning_effort\"] = (\n                (\"high\" if is_k3 else \"medium\") if _e is None\n                else clamp_effort(_e, _supported, KIMI_K3_OVERRIDES if is_k3 else None)\n            )\n        if params.get(\"is_tokenhub\", False) and not thinking_off:\n            api_kwargs[\"reasoning_effort\"] = tokenhub_effort(_e)\n\n        extra_body: dict[str, Any] = {}\n        is_openrouter = params.get(\"is_openrouter\", False)\n        base_url = params.get(\"base_url\")\n        if is_openrouter and params.get(\"provider_preferences\"):\n            extra_body[\"provider\"] = params[\"provider_preferences\"]\n        # Pareto Code router plugin (same shape as the OpenRouter profile path).\n        if is_openrouter and model == \"openrouter/pareto-code\":\n            _pareto_score_f = _pareto_score(params.get(\"openrouter_min_coding_score\"))\n            if _pareto_score_f is not None:\n                extra_body[\"plugins\"] = [{\"id\": \"pareto-router\", \"min_coding_score\": _pareto_score_f}]\n        if is_kimi:\n            extra_body[\"thinking\"] = {\"type\": \"disabled\" if thinking_off else \"enabled\"}\n\n        if supports_reasoning:\n            if params.get(\"is_github_models\", False):\n                if params.get(\"github_reasoning_extra\") is not None:\n                    extra_body[\"reasoning\"] = params[\"github_reasoning_extra\"]\n            else:\n                _effort = (reasoning_config.get(\"effort\", \"medium\") or \"medium\") if reasoning_config and isinstance(reasoning_config, dict) else \"medium\"\n                # Honor explicit \"thinking off\" like the profile path \u2014 never re-enable it.\n                off = thinking_off or _effort == \"none\"\n                extra_body[\"reasoning\"] = {\"enabled\": not off, \"effort\": \"none\" if off else _effort}\n\n        if str(params.get(\"provider_name\") or \"\").strip().lower() == \"gemini\":\n            raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)\n            if _is_gemini_openai_compat_base_url(base_url):\n                thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)\n                if thinking_config:\n                    openai_compat_extra = extra_body.get(\"extra_body\", {})\n                    openai_compat_extra[\"google\"] = {**openai_compat_extra.get(\"google\", {}), \"thinking_config\": thinking_config}\n                    extra_body[\"extra_body\"] = openai_compat_extra\n            elif raw_thinking_config:\n                extra_body[\"thinking_config\"] = raw_thinking_config\n\n        if params.get(\"extra_body_additions\"):\n            extra_body.update(params[\"extra_body_additions\"])\n        if extra_body:\n            api_kwargs[\"extra_body\"] = extra_body\n        if params.get(\"request_overrides\"):\n            api_kwargs.update(params[\"request_overrides\"])\n        return _finish_kwargs(\n            api_kwargs, sanitized, params,\n            supports_prompt_cache_key=bool(params.get(\"supports_prompt_cache_key\")) or _is_openai_api_base_url(base_url),\n        )\n",
+      "sha256": "680614112ced0ddc5f166d70660b46e58aee4765fc918f1a0f5660790ce763a8"
+    },
+    {
+      "path": "agent/transports/chat_completions.py",
+      "qualifiedName": "ChatCompletionsTransport._build_kwargs_from_profile",
+      "startLine": 638,
+      "endLine": 689,
+      "source": "    def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):\n        \"\"\"Build API kwargs from a ProviderProfile \u2014 every quirk comes from the profile object.\"\"\"\n        sanitized = _swap_developer_role(profile.prepare_messages(sanitized), (model or \"\").lower())\n        api_kwargs = _base_kwargs(model, sanitized, tools, params, profile=profile)\n\n        reasoning_config = _reasoning_config_for_model(model, params.get(\"reasoning_config\"))\n        # Profiles fronting several backends override get_max_tokens() per model.\n        _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))\n\n        # LM Studio's probed allowed_options ride only when present, so plugin hooks written\n        # against the older keyword set (no ``**context``) keep working.\n        _lm_options = params.get(\"lmstudio_reasoning_options\")\n        extra_body_from_profile, top_level_from_profile = profile.build_api_kwargs_extras(\n            reasoning_config=reasoning_config, supports_reasoning=params.get(\"supports_reasoning\", False),\n            qwen_session_metadata=params.get(\"qwen_session_metadata\"), model=model,\n            base_url=params.get(\"base_url\"), ollama_num_ctx=params.get(\"ollama_num_ctx\"),\n            session_id=params.get(\"session_id\"), cache_scope_id=params.get(\"cache_scope_id\"),\n            **({\"lmstudio_reasoning_options\": _lm_options} if _lm_options is not None else {}),\n        )\n        api_kwargs.update(top_level_from_profile)\n\n        extra_body: dict[str, Any] = {}\n        profile_body = profile.build_extra_body(\n            session_id=params.get(\"session_id\"), provider_preferences=params.get(\"provider_preferences\"), model=model,\n            base_url=params.get(\"base_url\"), reasoning_config=reasoning_config,\n            openrouter_min_coding_score=params.get(\"openrouter_min_coding_score\"), data_use=params.get(\"data_use\"),\n        )\n        for part in (profile_body, extra_body_from_profile, params.get(\"extra_body_additions\")):\n            if part:\n                extra_body.update(part)\n        for k, v in (params.get(\"request_overrides\") or {}).items():\n            if k == \"extra_body\" and isinstance(v, dict):\n                extra_body.update(v)\n            else:\n                api_kwargs[k] = v\n\n        if extra_body:\n            # Native Gemini speaks Google's REST schema: OpenAI-style extra_body\n            # keys (tags, reasoning, provider, ...) are unknown fields -> HTTP 400.\n            # The native client reads only thinking_config and the long-decode budget.\n            try:\n                from agent.gemini_native_adapter import is_native_gemini_base_url\n                _native_gemini = is_native_gemini_base_url(params.get(\"base_url\"))\n            except Exception:\n                _native_gemini = False\n            if _native_gemini:\n                extra_body = {k: v for k, v in extra_body.items() if k in (\"thinking_config\", \"thinkingConfig\", \"max_output_tokens\")}\n            if extra_body:\n                api_kwargs[\"extra_body\"] = extra_body\n        return _finish_kwargs(\n            api_kwargs, sanitized, params, supports_prompt_cache_key=bool(getattr(profile, \"supports_prompt_cache_key\", False)),\n        )\n",
+      "sha256": "15bdf21ee5440634f132f7bd565219c1f1c37bb132b6d3997871ad18aeadcf07"
+    },
+    {
+      "path": "agent/chat_completion_helpers.py",
+      "qualifiedName": "_build_chat_completions_kwargs",
+      "startLine": 1437,
+      "endLine": 1501,
+      "source": "def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):\n    transport = agent._get_transport()\n    tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)\n\n    _is_qwen = agent._is_qwen_portal()\n    _is_or = agent._is_openrouter_url()\n    _host = agent._base_url_lower\n    _is_gh = base_url_host_matches(_host, \"models.github.ai\") or base_url_host_matches(_host, \"githubcopilot.com\")\n    _is_lmstudio = (agent.provider or \"\").strip().lower() == \"lmstudio\"\n\n    # _fixed_temperature_for_model may return the OMIT_TEMPERATURE sentinel\n    # (temperature omitted entirely), a numeric override, or None.\n    _omit_temp, _fixed_temp = False, None\n    with contextlib.suppress(Exception):\n        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE\n        _ft = _fixed_temperature_for_model(agent.model, agent.base_url)\n        _omit_temp = _ft is OMIT_TEMPERATURE\n        _fixed_temp = None if _omit_temp else _ft\n\n    _prefs = _provider_preferences_for_agent(agent)\n\n    _qwen_meta = {\"sessionId\": agent.session_id or \"hermes\", \"promptId\": str(uuid.uuid4())} if _is_qwen else None\n    _profile = None\n    with contextlib.suppress(Exception):\n        from providers import get_provider_profile\n        _profile = get_provider_profile(agent.provider)\n\n    _ephemeral_out = _consume_ephemeral_max_output(agent)\n    from agent.reasoning_carriers import shape_wire_carriers\n    api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url)\n    # Strip image parts for non-vision models on BOTH paths (registered\n    # providers with profiles used to bypass it).\n    _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),\n        tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),\n        max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,\n        max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,\n        request_overrides=request_overrides, session_id=getattr(agent, \"session_id\", None),\n        cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,\n        provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,\n        supports_reasoning=agent._supports_reasoning_extra_body(),\n        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,\n        qwen_session_metadata=_qwen_meta)\n    if _profile:\n        # Profiles handle per-provider quirks via hooks fed the context above.\n        return transport.build_kwargs(provider_profile=_profile, **_common)\n\n    # Legacy flag path: only for a provider absent from the providers/ registry.\n    return transport.build_kwargs(\n        **_common,\n        model_lower=(agent.model or \"\").lower(),\n        is_openrouter=_is_or,\n        is_nous=base_url_host_matches(_host, \"nousresearch.com\"),\n        is_qwen_portal=_is_qwen,\n        is_github_models=_is_gh,\n        is_nvidia_nim=base_url_host_matches(_host, \"integrate.api.nvidia.com\"),\n        is_kimi=any(base_url_host_matches(agent.base_url, h) for h in (\"api.kimi.com\", \"moonshot.ai\", \"moonshot.cn\")),\n        is_tokenhub=base_url_host_matches(_host, \"tokenhub.tencentmaas.com\"),\n        is_custom_provider=agent.provider == \"custom\",\n        qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,\n        qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,\n        fixed_temperature=_fixed_temp,\n        omit_temperature=_omit_temp,\n        github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,\n        provider_name=agent.provider,\n    )\n",
+      "sha256": "020457f7605b0cbf598201f17a225d2ec38dd0e15ab4f4c9beeb4b9a5a991d20"
+    },
+    {
+      "path": "plugins/model-providers/custom/__init__.py",
+      "qualifiedName": "_looks_like_ollama_endpoint",
+      "startLine": 13,
+      "endLine": 27,
+      "source": "def _looks_like_ollama_endpoint(base_url: str | None) -> bool:\n    \"\"\"True only for explicit Ollama signatures (port 11434 or an ``ollama`` host label).\n    ``think`` is Ollama-native; strict hosts (Mistral, Groq) 422 on it, and\n    arbitrary localhost may be llama.cpp / vLLM / LM Studio.\"\"\"\n    raw = (base_url or \"\").strip()\n    if not raw:\n        return False\n    parsed = urlparse(raw if \"://\" in raw else f\"//{raw}\")\n    try:  # urlparse raises ValueError on malformed ports (\"host:99999\"); treat as not-Ollama.\n        if parsed.port == 11434:\n            return True\n    except ValueError:\n        return False\n    host = (parsed.hostname or \"\").lower().rstrip(\".\")\n    return bool(host) and (host == \"ollama.com\" or host.endswith(\".ollama.com\") or \"ollama\" in host.split(\".\"))\n",
+      "sha256": "1b3ac130c9566041ab4dd146308d22b9b90ae748577266d5679fb47348a8778b"
+    },
+    {
+      "path": "plugins/model-providers/custom/__init__.py",
+      "qualifiedName": "CustomProfile.default_reasoning_config",
+      "startLine": 46,
+      "endLine": 54,
+      "source": "    def default_reasoning_config(self, model: str | None = None) -> dict | None:\n        \"\"\"Unset ``agent.reasoning_effort`` \u2192 ``medium``, as on the Nous / OpenRouter profiles.\n\n        Leaving the field off lets the endpoint's own default apply, and for a hosted reasoning\n        model that default can be its ceiling: kimi-k3 behind an OpenAI-compatible relay defaults\n        to ``max`` \u2014 3x the reasoning tokens and ~3x the latency of medium. The agent skips this\n        default for models the catalog marks non-reasoning (``agent.reasoning_params``).\n        \"\"\"\n        return {\"enabled\": True, \"effort\": \"medium\"}\n",
+      "sha256": "7fd8cdc8919c1da0f4dcae54b31dd30a6616d74720c23b6216e09a1ddc188df5"
+    },
+    {
+      "path": "plugins/model-providers/custom/__init__.py",
+      "qualifiedName": "CustomProfile.build_api_kwargs_extras",
+      "startLine": 56,
+      "endLine": 84,
+      "source": "    def build_api_kwargs_extras(\n        self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None, **ctx: Any\n    ) -> tuple[dict[str, Any], dict[str, Any]]:\n        extra_body: dict[str, Any] = {}\n        top_level: dict[str, Any] = {}\n        if ollama_num_ctx:\n            extra_body[\"options\"] = {\"num_ctx\": ollama_num_ctx}\n        # disabled -> top-level reasoning_effort=\"none\" (Ollama's /v1 ignores\n        # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->\n        # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,\n        # vLLM and SGLang all top out at \"max\"; \"ultra\" verbatim 400s); None ->\n        # omit so the server default applies (auxiliary calls without an effort, and\n        # the main loop after the route rejected the reasoning field \u2014 an unset main\n        # effort arrives here already filled by default_reasoning_config). Never emit\n        # think=True (Ollama-only flag).\n        if reasoning_config and isinstance(reasoning_config, dict):\n            effort = (reasoning_config.get(\"effort\") or \"\").strip().lower()\n            if effort == \"none\" or reasoning_config.get(\"enabled\", True) is False:\n                # See #14820.\n                top_level[\"reasoning_effort\"] = \"none\"\n                if _looks_like_ollama_endpoint(ctx.get(\"base_url\")):\n                    extra_body[\"think\"] = False\n            elif effort and base_url_host_matches(str(ctx.get(\"base_url\") or \"\"), \"api.groq.com\"):\n                # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as\n                # \"none\" / \"default\"; any graded level (\"medium\", \"high\") 400s (#75089).\n                top_level[\"reasoning_effort\"] = \"default\"\n            elif effort:\n                top_level[\"reasoning_effort\"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)\n        return extra_body, top_level\n",
+      "sha256": "8fa267c1b1a07b1b96a0896bf5f4057099d12bcc84022adba609fc9d42a0224e"
+    },
+    {
+      "path": "providers/base.py",
+      "qualifiedName": "ProviderProfile.prepare_messages",
+      "startLine": 298,
+      "endLine": 304,
+      "source": "    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:\n        \"\"\"Provider-specific message preprocessing.\n\n        Called AFTER codex field sanitization, BEFORE developer role swap.\n        Default: pass-through.\n        \"\"\"\n        return messages\n",
+      "sha256": "ae25cdaad3552f1e2e2544d079484393049e275b5a6f4803d3ecb83082247395"
+    },
+    {
+      "path": "providers/base.py",
+      "qualifiedName": "ProviderProfile.build_extra_body",
+      "startLine": 306,
+      "endLine": 313,
+      "source": "    def build_extra_body(\n        self, *, session_id: str | None = None, **context: Any\n    ) -> dict[str, Any]:\n        \"\"\"Provider-specific extra_body fields.\n\n        Merged into the API kwargs extra_body. Default: empty dict.\n        \"\"\"\n        return {}\n",
+      "sha256": "f4949012cd89fad69cf3f0252434556ac7dbba0d6286e8c3ceb454e50fc08c22"
+    },
+    {
+      "path": "providers/base.py",
+      "qualifiedName": "ProviderProfile.get_max_tokens",
+      "startLine": 374,
+      "endLine": 386,
+      "source": "    def get_max_tokens(self, model: str | None) -> int | None:\n        \"\"\"Return the default max_tokens cap for *model*.\n\n        Overrideable hook for providers that need per-model output caps \u2014\n        e.g. a relay that fronts several upstream backends, each with a\n        different completion-token limit. The transport calls this when\n        the user hasn't set an explicit max_tokens.\n\n        Default: return self.default_max_tokens (the static profile field),\n        ignoring the model name. Override in a subclass to vary the cap\n        per-model.\n        \"\"\"\n        return self.default_max_tokens\n",
+      "sha256": "6d4415da36e0e8623cf466ee89f52367b2c3abc5ce85e42521d33de2d0909187"
+    },
+    {
+      "path": "agent/reasoning_effort.py",
+      "qualifiedName": "EFFORT_LADDER",
+      "startLine": 25,
+      "endLine": 25,
+      "source": "EFFORT_LADDER: tuple[str, ...] = (\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultra\")\n",
+      "sha256": "cbbc32ee14346caecc356197aaded38f3360051169197e3db77c8cdf3d4a4693"
+    },
+    {
+      "path": "agent/reasoning_effort.py",
+      "qualifiedName": "OPENAI_COMPAT_WIRE_EFFORTS",
+      "startLine": 28,
+      "endLine": 28,
+      "source": "OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = (\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\")\n",
+      "sha256": "19c197fac4d91992388ac9a04ed78c54b02c8f0f3a686968ce9702c1de339dd3"
+    },
+    {
+      "path": "agent/reasoning_effort.py",
+      "qualifiedName": "clamp_effort",
+      "startLine": 127,
+      "endLine": 157,
+      "source": "def clamp_effort(\n    effort: Optional[str], supported: Optional[Sequence[str]], overrides: Optional[dict[str, str]] = None,\n) -> Optional[str]:\n    \"\"\"Clamp a requested reasoning effort onto a wire's supported levels.\n\n    ``overrides`` (a declared vendor mapping, e.g. Kimi K3 ``medium \u2192 high``) is consulted\n    first. Otherwise the request passes through unchanged when it is supported, when the\n    supported set is unknown/empty, or when it isn't a recognized ladder level (custom\n    providers may use bespoke names). Else the **nearest weaker** supported level is returned\n    so a clamp never escalates cost; when nothing weaker exists, the weakest supported level\n    (the provider's floor is the closest honest match). Monotonic: a stronger request never\n    resolves weaker than a weaker request would.\n    \"\"\"\n    requested = str(effort or \"\").strip().lower()\n    if not requested or not supported:\n        return effort\n    supported_norm = [lvl for lvl in (str(s).strip().lower() for s in supported) if lvl in EFFORT_LADDER]\n    if not supported_norm or requested in supported_norm:\n        return effort\n    if overrides and overrides.get(requested) in supported_norm:\n        return overrides[requested]\n    if requested not in EFFORT_LADDER:\n        return effort\n    # \"none\" disables reasoning \u2014 never a degradation target for an enabled ask\n    # (clamping \"minimal\" to \"none\" would silently switch thinking off).\n    candidates = [level for level in supported_norm if level != \"none\"]\n    if not candidates:\n        return effort\n    requested_idx = EFFORT_LADDER.index(requested)\n    below = [level for level in candidates if EFFORT_LADDER.index(level) < requested_idx]\n    return max(below, key=EFFORT_LADDER.index) if below else min(candidates, key=EFFORT_LADDER.index)\n",
+      "sha256": "42983be4654eea83dae17336235a2fd5d197c9018bf358f3403c6efb75a0ed71"
+    },
+    {
+      "path": "agent/reasoning_effort.py",
+      "qualifiedName": "clamp_reasoning_config",
+      "startLine": 214,
+      "endLine": 226,
+      "source": "def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS) -> Optional[dict]:\n    \"\"\"Return ``reasoning_config`` with its ``effort`` clamped onto ``supported`` (non-dicts and\n    configs without an effort pass through untouched).\n\n    The entry clamp for an OpenAI-compatible chat-completions request builder: Hermes-internal\n    ``ultra`` never reaches a wire (#89503 main transport, #112010 aux/MoA), while provider\n    profiles with narrower vocabularies clamp again downstream. Unset stays unset.\n    \"\"\"\n    if not isinstance(reasoning_config, dict):\n        return reasoning_config\n    effort = str(reasoning_config.get(\"effort\") or \"\").strip().lower()\n    clamped = clamp_effort(effort, supported) if effort else effort\n    return {**reasoning_config, \"effort\": clamped} if clamped != effort else reasoning_config\n",
+      "sha256": "c907bdc757fc3df962b681bf959d123ab84c65ef0fafc132a3cab48bd3035f48"
+    },
+    {
+      "path": "run_agent.py",
+      "qualifiedName": "AIAgent._max_tokens_param",
+      "startLine": 670,
+      "endLine": 676,
+      "source": "    def _max_tokens_param(self, value: int) -> dict:\n        \"\"\"``max_completion_tokens`` for newer OpenAI families (and Azure / Copilot serving them), else\n        ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models.\"\"\"\n        if (self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url()\n                or model_forces_max_completion_tokens(self.model)):\n            return {\"max_completion_tokens\": value}\n        return {\"max_tokens\": value}\n",
+      "sha256": "605d05312b49e35ccb4275f2f91ee504cae902870507f2d921176e38b2972ac5"
+    },
+    {
+      "path": "utils.py",
+      "qualifiedName": "model_forces_max_completion_tokens",
+      "startLine": 762,
+      "endLine": 765,
+      "source": "def model_forces_max_completion_tokens(model: str) -> bool:\n    \"\"\"True for OpenAI families that reject ``max_tokens`` (HTTP 400 ``unsupported_parameter``).\"\"\"\n    m = (model or \"\").strip().lower().rsplit(\"/\", 1)[-1]\n    return m.startswith((\"gpt-4o\", \"gpt-4.1\", \"gpt-5\", \"o1\", \"o3\", \"o4\"))\n",
+      "sha256": "3322d7838112953242e80c8652fe4b3edd4c1ed6c366249c093145a21922d3e0"
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
+  "evidenceDateUTC": "2026-10-26",
+  "license": "MIT; Copyright (c) 2025 Nous Research",
+  "originalWholeModulesImported": false,
+  "selectedFragmentExecution": "build_request.py executes selected original AST bodies with closed synthetic collaborators; executed names are recorded per capture",
+  "fixtureKind": "Original AST function bodies with explicit fixture collaborators; not full Hermes, not OpenAI SDK wire capture",
+  "fragmentFileSHA256": "2268cc6a1862efd849e2dd79556fb007fbd07637a703cf042a6241c55deec52f",
+  "extraction": "Exact original line slices including indentation and comments; runtime AST-lifts methods with textwrap.dedent; original bodies unchanged",
+  "originalSourceFiles": [
+    {
+      "path": "agent/transports/chat_completions.py",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/transports/chat_completions.py",
+      "gitBlobSHA": "9e4ef960801ed5f422b40d658b9bc96e6720feb2",
+      "sha256": "6793be69882fad0eae48f02b2fcc959c0e9718af625202b1095565a2ba1c74de",
+      "bytes": 42708
+    },
+    {
+      "path": "agent/chat_completion_helpers.py",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/chat_completion_helpers.py",
+      "gitBlobSHA": "b4ca409edb2bc23c696d7a3dee7ee75adf73d143",
+      "sha256": "11ab752ee3cdb7b272d5b48bb93a8cc809d6d459c0f1978e84853634945d1df7",
+      "bytes": 223971
+    },
+    {
+      "path": "plugins/model-providers/custom/__init__.py",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/plugins/model-providers/custom/__init__.py",
+      "gitBlobSHA": "2858553dc8c7d3004d87de813504894ee94ac932",
+      "sha256": "e0bebb5675726793c87be3ba12d2cce088742106c852f142bcdf74f1d0156d98",
+      "bytes": 5349
+    },
+    {
+      "path": "providers/base.py",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/providers/base.py",
+      "gitBlobSHA": "90f9f8e15a98dd95e18e53d23a31978ae46d6540",
+      "sha256": "4ab4b237b91c6b928b86f46bc220e4d6af9b2a2a04ded5cf8a39fff213378b76",
+      "bytes": 25293
+    },
+    {
+      "path": "agent/reasoning_effort.py",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/agent/reasoning_effort.py",
+      "gitBlobSHA": "550f77659ee633495a4432c13cdd136542928fde",
+      "sha256": "050b8d56b474f24aaa0a63e542554f0382ffc49431ba769133157f617e5a8c6f",
+      "bytes": 15571
+    },
+    {
+      "path": "run_agent.py",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/run_agent.py",
+      "gitBlobSHA": "b060e185e2d683cb6885f62fc331e71fd31e3f95",
+      "sha256": "d449f87ffe12539fd361424578b6bff5ca1c725ed0ea1caa7dea1fc0c6b2263d",
+      "bytes": 88788
+    },
+    {
+      "path": "utils.py",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/utils.py",
+      "gitBlobSHA": "095cbff16e231dd062714168312b951a31d8a2b8",
+      "sha256": "9c4751dc9fbcbfe7e16d9e0cc5fb25566517c4927d2dc84061d4cac993a98445",
+      "bytes": 36013
+    },
+    {
+      "path": "LICENSE",
+      "sourceURL": "https://github.com/NousResearch/hermes-agent/blob/749cb638ff43f9ce5333c186a1e4f67d473aa4f2/LICENSE",
+      "gitBlobSHA": "75410e73319c72cd3e991a501c5455eb78f38375",
+      "sha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+      "bytes": 1070
+    }
+  ],
+  "vendoring": "Only listed function/constant fragments and full LICENSE are bundled; original module file hashes are source receipts, not paths to whole bundled modules."
+}

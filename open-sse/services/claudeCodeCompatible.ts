@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { currentApplicationAttempt } from "./decisionPolicy/applicationContext.ts";
 
 import { getStainlessTimeoutSeconds } from "@/shared/utils/runtimeTimeouts";
 import { ANTHROPIC_VERSION_HEADER } from "../config/anthropicHeaders.ts";
@@ -322,7 +323,7 @@ export async function buildAndSignClaudeCodeRequest(
   remapToolNamesInRequest(body);
 
   // Step 3-4: Thinking constraints
-  enforceThinkingTemperature(body);
+  enforceThinkingTemperature(body, currentApplicationAttempt()?.provider === "claude");
   disableThinkingIfToolChoiceForced(body);
 
   // Step 5: Cache control

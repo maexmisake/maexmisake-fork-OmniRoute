@@ -327,15 +327,22 @@ after(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   resetDbInstance();
 });
-async function configure(mode = "native", bindingName: DecisionBindingName = "zen") {
+async function configure(
+  mode = "native",
+  bindingName: DecisionBindingName = "zen",
+  pairs = [
+    { model: "claude-opus-5-5", effort: "medium" },
+    { model: "claude-opus-5-5", effort: "high" },
+  ]
+) {
   decisionBindingName = bindingName;
   decisionConnection = decisionConnections[bindingName];
   const binding = currentDecisionBinding();
   responseModel = binding.model;
-  const candidate = (id: string, effort: string) => ({
+  const candidate = (id: string, model: string, effort: string) => ({
     id,
     provider: "claude",
-    model: "claude-opus-5-5",
+    model,
     endpointKind: "direct",
     evidence: "synthetic-private-config-note",
     capabilities: {
@@ -365,7 +372,9 @@ async function configure(mode = "native", bindingName: DecisionBindingName = "ze
         connections: { light: executionConnection, deep: executionConnection },
         policy: {
           version: 1,
-          candidates: [candidate("light", "medium"), candidate("deep", "high")],
+          candidates: pairs.map((pair, index) =>
+            candidate(index === 0 ? "light" : "deep", pair.model, pair.effort)
+          ),
           taskOrder: { explanation: ["light", "deep"], reasoning: ["deep", "light"] },
           unknownQuota: "allow",
           decisionFailure: "stop",
@@ -431,6 +440,53 @@ for (const [id, effort] of [
   });
 }
 
+for (const [model, effort] of [
+  ["claude-opus-5-5", "xhigh"],
+  ["claude-opus-5-5", "max"],
+  ["claude-sonnet-5-5", "medium"],
+  ["claude-sonnet-5-5", "high"],
+  ["claude-sonnet-5-5", "xhigh"],
+]) {
+  for (const sole of [false, true]) {
+    test(`expanded free native ${model}/${effort} honors ${sole ? "sole eligible" : "selected offered pair"}`, async () => {
+      await configure("native", "zenFree", [
+        { model: "claude-opus-5-5", effort: effort === "medium" ? "high" : "medium" },
+        { model, effort },
+      ]);
+      chosen = "deep";
+      const d = decisionCalls.length,
+        e = executionCalls.length;
+      const input = sole ? await hermesShapedRequest({ reasoning_effort: effort }) : request();
+      const response = await POST(input);
+      assert.equal(response.status, 200, await response.text());
+      assert.equal(
+        response.headers.get("x-omniroute-selection-mode"),
+        sole ? "sole-eligible" : "native"
+      );
+      assert.equal(decisionCalls.length, d + (sole ? 0 : 1));
+      assert.equal(executionCalls.length, e + 1);
+      const wire = executionCalls.at(-1)!;
+      assert.equal(wire.model, model);
+      assert.deepEqual(wire.output_config, { effort });
+      assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
+      assert.equal(Object.hasOwn(wire.thinking as object, "budget_tokens"), false);
+      assert.equal(wire.max_tokens, 4096);
+      assert.equal(wire.stream, false);
+      for (const field of ["temperature", "top_p", "top_k"])
+        assert.equal(Object.hasOwn(wire, field), false, field);
+      const rows = readDecisionAttempts(key.id);
+      assert.equal(rows.length, sole ? 1 : 2);
+      const execution = rows.find((row) => row.lane === "execution")!;
+      assert.equal(execution.provider, "claude");
+      assert.equal(execution.model, model);
+      assert.equal(execution.effort, effort);
+      assert.equal(execution.connection_id, executionConnection);
+      assert.equal(execution.cost_usd, 0.002);
+      assert.equal(rows.filter((row) => row.lane === "decision").length, sole ? 0 : 1);
+    });
+  }
+}
+
 type FixturePolicy = {
   connections: Record<string, string>;
   policy: {
@@ -438,11 +494,75 @@ type FixturePolicy = {
     taskOrder: { explanation: string[] };
   };
 };
+for (const effort of ["medium", "high"]) {
+  for (const selected of ["light", "deep"]) {
+    test(`free native keeps explicit ${effort} while choosing the ${selected} Claude model`, async () => {
+      await configure("native", "zenFree", [
+        { model: "claude-opus-5-5", effort },
+        { model: "claude-sonnet-5-5", effort },
+      ]);
+      chosen = selected;
+      const d = decisionCalls.length,
+        e = executionCalls.length;
+      const response = await POST(await hermesShapedRequest({ reasoning_effort: effort }));
+      assert.equal(response.status, 200, await response.text());
+      assert.equal(response.headers.get("x-omniroute-selection-mode"), "native");
+      assert.equal(decisionCalls.length, d + 1);
+      assert.equal(executionCalls.length, e + 1);
+      const decision = decisionCalls.at(-1)!;
+      const criteria = (
+        (decision.questions as Record<string, unknown>).route as Record<string, unknown>
+      ).criteria as Record<string, string>;
+      assert.deepEqual(Object.keys(criteria), ["light", "deep"]);
+      assert.equal(JSON.parse(criteria.light).effort.value, effort);
+      assert.equal(JSON.parse(criteria.deep).effort.value, effort);
+      assert.equal(JSON.parse(criteria.light).model, "claude-opus-5-5");
+      assert.equal(JSON.parse(criteria.deep).model, "claude-sonnet-5-5");
+      const wire = executionCalls.at(-1)!;
+      assert.equal(wire.model, selected === "light" ? "claude-opus-5-5" : "claude-sonnet-5-5");
+      assert.deepEqual(wire.output_config, { effort });
+      assert.equal(wire.max_tokens, 4096);
+      const rows = readDecisionAttempts(key.id);
+      assert.equal(rows.length, 2);
+      assert.equal(rows.find((row) => row.lane === "decision")!.model, "jev-1.13-free");
+      assert.equal(
+        rows.find((row) => row.lane === "execution")!.connection_id,
+        executionConnection
+      );
+    });
+  }
+}
 async function mutateConfig(change: (config: FixturePolicy) => void) {
   const combo = await getComboByName("fixture-native-selector");
   const config = structuredClone(combo!.config) as Record<string, unknown>;
   change(config.decisionPolicy as FixturePolicy);
   await updateCombo(comboId, { config });
+}
+for (const failure of ["refusal", "auth", "unknown-capabilities", "cancel"]) {
+  test(`expanded same-effort Claude pool ${failure} cannot authorize execution`, async () => {
+    await configure("native", "zenFree", [
+      { model: "claude-opus-5-5", effort: "medium" },
+      { model: "claude-sonnet-5-5", effort: "medium" },
+    ]);
+    const controller = new AbortController();
+    if (failure === "refusal") answerMode = "refused";
+    if (failure === "auth") decisionStatus = 401;
+    if (failure === "cancel") controller.abort();
+    if (failure === "unknown-capabilities")
+      await mutateConfig((c) => {
+        for (const candidate of c.policy.candidates) candidate.capabilities.text = null;
+      });
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    const response = await POST(
+      await hermesShapedRequest({ reasoning_effort: "medium" }, controller.signal)
+    );
+    await response.text();
+    assert.ok(response.status >= 400);
+    assert.equal(decisionCalls.length, d + (["refusal", "auth"].includes(failure) ? 1 : 0));
+    assert.equal(executionCalls.length, e);
+    assert.equal(readDecisionAttempts(key.id).filter((row) => row.lane === "execution").length, 0);
+  });
 }
 async function waitForDecision(count: number) {
   for (let i = 0; i < 200 && decisionCalls.length === count; i++)

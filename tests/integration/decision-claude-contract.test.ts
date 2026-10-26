@@ -25,12 +25,22 @@ const { clearAllModelLockouts } = await import("../../open-sse/services/accountF
 const { sanitizeReasoningEffortForProvider } =
   await import("../../open-sse/executors/base/reasoningEffort.ts");
 const { translateRequest, initTranslators } = await import("../../open-sse/translator/index.ts");
-const { resolveClaudeCodeCompatibleEffort } =
-  await import("../../open-sse/services/claudeCodeCompatible.ts");
+const {
+  resolveClaudeCodeCompatibleEffort,
+  enforceThinkingTemperature,
+  finalizeClaudeBodyConstraints,
+} = await import("../../open-sse/services/claudeCodeCompatible.ts");
 const { DefaultExecutor } = await import("../../open-sse/executors/default.ts");
 const { supportsClaudeMaxEffort } = await import("../../open-sse/config/providerModels.ts");
 const { currentApplicationAttempt } =
   await import("../../open-sse/services/decisionPolicy/applicationContext.ts");
+const documentedExpansionPairs = [
+  ["claude-opus-5-5", "xhigh"],
+  ["claude-opus-5-5", "max"],
+  ["claude-sonnet-5-5", "medium"],
+  ["claude-sonnet-5-5", "high"],
+  ["claude-sonnet-5-5", "xhigh"],
+] as const;
 
 // Deliberately fake token; no credential store outside the isolated fixture DB is used.
 const access = "sk-ant-oat-synthetic-fixture-not-a-credential";
@@ -417,10 +427,39 @@ test("client authentication failures dispatch nothing", async () => {
   }
   assert.equal(sent.length, count);
 });
+for (const [model, effort] of documentedExpansionPairs) {
+  test(`documented Claude pair preserves the exact handler wire: ${model}/${effort}`, async () => {
+    await configure(model, effort);
+    const count = sent.length;
+    const response = await POST(request(key.key, undefined, { reasoning_effort: effort }));
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(sent.length, count + 1);
+    const observed = sent.at(-1)!;
+    const wire = observed.body as Record<string, unknown>;
+    assert.equal(wire.model, model);
+    assert.deepEqual(wire.output_config, { effort });
+    assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
+    assert.equal(Object.hasOwn(wire.thinking as object, "budget_tokens"), false);
+    assert.equal(wire.max_tokens, 4096);
+    assert.equal(wire.stream, false);
+    for (const field of ["temperature", "top_p", "top_k"])
+      assert.equal(Object.hasOwn(wire, field), false, field);
+    assert.equal(observed.bearerCorrect, true);
+    assert.equal(observed.secondaryKey, null);
+    const row = readDecisionAttempts(key.id).at(-1)!;
+    assert.equal(row.provider, "claude");
+    assert.equal(row.model, model);
+    assert.equal(row.effort, effort);
+    assert.equal(row.connection_id, connectionId);
+    assert.equal(row.output_tokens, 4);
+    assert.equal(row.cost_usd, null);
+    assert.equal(row.reasoning_tokens, null);
+  });
+}
 for (const [model, effort] of [
   ["claude-sonnet-5-5", "max"],
   ["claude-haiku-5-5", "medium"],
-  ["claude-opus-5-5", "xhigh"],
+  ["claude-opus-5-5", "unknown"],
   ["claude-unknown", "high"],
 ]) {
   test(`unadmitted exact pair cannot revive global fallback: ${model}/${effort}`, async () => {
@@ -521,6 +560,22 @@ test("expired OAuth credentials do not refresh or dispatch", async () => {
   await response.text();
   assert.equal(sent.length, count);
 });
+for (const invalid of ["near-expiry", "api-key"]) {
+  test(`new Sonnet pair rejects ${invalid} credentials before dispatch`, async () => {
+    await configure("claude-sonnet-5-5", "medium");
+    await updateProviderConnection(
+      connectionId,
+      invalid === "api-key"
+        ? { apiKey: "synthetic-substituted-api-key" }
+        : { expiresAt: new Date(Date.now() + 30_000).toISOString() }
+    );
+    const count = sent.length;
+    const response = await POST(request());
+    await response.text();
+    assert.equal(response.status, 409);
+    assert.equal(sent.length, count);
+  });
+}
 test("cancellation before dispatch has zero provider calls", async () => {
   const abort = new AbortController();
   abort.abort();
@@ -567,10 +622,13 @@ for (const mode of ["sse", "malformed"]) {
     if (mode === "sse") assert.equal(readDecisionAttempts(String(key.id)).at(-1)!.state, "unknown");
   });
 }
-test("bounded Opus 5.5 medium/high contracts survive existing formatters", () => {
+test("bounded documented Claude contracts survive existing formatters", () => {
   initTranslators();
-  const model = "claude-opus-5-5";
-  for (const effort of ["medium", "high"]) {
+  for (const [model, effort] of [
+    ["claude-opus-5-5", "medium"],
+    ["claude-opus-5-5", "high"],
+    ...documentedExpansionPairs,
+  ]) {
     const body = {
       model,
       messages: [{ role: "user", content: "synthetic" }],
@@ -586,6 +644,30 @@ test("bounded Opus 5.5 medium/high contracts survive existing formatters", () =>
     assert.equal(resolveClaudeCodeCompatibleEffort(body, body, model), effort);
   }
 });
+test("bounded sampling preservation neither synthesizes nor erases fields", () => {
+  for (const finalize of [enforceThinkingTemperature, finalizeClaudeBodyConstraints]) {
+    for (const sampling of [{}, { temperature: 1 }, { top_p: 0.99 }, { top_k: 1 }]) {
+      const body = { thinking: { type: "adaptive" }, ...sampling };
+      const original = structuredClone(body);
+      finalize(body, true);
+      assert.deepEqual(body, original);
+    }
+  }
+});
+for (const [field, value] of [
+  ["temperature", 1],
+  ["top_p", 0.99],
+  ["top_k", 1],
+] as const) {
+  test(`new Sonnet pair rejects explicit ${field} before any dispatch`, async () => {
+    await configure("claude-sonnet-5-5", "medium");
+    const count = sent.length;
+    const response = await POST(request(key.key, undefined, { [field]: value }));
+    await response.text();
+    assert.ok(response.status >= 400);
+    assert.equal(sent.length, count);
+  });
+}
 test("older and unverified Claude family restrictions are not widened", () => {
   for (const model of [
     "claude-haiku-4-5-20251001",
@@ -621,6 +703,63 @@ for (const [label, mutate] of [
       const body = original.apply(this, args);
       if (this.provider === "claude") mutate(body as Record<string, unknown>);
       return body;
+    };
+    const count = sent.length;
+    try {
+      const response = await POST(request());
+      await response.text();
+      assert.equal(response.status, 409);
+      assert.equal(sent.length, count);
+    } finally {
+      DefaultExecutor.prototype.transformRequest = original;
+    }
+  });
+}
+for (const [label, mutate] of [
+  [
+    "model",
+    (wire: Record<string, unknown>) => {
+      wire.model = "claude-opus-5-5";
+    },
+  ],
+  [
+    "effort",
+    (wire: Record<string, unknown>) => {
+      wire.output_config = { effort: "high" };
+    },
+  ],
+  [
+    "output cap",
+    (wire: Record<string, unknown>) => {
+      wire.max_tokens = 8192;
+    },
+  ],
+  [
+    "temperature",
+    (wire: Record<string, unknown>) => {
+      wire.temperature = 1;
+    },
+  ],
+  [
+    "top_p",
+    (wire: Record<string, unknown>) => {
+      wire.top_p = 0.99;
+    },
+  ],
+  [
+    "top_k",
+    (wire: Record<string, unknown>) => {
+      wire.top_k = 1;
+    },
+  ],
+] as const) {
+  test(`new Sonnet pair rejects final ${label} mutation before physical dispatch`, async () => {
+    await configure("claude-sonnet-5-5", "medium");
+    const original = DefaultExecutor.prototype.transformRequest;
+    DefaultExecutor.prototype.transformRequest = function (...args) {
+      const wire = original.apply(this, args);
+      if (this.provider === "claude") mutate(wire as Record<string, unknown>);
+      return wire;
     };
     const count = sent.length;
     try {
@@ -709,4 +848,5 @@ test("ordinary Sonnet 5.5 max retains the stable OAuth high clamp outside bounde
   assert.equal(wire.model, "claude-sonnet-5-5");
   assert.equal((wire.output_config as Record<string, unknown>).effort, "high");
   assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
+  assert.equal(wire.temperature, 1, "ordinary finalizer retains its existing sampling default");
 });

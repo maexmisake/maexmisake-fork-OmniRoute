@@ -14,7 +14,10 @@ export type ApplicationProvider = {
   credentials: ProviderCredentials;
 };
 export function isBoundedClaudePair(model: string, effort: string): boolean {
-  return model === "claude-opus-5-5" && ["medium", "high"].includes(effort);
+  return (
+    (model === "claude-opus-5-5" && ["medium", "high", "xhigh", "max"].includes(effort)) ||
+    (model === "claude-sonnet-5-5" && ["medium", "high", "xhigh"].includes(effort))
+  );
 }
 export function assertReadyClaudeOAuth(credentials: ProviderCredentials): void {
   if (
@@ -97,13 +100,11 @@ export function claudeWireFacts(
     "thinking",
     "output_config",
     "context_management",
-    "temperature",
   ];
   if (
     Object.keys(wire).some((key) => !allowed.includes(key)) ||
     wire.stream !== false ||
-    wire.max_tokens !== outputLimit ||
-    (wire.temperature !== undefined && wire.temperature !== 1)
+    wire.max_tokens !== outputLimit
   )
     throw new Error("decision_final_request_unsupported");
   if (

@@ -22,7 +22,13 @@
  * branch — which also preserves the "never send both temperature and top_p"
  * invariant).
  */
-export function enforceThinkingTemperature(body: Record<string, unknown>): void {
+export function enforceThinkingTemperature(
+  body: Record<string, unknown>,
+  preserveSamplingFields = false
+): void {
+  // The bounded application rejects sampling at its final fence. Preserve
+  // supplied fields there; do not synthesize defaults or hide a late injection.
+  if (preserveSamplingFields) return;
   const thinking = body.thinking as Record<string, unknown> | undefined;
   if (thinking?.type === "enabled" || thinking?.type === "adaptive") {
     body.temperature = 1;
@@ -33,10 +39,13 @@ export function enforceThinkingTemperature(body: Record<string, unknown>): void 
 }
 
 /** Applies the final Anthropic wire-body invariants before serialization. */
-export function finalizeClaudeBodyConstraints(body: Record<string, unknown>): void {
+export function finalizeClaudeBodyConstraints(
+  body: Record<string, unknown>,
+  preserveSamplingFields = false
+): void {
   hoistLeadingSystemMessages(body);
   relocateDirectiveOnlyMessages(body);
-  enforceThinkingTemperature(body);
+  enforceThinkingTemperature(body, preserveSamplingFields);
 }
 
 function isSystemRole(role: unknown): boolean {
