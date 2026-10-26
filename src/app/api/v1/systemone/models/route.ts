@@ -18,6 +18,8 @@ import { handleSystemOneModels } from "@omniroute/open-sse/handlers/systemOneMod
 import { enforceClientApiRouteAuth } from "@/shared/utils/clientApiRouteAuth";
 import { enforceApiKeyPolicy, validateApiKeyRoutingTarget } from "@/shared/utils/apiKeyPolicy";
 
+import { rejectNativeManagedLease } from "@/lib/decisionPolicy/exclusiveLease";
+
 export const dynamic = "force-dynamic";
 
 /**
@@ -40,6 +42,8 @@ export async function GET(request: Request): Promise<Response> {
   // the `systemone` endpoint category for the catalog itself.
   const policy = await enforceApiKeyPolicy(request, null);
   if (policy.rejection) return policy.rejection;
+  const leaseRejection = rejectNativeManagedLease(request, policy.apiKeyInfo);
+  if (leaseRejection) return leaseRejection;
 
   const allowedConnections = policy.apiKeyInfo?.allowedConnections?.length
     ? policy.apiKeyInfo.allowedConnections

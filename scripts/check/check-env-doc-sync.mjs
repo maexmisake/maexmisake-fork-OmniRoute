@@ -370,6 +370,13 @@ export const CODE_SCAN_ROOTS = [
 
 const CODE_ENV_REF = /process\.env\.([A-Z][A-Z0-9_]+)/g;
 
+// This explicitly imported test/build preload is never application configuration.
+// Scope the exemption to both file and variable so a production read, or another
+// undocumented setting in the preload, still fails the normal contract check.
+const FILE_ONLY_HARNESS_VARS = new Map([
+  ["scripts/ad-hoc/native-router-offline-guard.mjs", new Set(["OMNIROUTE_OFFLINE_AUDIT"])],
+]);
+
 /**
  * Collect environment variable references in source code.
  *
@@ -396,7 +403,11 @@ export function scanCodeVars({ cwd, roots = CODE_SCAN_ROOTS } = {}) {
       return;
     }
     if (text.includes("\0")) return;
-    for (const m of text.matchAll(CODE_ENV_REF)) vars.add(m[1]);
+    const relative = path.relative(repoRoot, file).split(path.sep).join("/");
+    const harnessVars = FILE_ONLY_HARNESS_VARS.get(relative);
+    for (const m of text.matchAll(CODE_ENV_REF)) {
+      if (!harnessVars?.has(m[1])) vars.add(m[1]);
+    }
   };
   const walk = (dir) => {
     let entries;

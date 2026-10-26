@@ -30,6 +30,13 @@ const { readDecisionAttempts, settleDecisionAttempt } =
 const { getDbInstance } = await import("../../src/lib/db/core.ts");
 const { upsertTokenLimit } = await import("../../src/lib/db/tokenLimits.ts");
 const { handleChat } = await import("../../src/sse/handlers/chat.ts");
+const { currentApplicationAttempt } =
+  await import("../../open-sse/services/decisionPolicy/applicationContext.ts");
+// Test-private capability captured before dispatch; never emitted in artifacts or recovered from DB.
+const dispatchedIdentities = new Map<
+  string,
+  import("../../src/lib/db/decisionAttempts.ts").AttemptIdentity
+>();
 const observations: Array<{ model: unknown; effort: unknown; emailMasked: boolean }> = [];
 const events: Array<Record<string, unknown>> = [];
 let validKey: string;
@@ -120,6 +127,11 @@ before(async () => {
       "127.0.0.1",
       "only the local synthetic endpoint is allowed"
     );
+    const attempt = currentApplicationAttempt();
+    if (attempt)
+      dispatchedIdentities.set(attempt.id, {
+        ...attempt,
+      } as unknown as import("../../src/lib/db/decisionAttempts.ts").AttemptIdentity);
     return proxyFetch(url, init);
   };
   await updateSettings({
@@ -532,6 +544,7 @@ async function boundedRequest(
   });
 }
 async function ensurePermittedCombo() {
+  if (await getComboByName("fixture-permitted-combo")) return;
   const candidate = (id: string, effort: string) => ({
     id,
     provider: "openai",
@@ -753,32 +766,35 @@ test("unknown provider cost remains null and uncapped requests may proceed; late
     fixtureCost = 0.002;
   }
 });
-test("an active reservation rejects concurrent strict and ordinary requests without an extra physical attempt", async () => {
+test("uncapped native overlap leaves ordinary application traffic available", async () => {
+  await ensurePermittedCombo();
   const key = await createApiKey("synthetic-concurrent", "synthetic");
   let release!: () => void;
   fixtureGate = new Promise<void>((resolve) => {
     release = resolve;
   });
   const count = observations.length;
-  const first = POST(await boundedRequest(key.key));
+  const pending = [
+    POST(await boundedRequest(key.key)),
+    POST(await boundedRequest(key.key)),
+    POST(request("fixture-ordinary-combo", key.key)),
+  ];
   try {
-    for (let i = 0; i < 200 && observations.length === count; i++)
+    for (let i = 0; i < 300 && observations.length < count + 3; i++)
       await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(observations.length, count + 1);
-    const second = await POST(await boundedRequest(key.key));
-    assert.equal(second.status, 429);
-    await second.text();
-    const ordinary = await POST(request("fixture-ordinary-combo", key.key));
-    assert.equal(ordinary.status, 429);
-    await ordinary.text();
-    assert.equal(observations.length, count + 1);
+    assert.equal(
+      observations.length,
+      count + 3,
+      "ordinary send arrives while both native sends remain pending"
+    );
+    assert.equal(readDecisionAttempts(key.id).filter((row) => row.state === "started").length, 2);
   } finally {
     release();
     fixtureGate = null;
   }
-  const result = await first;
-  assert.equal(result.status, 200, await result.text());
-  assert.equal(readDecisionAttempts(key.id).at(-1)?.state, "completed");
+  const results = await Promise.all(pending);
+  for (const response of results) assert.equal(response.status, 200, await response.text());
+  assert.equal(readDecisionAttempts(key.id).filter((row) => row.state === "completed").length, 2);
 });
 
 test("actual application rejects reserve/start failures before any physical send", async () => {
@@ -803,7 +819,8 @@ test("actual application rejects reserve/start failures before any physical send
     assert.ok(readDecisionAttempts(key.id).every((row) => row.state === "cancelled"));
   }
 });
-test("actual settlement failure retains pending receipt, blocks another request, and reconciles idempotently after reopen", async () => {
+test("actual settlement failure retains unknown liability, blocks capped traffic, and reconciles with the original owner after reopen", async () => {
+  await ensurePermittedCombo();
   const key = await createApiKey("synthetic-settle-failure", "synthetic");
   const count = observations.length;
   getDbInstance().exec(
@@ -816,8 +833,9 @@ test("actual settlement failure retains pending receipt, blocks another request,
     await response.text();
     assert.equal(observations.length, count + 1);
     row = readDecisionAttempts(key.id)[0];
-    assert.equal(row.state, "started");
+    assert.equal(row.state, "unknown");
     assert.equal(row.cost_usd, null);
+    upsertKeyQuotaLimits(key.id, { monthlyAmountUsd: 100 });
     const rejected = await POST(await boundedRequest(key.key));
     assert.equal(rejected.status, 429);
     await rejected.text();
@@ -827,17 +845,9 @@ test("actual settlement failure retains pending receipt, blocks another request,
   }
   resetDbInstance();
   row = readDecisionAttempts(key.id)[0];
-  assert.equal(row.state, "started");
-  const identity = {
-    id: String(row.id),
-    keyId: key.id,
-    comboId: String(row.combo_id),
-    candidateId: String(row.candidate_id),
-    provider: String(row.provider),
-    model: String(row.model),
-    connectionId: String(row.connection_id),
-    effort: String(row.effort),
-  };
+  assert.equal(row.state, "unknown");
+  const identity = dispatchedIdentities.get(String(row.id));
+  assert.ok(identity, "late callback retains its original internal owner capability");
   settleDecisionAttempt(identity, { status: 200, input: 8, output: 4, cost: 0.002 });
   settleDecisionAttempt(identity, { status: 200, input: 8, output: 4, cost: 0.002 });
   assert.equal(readDecisionAttempts(key.id)[0].state, "completed");
@@ -1126,5 +1136,26 @@ test("secondary credential headers introduced by formatting are rejected before 
     } finally {
       executor.buildHeaders = original;
     }
+  }
+});
+
+test("unsupported shared-storage adapter rejects native sends while ordinary traffic remains available", async () => {
+  await ensurePermittedCombo();
+  const key = await createApiKey("synthetic-unsupported-storage", "synthetic");
+  const db = getDbInstance();
+  const descriptor = Object.getOwnPropertyDescriptor(db, "driver")!;
+  const count = observations.length;
+  Object.defineProperty(db, "driver", { ...descriptor, value: "sql.js" });
+  try {
+    const rejected = await POST(await boundedRequest(key.key));
+    await rejected.text();
+    assert.equal(rejected.status, 409);
+    assert.equal(observations.length, count);
+    assert.equal(readDecisionAttempts(key.id).length, 0);
+    const ordinary = await POST(request("fixture-ordinary-combo", key.key));
+    assert.equal(ordinary.status, 200, await ordinary.text());
+    assert.equal(observations.length, count + 1);
+  } finally {
+    Object.defineProperty(db, "driver", descriptor);
   }
 });

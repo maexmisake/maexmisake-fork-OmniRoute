@@ -241,3 +241,155 @@ test("both routes are dynamic so no decision is ever served from a build cache",
   assert.equal(decisionRoute.dynamic, "force-dynamic");
   assert.equal(modelsRoute.dynamic, "force-dynamic");
 });
+
+for (const header of ["X-OmniRoute-Lease-Owner", "X-OmniRoute-Lease-Generation"]) {
+  test(`native routes reject unsupported explicit session context ${header} before dispatch`, async () => {
+    const client = await apiKeysDb.createApiKey(
+      "synthetic-native-lease-header",
+      "synthetic-machine"
+    );
+    const postRequest = decisionRequest(
+      noulRequest("opencode-zen/jev-1.13-free"),
+      String(client.key)
+    );
+    postRequest.headers.set(header, "synthetic-context");
+    const catalogRequest = modelsRequest(String(client.key));
+    catalogRequest.headers.set(header, "synthetic-context");
+    const count = fetchCalls;
+    for (const response of [
+      await decisionRoute.POST(postRequest),
+      await modelsRoute.GET(catalogRequest),
+    ]) {
+      assert.equal(response.status, 409);
+      const body = await response.text();
+      assert.ok(body.includes("LEASE_UNSUPPORTED_ROUTE"));
+      assert.ok(!body.includes("synthetic-context"));
+    }
+    assert.equal(fetchCalls, count);
+  });
+}
+
+test("an exclusively leased native catalog connection is never probed", async () => {
+  const providers = await import("../../src/lib/db/providers.ts");
+  const { acquireExclusiveConnectionLease, releaseExclusiveConnectionLease } =
+    await import("../../src/lib/db/exclusiveConnectionLeases.ts");
+  const holder = await apiKeysDb.createApiKey(
+    "synthetic-catalog-lease-holder",
+    "synthetic-machine"
+  );
+  const connection = await providers.createProviderConnection({
+    provider: "typesafe",
+    authType: "apikey",
+    name: "synthetic-leased-catalog",
+    apiKey: "synthetic-catalog-key",
+    isActive: true,
+  });
+  const owner = `vlo_${"b".repeat(43)}`;
+  const claim = acquireExclusiveConnectionLease({
+    leaseOwnerId: owner,
+    apiKeyId: String(holder.id),
+    provider: "typesafe",
+    connectionId: String(connection.id),
+  });
+  assert.ok("lease" in claim && claim.kind === "ACQUIRED");
+  const count = fetchCalls;
+  try {
+    const response = await modelsRoute.GET(modelsRequest());
+    await response.text();
+    assert.equal(
+      fetchCalls,
+      count,
+      "catalog must not send any credential-bearing metadata request for the leased connection"
+    );
+  } finally {
+    releaseExclusiveConnectionLease({
+      leaseOwnerId: owner,
+      apiKeyId: String(holder.id),
+      generation: claim.lease.generation,
+    });
+    await providers.deleteProviderConnection(String(connection.id));
+  }
+});
+
+test("managed exclusive keys cannot use native routes even without lease headers", async () => {
+  const client = await apiKeysDb.createApiKey(
+    "synthetic-managed-native-key",
+    "synthetic-machine",
+    ["lease:exclusive"],
+    { allowedConnections: ["synthetic-unconfigured-connection"] }
+  );
+  const count = fetchCalls;
+  for (const response of [
+    await decisionRoute.POST(
+      decisionRequest(noulRequest("typesafe/jev-1.14.0"), String(client.key))
+    ),
+    await modelsRoute.GET(modelsRequest(String(client.key))),
+  ]) {
+    assert.equal(response.status, 409);
+    assert.ok((await response.text()).includes("LEASE_UNSUPPORTED_ROUTE"));
+  }
+  assert.equal(fetchCalls, count);
+});
+
+test("exclusive lease acquired in inbound native capacity queue causes no provider call or rotation", async () => {
+  const providers = await import("../../src/lib/db/providers.ts");
+  const { acquire, getStats } = await import("../../open-sse/services/accountSemaphore.ts");
+  const { acquireExclusiveConnectionLease, releaseExclusiveConnectionLease } =
+    await import("../../src/lib/db/exclusiveConnectionLeases.ts");
+  const client = await apiKeysDb.createApiKey(
+    "synthetic-native-queued-client",
+    "synthetic-machine"
+  );
+  const holder = await apiKeysDb.createApiKey(
+    "synthetic-native-queued-holder",
+    "synthetic-machine"
+  );
+  const connection = await providers.createProviderConnection({
+    provider: "typesafe",
+    authType: "apikey",
+    name: "synthetic-queued-native",
+    apiKey: "synthetic-queued-native-key",
+    isActive: true,
+    maxConcurrent: 1,
+  });
+  const connectionId = String(connection.id),
+    owner = `vlo_${"c".repeat(43)}`;
+  const semaphore = `typesafe:${connectionId}`;
+  const releaseCapacity = await acquire(semaphore, { maxConcurrency: 1 });
+  const count = fetchCalls;
+  const pending = decisionRoute.POST(
+    decisionRequest(noulRequest("typesafe/jev-1.14.0"), String(client.key))
+  );
+  let generation: number | undefined;
+  try {
+    for (let n = 0; n < 200 && !getStats()[semaphore]?.queued; n++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(
+      getStats()[semaphore]?.queued,
+      1,
+      "actual inbound native dispatch reaches capacity queue"
+    );
+    const claim = acquireExclusiveConnectionLease({
+      leaseOwnerId: owner,
+      apiKeyId: String(holder.id),
+      provider: "typesafe",
+      connectionId,
+    });
+    assert.ok("lease" in claim && claim.kind === "ACQUIRED");
+    generation = claim.lease.generation;
+    releaseCapacity();
+    const response = await pending;
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.ok((await response.text()).includes("LEASE_CAPACITY_UNAVAILABLE"));
+    assert.equal(fetchCalls, count);
+  } finally {
+    releaseCapacity();
+    if (generation !== undefined)
+      releaseExclusiveConnectionLease({
+        leaseOwnerId: owner,
+        apiKeyId: String(holder.id),
+        generation,
+      });
+    await providers.deleteProviderConnection(connectionId);
+  }
+});

@@ -30,6 +30,7 @@ async function listed(connections: CatalogConnection[]) {
     {},
     {
       listConnections: async () => connections,
+      isConnectionUnavailable: () => false,
       fetchSystemOne: async () =>
         new Response(
           JSON.stringify({

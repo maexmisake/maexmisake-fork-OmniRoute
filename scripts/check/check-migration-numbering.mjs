@@ -118,6 +118,18 @@ function listMigrationFilenames() {
   return fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql"));
 }
 
+/** The bundled namespace has its own contiguous sequence, independent of core. */
+export function inspectNativeRouterMigrationNumbers(directory = MIGRATIONS_DIR) {
+  const bundled = path.join(directory, "native-router");
+  const files = fs.existsSync(bundled)
+    ? fs.readdirSync(bundled).filter((name) => name.endsWith(".sql"))
+    : [];
+  return {
+    count: files.length,
+    ...findMigrationAnomalies(files, new Set(), new Set()),
+  };
+}
+
 function main() {
   const filenames = listMigrationFilenames();
 
@@ -135,6 +147,12 @@ function main() {
   );
 
   const problems = [];
+  const native = inspectNativeRouterMigrationNumbers();
+  for (const name of native.badNames) problems.push(`  ✗ invalid nr migration filename: ${name}`);
+  for (const duplicate of native.duplicates) {
+    problems.push(`  ✗ duplicate nr-${duplicate.version}: [${duplicate.names.join(", ")}]`);
+  }
+  for (const version of native.gaps) problems.push(`  ✗ unexplained nr namespace gap: ${version}`);
   for (const b of badNames) {
     problems.push(`  ✗ nome inválido (esperado NNN_descricao.sql): ${b}`);
   }
@@ -158,7 +176,8 @@ function main() {
 
   if (!process.exitCode) {
     console.log(
-      `[check-migration-numbering] OK (${filenames.length} migrations, ` +
+      `[check-migration-numbering] OK (${filenames.length + native.count} migrations: ` +
+        `${filenames.length} core + ${native.count} bundled native-router, ` +
         `${KNOWN_GAPS.size} gap(s) conhecido(s), ${KNOWN_DUPLICATE_VERSIONS.size} duplicata(s) conhecida(s))`
     );
   }

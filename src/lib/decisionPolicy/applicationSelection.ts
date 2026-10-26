@@ -1,3 +1,4 @@
+import { assertNativeConnectionUnleased } from "./exclusiveLease";
 import { z } from "zod";
 import { buildErrorBody } from "../../../open-sse/utils/error.ts";
 import {
@@ -41,6 +42,8 @@ import {
   assertUncappedDecision,
   decisionAuthorityStamp,
   reserveDecisionAttempt,
+  assertDecisionLease,
+  releaseDecisionAttempt,
   startDecisionAttempt,
   finishNativeDecision,
   handoverNativeDecision,
@@ -134,6 +137,7 @@ async function validateExecutionBindings(
       (await getComboByName(`${candidate.provider}/${candidate.model}`))
     )
       throw new Error("decision_recursion_rejected");
+    assertNativeConnectionUnleased(plan.config.connections[candidate.id]);
     const connection = await getProviderConnectionById(plan.config.connections[candidate.id]);
     if (
       !connection ||
@@ -167,6 +171,7 @@ export async function prepareNativeStage(
     id: randomUUID(),
     keyId,
     comboId: plan.comboId,
+    requestedModel: plan.name,
     candidateId: "native-selector",
     provider: selection.provider,
     model: selection.model,
@@ -210,6 +215,7 @@ export async function prepareNativeStage(
   )
     throw new Error("decision_endpoint_unauthorized");
   await validateExecutionBindings(plan, candidates, permitted);
+  assertNativeConnectionUnleased(selection.connectionId);
   const connection = await getProviderConnectionById(selection.connectionId);
   if (
     !connection ||
@@ -235,18 +241,23 @@ export async function prepareNativeStage(
   const endpoint = systemOneUrl(selection.provider, credentials);
   const headers = systemOneHeaders(selection.provider, credentials);
   const plugins = createValidationPluginFence();
+  let reserved = false,
+    handedOver = false;
   const assertFresh = () => {
     signal.throwIfAborted();
+    assertNativeConnectionUnleased(selection.connectionId);
+    for (const candidate of candidates)
+      assertNativeConnectionUnleased(plan.config.connections[candidate.id]);
+    if (reserved && !handedOver) assertDecisionLease(identity);
     plugins.assertIdle();
     unchanged();
     for (const item of stamped)
-      assertUncappedDecision(keyId, item.provider, item.model, identity.id);
+      assertUncappedDecision(keyId, item.provider, item.model, identity.id, plan.name);
     assertApplicationEgress(selection.provider, endpoint);
   };
   assertFresh();
   let usage = unknownUsage(),
     outcome = "unknown",
-    handedOver = false,
     started = false;
   let failureDiagnostic: SystemOneFailureDiagnostic | null = null;
   let failureRetryAfter: string | null = null;
@@ -329,6 +340,7 @@ export async function prepareNativeStage(
     },
   };
   reserveDecisionAttempt(identity);
+  reserved = true;
   return {
     identity,
     assertFresh,
@@ -416,7 +428,13 @@ export async function prepareNativeStage(
           status
         );
       } catch {
-        /* A durable pending reservation blocks later admission until reconciliation. */
+        /* The durable receipt remains unresolved; no dispatch is replayed. */
+      } finally {
+        try {
+          releaseDecisionAttempt(identity);
+        } catch {
+          // No fallback or replay; the durable pending receipt remains authoritative.
+        }
       }
     },
     annotate: (response) => {

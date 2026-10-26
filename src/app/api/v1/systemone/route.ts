@@ -42,6 +42,8 @@ import * as log from "@/sse/utils/logger";
 
 import { dispatchSystemOne } from "./dispatch.ts";
 
+import { rejectNativeManagedLease } from "@/lib/decisionPolicy/exclusiveLease";
+
 export const dynamic = "force-dynamic";
 
 /**
@@ -135,6 +137,8 @@ export async function POST(request: Request): Promise<Response> {
   // Covers the model rules, budget, quota and the `systemone` endpoint category.
   const policy = await enforceApiKeyPolicy(request, requestedModel);
   if (policy.rejection) return policy.rejection;
+  const leaseRejection = rejectNativeManagedLease(request, policy.apiKeyInfo);
+  if (leaseRejection) return leaseRejection;
 
   const candidates = resolveCandidates(requestedModel, await configuredSystemOneProviders());
   if (candidates instanceof Response) return candidates;

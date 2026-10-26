@@ -19,6 +19,8 @@ import { currentApplicationAttempt } from "../services/decisionPolicy/applicatio
 import { validationFetch } from "../executors/base/validationDispatch.ts";
 import { dispatchGuarded } from "../executors/dispatchPin.ts";
 
+import { assertNativeConnectionUnleased } from "@/lib/decisionPolicy/exclusiveLease";
+
 /** A misconfigured endpoint is an operator/config error, never an account fault. */
 export class SystemOneEndpointError extends Error {
   readonly status: number;
@@ -166,6 +168,8 @@ export async function fetchSystemOne(
   const proxyInfo = credentials.connectionId
     ? await resolveProxyForConnection(credentials.connectionId)
     : null;
+  // Proxy lookup may yield; recheck the session lease immediately before native dispatch.
+  if (credentials.connectionId) assertNativeConnectionUnleased(credentials.connectionId);
   const automatic = currentApplicationAttempt();
   if (automatic) {
     if (

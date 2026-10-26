@@ -11,7 +11,8 @@
  * listed only when some eligible connection of that provider could serve it
  * (including the free/paid tier rule) and the calling key is allowed to use it.
  *
- * Read-only: no selection, lease, usage or cooldown writes. Never cached.
+ * No credential selection, usage or cooldown writes. The shared lease guard may
+ * reconcile expired session leases. Never cached.
  */
 
 import { CORS_HEADERS } from "../utils/cors.ts";
@@ -42,6 +43,8 @@ import { getPricingForModel } from "@/lib/db/settings";
 import { isModelExcludedByConnection } from "@/domain/connectionModelRules";
 import { isModelLocked } from "../services/accountFallback.ts";
 
+import { isNativeConnectionUnavailable } from "@/lib/decisionPolicy/exclusiveLease";
+
 export const SYSTEMONE_MODELS_TIMEOUT_MS = 10_000;
 /** The real decision lists are a few KB; anything this large is not one. */
 const MAX_BODY_CHARS = 2_000_000;
@@ -71,6 +74,7 @@ export interface SystemOneModelsOptions {
 
 export type SystemOneModelsDeps = {
   listConnections: () => Promise<SystemOneCatalogConnection[]>;
+  isConnectionUnavailable: (connectionId: string) => boolean;
   fetchSystemOne: typeof defaultFetchSystemOne;
   getPricingForModel: (
     provider: string,
@@ -82,6 +86,7 @@ export const defaultSystemOneModelsDeps: SystemOneModelsDeps = {
   listConnections: async () =>
     (await getProviderConnections({ isActive: true })) as unknown as SystemOneCatalogConnection[],
   fetchSystemOne: defaultFetchSystemOne,
+  isConnectionUnavailable: isNativeConnectionUnavailable,
   getPricingForModel: (provider, model) => getPricingForModel(provider, model),
 };
 
@@ -123,6 +128,7 @@ async function fetchDecisionCatalog(
   options: SystemOneModelsOptions,
   deps: SystemOneModelsDeps
 ): Promise<DecisionCatalogModel[]> {
+  if (deps.isConnectionUnavailable(connection.id)) throw new Error("decision_connection_leased");
   const credentials = toCredentials(connection);
   const timeout = AbortSignal.timeout(SYSTEMONE_MODELS_TIMEOUT_MS);
   const response = await deps.fetchSystemOne(
@@ -243,6 +249,7 @@ export async function handleSystemOneModels(
       typeof connection.provider === "string" &&
       isSystemOneProvider(connection.provider) &&
       canServe(connection) &&
+      !deps.isConnectionUnavailable(connection.id) &&
       (!allowed || allowed.includes(String(connection.id)))
   );
 

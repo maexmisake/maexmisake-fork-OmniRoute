@@ -1,3 +1,4 @@
+import { assertNativeConnectionUnleased } from "./exclusiveLease";
 import { prepareNativeStage, type NativeStage } from "./applicationSelection";
 import { getExecutor } from "../../../open-sse/executors/index.ts";
 import { createValidationDispatchFence } from "../modelValidation/dispatchFence";
@@ -29,7 +30,8 @@ import {
   startDecisionAttempt,
   settleDecisionAttempt,
   finishDecisionApplication,
-  cancelUnstartedDecision,
+  releaseDecisionAttempt,
+  assertDecisionLease,
   type AttemptIdentity,
   readDecisionAttemptReceipt,
 } from "../db/decisionAttempts";
@@ -256,6 +258,7 @@ async function buildAttempt(
   native?: NativeStage
 ): Promise<ApplicationAttempt> {
   const connectionId = plan.config.connections[candidate.id];
+  assertNativeConnectionUnleased(connectionId);
   const connection = await getProviderConnectionById(connectionId);
   if (
     !connection ||
@@ -279,6 +282,7 @@ async function buildAttempt(
     id: randomUUID(),
     keyId,
     comboId: plan.comboId,
+    requestedModel: plan.name,
     candidateId: candidate.id,
     provider: candidate.provider,
     model: candidate.model,
@@ -293,17 +297,32 @@ async function buildAttempt(
         }
       : {}),
   };
-  assertUncappedDecision(keyId, candidate.provider, candidate.model, native?.identity.id);
+  assertUncappedDecision(
+    keyId,
+    candidate.provider,
+    candidate.model,
+    native?.identity.id,
+    plan.name
+  );
   const stamp = authorityStamp(identity, plan.sourcePolicy);
   const endpoint = new URL(contract.endpoint);
   assertEgress(candidate.provider, endpoint.href);
   const plugins = createValidationPluginFence();
+  let reserved = false;
   const assertFresh = () => {
     try {
       signal.throwIfAborted();
+      assertNativeConnectionUnleased(connectionId);
+      if (reserved) assertDecisionLease(identity);
       native?.assertFresh();
       plugins.assertIdle();
-      assertUncappedDecision(keyId, candidate.provider, candidate.model, native?.identity.id);
+      assertUncappedDecision(
+        keyId,
+        candidate.provider,
+        candidate.model,
+        native?.identity.id,
+        plan.name
+      );
       if (authorityStamp(identity, plan.sourcePolicy) !== stamp)
         throw new Error("decision_authority_changed");
       if (contract.claude) {
@@ -327,9 +346,11 @@ async function buildAttempt(
   });
   if (native) native.handover(identity);
   else reserveDecisionAttempt(identity);
+  reserved = true;
   return {
     ...identity,
     signal,
+    release: () => releaseDecisionAttempt(identity),
     assertIdle: plugins.assertIdle,
     assertFresh,
     fence: (executor) => fence.wrap(executor as Awaited<ReturnType<typeof getExecutor>>),
@@ -459,6 +480,13 @@ function failureStatus(signal: AbortSignal, caller: AbortSignal, native?: Native
   if (signal.aborted || native?.timedOut()) return 504;
   return 409;
 }
+function releaseAttempt(attempt: ApplicationAttempt | undefined): void {
+  try {
+    attempt?.release?.();
+  } catch {
+    // Cleanup failure cannot reopen routing. Durable pending usage expires to unknown.
+  }
+}
 export async function executeAutomaticCombo(
   plan: AutomaticPlan,
   body: Record<string, unknown>,
@@ -527,7 +555,7 @@ export async function executeAutomaticCombo(
     const response = rejectedAttempt(attempt, error, status);
     return native ? native.annotate(response) : response;
   } finally {
-    if (attempt) cancelUnstartedDecision(attempt.id);
+    releaseAttempt(attempt);
   }
 }
 export function assertAutomaticModel(model: string): void {

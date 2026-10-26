@@ -27,6 +27,12 @@ import {
   SUPERSEDED_DUPLICATE_MIGRATIONS,
 } from "./migrationRunner/constants";
 import { getExtraMigrationFiles } from "./migrationRunner/extraDirs";
+import {
+  getNativeRouterMigrations,
+  hasNativeRouterLedgerRepair,
+  reconcileNativeRouterMigrations,
+  validateNativeRouterMigrations,
+} from "./migrationRunner/nativeRouter";
 import { migrationConsole as console } from "./migrationRunner/logger";
 import {
   createPreMigrationBackup,
@@ -223,8 +229,8 @@ function getMigrationFiles(): Array<{ version: string; name: string; path: strin
   // make them vanish silently.
   if (!fs.existsSync(MIGRATIONS_DIR)) return getExtraMigrationFiles();
 
-  const files = fs
-    .readdirSync(MIGRATIONS_DIR)
+  const entries = fs.readdirSync(MIGRATIONS_DIR);
+  const files = entries
     .filter((f) => f.endsWith(".sql"))
     .sort()
     .map((filename) => {
@@ -276,7 +282,16 @@ function getMigrationFiles(): Array<{ version: string; name: string; path: strin
   // collide with a numeric slot, and every downstream consumer here — the applied
   // set, the gap reconciliation, the name-mismatch check — keys on the version
   // string and needs no further change. Empty and filesystem-free when unset.
-  return [...files, ...getExtraMigrationFiles()];
+  const extras = getExtraMigrationFiles();
+  if (extras.some((file) => file.version.startsWith("nr-"))) {
+    throw new Error(
+      "[Migration] The nr namespace is reserved for bundled native-router migrations."
+    );
+  }
+  const bundled = entries.includes("native-router")
+    ? getNativeRouterMigrations(MIGRATIONS_DIR)
+    : [];
+  return [...files, ...bundled, ...extras];
 }
 
 function filterSupersededDuplicateMigrations(
@@ -836,6 +851,7 @@ export function runMigrations(
 
   const files = filterSupersededDuplicateMigrations(getMigrationFiles());
   validateRequiredPhysicalMigrationProvenance(db, files);
+  validateNativeRouterMigrations(db, files);
   let preMigrationBackup: PreMigrationBackupReceipt | null = null;
   let plan!: {
     atomicPhysicalReplays: Set<string>;
@@ -857,7 +873,8 @@ export function runMigrations(
   const preliminaryActionable = preliminaryPending.filter(
     (migration) => !preliminaryDeferred.some((deferred) => deferred.version === migration.version)
   );
-  const preliminaryHasRepairCandidates = hasLedgerRepairCandidates(db, files);
+  const preliminaryHasRepairCandidates =
+    hasLedgerRepairCandidates(db, files) || hasNativeRouterLedgerRepair(db, files);
 
   // Preserve the historical read-only/no-op path. Merely checking an already-current
   // database must not acquire a writer lock (or fail SQLITE_BUSY because another supported
@@ -918,7 +935,9 @@ export function runMigrations(
         (migration) => !isDeferredUnsupportedMigration(db, migration)
       );
       const mayWriteExistingDatabase =
-        preliminaryActionable.length > 0 || hasLedgerRepairCandidates(db, files);
+        preliminaryActionable.length > 0 ||
+        hasLedgerRepairCandidates(db, files) ||
+        hasNativeRouterLedgerRepair(db, files);
       const needsSnapshot =
         mayWriteExistingDatabase && db.name !== ":memory:" && databaseExistedBeforeInitialization;
 
@@ -940,6 +959,7 @@ export function runMigrations(
 
       rehomeLegacyVersionSlotMigrations(db, files);
       reconcileRenumberedMigrations(db, files);
+      reconcileNativeRouterMigrations(db, files);
 
       const atomicPhysicalReplays = findAtomicPhysicalReplays(db, files);
       const applied = getAppliedVersions(db);
@@ -1147,6 +1167,7 @@ export function runMigrations(
         migration.version,
         migration.name
       );
+      if (migration.version.startsWith("nr-")) validateNativeRouterMigrations(db, files);
     });
 
     try {
@@ -1157,7 +1178,8 @@ export function runMigrations(
       const message = err instanceof Error ? err.message : String(err);
       if (
         message.includes("duplicate column name") &&
-        !atomicPhysicalReplays.has(migration.version)
+        !atomicPhysicalReplays.has(migration.version) &&
+        !migration.version.startsWith("nr-")
       ) {
         const skipped = applyMigrationSkippingExistingColumns(db, migration, genericSql);
         count += 1;

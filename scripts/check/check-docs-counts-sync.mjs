@@ -130,10 +130,12 @@ export function readProviderTotal() {
 }
 
 // STRICT: number of SQL migration files shipped with the app.
-export function countMigrations() {
-  const abs = path.join(ROOT, "src", "lib", "db", "migrations");
+export function countMigrations(abs = path.join(ROOT, "src", "lib", "db", "migrations")) {
   if (!fs.existsSync(abs)) return 0;
-  return fs.readdirSync(abs).filter((f) => f.endsWith(".sql")).length;
+  return fs.readdirSync(abs, { withFileTypes: true }).reduce((count, entry) => {
+    if (entry.isDirectory()) return count + countMigrations(path.join(abs, entry.name));
+    return count + (entry.isFile() && entry.name.endsWith(".sql") ? 1 : 0);
+  }, 0);
 }
 
 // STRICT: canonical i18n locale count, read from the shared config.

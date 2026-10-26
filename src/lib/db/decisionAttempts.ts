@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { getDbInstance } from "./core";
 import { getKeyQuotaStatus, incrementKeyQuotaCounter } from "./keyQuota";
 import { getTokenLimitsForRequest } from "./tokenLimits";
@@ -6,6 +7,9 @@ import { saveCostEntry } from "./domainState";
 
 export type AttemptIdentity = {
   id: string;
+  /** Internal fencing capability, never accepted from a request or projected publicly. */
+  leaseOwner?: string;
+  requestedModel?: string;
   keyId: string;
   comboId: string;
   candidateId: string;
@@ -19,12 +23,78 @@ export type AttemptIdentity = {
   trace?: Array<{ phase: string; id?: string; reason: string }>;
 };
 type Row = Record<string, unknown>;
+export const DECISION_STAGE_CONCURRENCY = 4;
+export const DECISION_STAGE_LEASE_MS = 45_000;
+function sharedDecisionStorage(): boolean {
+  const db = getDbInstance();
+  return (
+    ["better-sqlite3", "node:sqlite", "bun:sqlite"].includes(db.driver) &&
+    !!db.name &&
+    db.name !== ":memory:" &&
+    !db.name.startsWith("file:")
+  );
+}
+function assertSharedDecisionStorage(): void {
+  if (!sharedDecisionStorage()) throw new Error("decision_storage_unsupported");
+}
+/** Releasing occupancy never establishes whether a previously started remote call stopped. */
+function expireDecisionLeases(keyId: string): void {
+  const db = getDbInstance();
+  const now = Date.now();
+  db.prepare(
+    `UPDATE decision_application_attempts SET state='cancelled',
+    cost_usd=COALESCE(cost_usd,0),input_tokens=COALESCE(input_tokens,0),
+    output_tokens=COALESCE(output_tokens,0),updated_at=?
+    WHERE api_key_id=? AND state='reserved' AND lease_expires_at<=?`
+  ).run(new Date(now).toISOString(), keyId, now);
+  db.prepare(
+    `UPDATE decision_application_attempts SET state='unknown',updated_at=?
+    WHERE api_key_id=? AND state='started' AND lease_expires_at<=?`
+  ).run(new Date(now).toISOString(), keyId, now);
+}
+function assertLeaseOwner(identity: Pick<AttemptIdentity, "leaseOwner">, row: Row): void {
+  if (!row.lease_owner || row.lease_owner !== identity.leaseOwner)
+    throw new Error("decision_lease_owner");
+}
+export function assertDecisionLease(identity: AttemptIdentity): void {
+  assertSharedDecisionStorage();
+  const row = readDecisionAttemptReceipt(identity.id);
+  assertIdentityRow(identity, row);
+  assertLeaseOwner(identity, row);
+  if (
+    !identity.leaseOwner ||
+    !row.lease_owner ||
+    !["reserved", "started"].includes(String(row.state)) ||
+    typeof row.lease_expires_at !== "number" ||
+    row.lease_expires_at <= Date.now()
+  )
+    throw new Error("decision_lease_expired");
+}
+/** No takeover or renewal. Late same-owner settlement remains possible after release. */
+export function releaseDecisionAttempt(identity: AttemptIdentity): void {
+  assertSharedDecisionStorage();
+  const db = getDbInstance();
+  db.immediate(() => {
+    const row = readDecisionAttemptReceipt(identity.id);
+    assertIdentityRow(identity, row);
+    assertLeaseOwner(identity, row);
+    if (row.state === "reserved") cancelUnstartedDecision(identity.id, identity.leaseOwner);
+    else if (row.state === "started")
+      db.prepare(
+        "UPDATE decision_application_attempts SET state='unknown',updated_at=? WHERE id=?"
+      ).run(new Date().toISOString(), identity.id);
+  });
+}
 export function readDecisionAttempts(keyId: string): Row[] {
   return getDbInstance()
     .prepare(
       "SELECT * FROM decision_application_attempts WHERE api_key_id = ? ORDER BY created_at,id"
     )
-    .all(keyId) as Row[];
+    .all(keyId)
+    .map((value) => {
+      const { lease_owner: _owner, ...publicRow } = value as Row;
+      return publicRow;
+    });
 }
 export function readDecisionAttemptReceipt(id: string): Row {
   const row = getDbInstance()
@@ -33,8 +103,27 @@ export function readDecisionAttemptReceipt(id: string): Row {
   if (!row) throw new Error("decision_receipt_missing");
   return row;
 }
+function financialDecisionCap(
+  key: Row,
+  budget: Row | undefined,
+  monthlyAmountUsd: number | null
+): boolean {
+  return !!(
+    Number(budget?.daily_limit_usd) > 0 ||
+    Number(budget?.weekly_limit_usd) > 0 ||
+    Number(budget?.monthly_limit_usd) > 0 ||
+    monthlyAmountUsd ||
+    (key.usage_limit_enabled &&
+      (Number(key.daily_usage_limit_usd) > 0 || Number(key.weekly_usage_limit_usd) > 0))
+  );
+}
 /** Throwing fresh reads, not getBudget's cached/fail-open absence. */
-export function decisionCapKinds(keyId: string, provider: string, model: string) {
+export function decisionCapKinds(
+  keyId: string,
+  provider: string,
+  model: string,
+  requestedModel?: string
+) {
   const db = getDbInstance();
   const key = db.prepare("SELECT * FROM api_keys WHERE id = ?").get(keyId) as Row | undefined;
   if (
@@ -48,18 +137,12 @@ export function decisionCapKinds(keyId: string, provider: string, model: string)
   const budget = db.prepare("SELECT * FROM domain_budgets WHERE api_key_id = ?").get(keyId) as
     Row | undefined;
   const quota = getKeyQuotaStatus(keyId, { enforcementOnly: true });
-  const financial = !!(
-    Number(budget?.daily_limit_usd) > 0 ||
-    Number(budget?.weekly_limit_usd) > 0 ||
-    Number(budget?.monthly_limit_usd) > 0 ||
-    quota.limits.monthlyAmountUsd ||
-    (key.usage_limit_enabled &&
-      (Number(key.daily_usage_limit_usd) > 0 || Number(key.weekly_usage_limit_usd) > 0))
-  );
+  const financial = financialDecisionCap(key, budget, quota.limits.monthlyAmountUsd);
   const tokens =
     !!quota.limits.tpmLimit ||
     getTokenLimitsForRequest(keyId, provider, model).length > 0 ||
-    getTokenLimitsForRequest(keyId, provider, `${provider}/${model}`).length > 0;
+    getTokenLimitsForRequest(keyId, provider, `${provider}/${model}`).length > 0 ||
+    (requestedModel != null && getTokenLimitsForRequest(keyId, "", requestedModel).length > 0);
   let scheduled = false;
   if (key.access_schedule) {
     try {
@@ -74,59 +157,102 @@ export function assertUncappedDecision(
   keyId: string,
   provider: string,
   model: string,
-  ownerId?: string
+  ownerId?: string,
+  requestedModel?: string
 ): void {
-  const caps = decisionCapKinds(keyId, provider, model);
+  const caps = decisionCapKinds(keyId, provider, model, requestedModel);
   if (caps.scheduled) throw new Error("decision_scheduled_key_unsupported");
   if (caps.financial || caps.tokens) throw new Error("decision_capped_configuration_unsupported");
   if (caps.quota.rpmExceeded && !countedLogicalRequest(keyId, ownerId))
     throw new Error("decision_request_quota_exhausted");
 }
-/** Shared key-policy read: pending attempt cannot be overlooked by another request.
- * Unknown history is allowed for uncapped traffic, but never treated as zero under a cap. */
-export function decisionAdmissionBlocked(keyId: string, ownerId?: string): boolean {
+type AdmissionTarget = {
+  provider?: string | null;
+  model?: string | null;
+  requestedModel?: string | null;
+  requestedCombo?: boolean;
+};
+function applicableTokenLimits(keyId: string, target: AdmissionTarget) {
+  return [
+    ...getTokenLimitsForRequest(keyId, target.provider ?? "", target.model ?? ""),
+    ...getTokenLimitsForRequest(
+      keyId,
+      target.provider ?? "",
+      target.requestedModel ??
+        (target.provider && target.model ? `${target.provider}/${target.model}` : "")
+    ),
+  ];
+}
+/** Ordinary admission only blocks shared capped liability, never native occupancy. */
+export function decisionAdmissionBlocked(
+  keyId: string,
+  ownerId?: string,
+  target: AdmissionTarget = {}
+): boolean {
   const db = getDbInstance();
-  if (
-    db
-      .prepare(
-        "SELECT 1 FROM decision_application_attempts WHERE api_key_id=? AND state IN ('reserved','started') AND id<>? LIMIT 1"
-      )
-      .get(keyId, ownerId ?? "")
-  )
-    return true;
+  if (sharedDecisionStorage()) db.immediate(() => expireDecisionLeases(keyId));
+  const limits = applicableTokenLimits(keyId, target);
+  const requestedLimits = new Set(limits.map((limit) => limit.id));
+  const requestedComboCapped =
+    target.requestedCombo === true &&
+    limits.some(
+      (limit) => limit.scopeType === "model" && limit.scopeValue === target.requestedModel
+    );
   const unresolved = db
     .prepare(
-      `SELECT provider,model,
+      `SELECT provider,model,requested_model,
     MAX(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unknown_cost,
     MAX(CASE WHEN input_tokens IS NULL OR output_tokens IS NULL OR reasoning_tokens>output_tokens THEN 1 ELSE 0 END) AS unknown_tokens
-    FROM decision_application_attempts WHERE api_key_id=? AND state NOT IN ('reserved','started','cancelled')
+    FROM decision_application_attempts WHERE api_key_id=? AND id<>?
+      AND state NOT IN ('reserved','cancelled')
       AND (cost_usd IS NULL OR input_tokens IS NULL OR output_tokens IS NULL OR reasoning_tokens>output_tokens)
-    GROUP BY provider,model`
+    GROUP BY provider,model,requested_model`
     )
-    .all(keyId) as Row[];
+    .all(keyId, ownerId ?? "") as Row[];
   return unresolved.some((row) => {
     const caps = decisionCapKinds(keyId, String(row.provider), String(row.model));
-    return (caps.financial && row.unknown_cost === 1) || (caps.tokens && row.unknown_tokens === 1);
+    if (caps.financial && row.unknown_cost === 1) return true;
+    if (row.unknown_tokens !== 1) return false;
+    if (caps.quota.limits.tpmLimit) return true;
+    // A legacy receipt cannot establish which requested combo consumed these tokens.
+    if (row.requested_model == null && requestedComboCapped) return true;
+    return applicableTokenLimits(keyId, {
+      provider: String(row.provider),
+      model: String(row.model),
+      requestedModel: typeof row.requested_model === "string" ? row.requested_model : undefined,
+    }).some((limit) => requestedLimits.has(limit.id));
   });
 }
 export function reserveDecisionAttempt(identity: AttemptIdentity): void {
+  assertSharedDecisionStorage();
   const db = getDbInstance();
   db.immediate(() => reserveInTransaction(identity));
 }
 function reserveInTransaction(identity: AttemptIdentity): void {
+  assertSharedDecisionStorage();
   const db = getDbInstance();
   assertUncappedDecision(
     identity.keyId,
     identity.provider,
     identity.model,
-    identity.parentAttemptId
+    identity.parentAttemptId,
+    identity.requestedModel
   );
   if (identity.parentAttemptId) assertSelectedParent(identity);
   else if (identity.requestId && identity.requestId !== identity.id)
     throw new Error("decision_request_identity");
-  if (decisionAdmissionBlocked(identity.keyId)) throw new Error("decision_admission_pending");
+  expireDecisionLeases(identity.keyId);
+  const active = db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM decision_application_attempts WHERE api_key_id=? AND state IN ('reserved','started')"
+    )
+    .get(identity.keyId) as Row;
+  if (Number(active.n) >= DECISION_STAGE_CONCURRENCY)
+    throw new Error("decision_concurrency_exhausted");
+  const leaseOwner = randomUUID();
+  const now = Date.now();
   db.prepare(
-    `INSERT INTO decision_application_attempts(id,api_key_id,combo_id,candidate_id,provider,model,connection_id,effort,state,created_at,updated_at,selection_trace,lane,request_id,parent_attempt_id) VALUES (?,?,?,?,?,?,?,?,'reserved',?,?,?,?,?,?)`
+    `INSERT INTO decision_application_attempts(id,api_key_id,combo_id,candidate_id,provider,model,connection_id,effort,state,created_at,updated_at,selection_trace,lane,request_id,parent_attempt_id,lease_owner,lease_expires_at,requested_model) VALUES (?,?,?,?,?,?,?,?,'reserved',?,?,?,?,?,?,?,?,?)`
   ).run(
     identity.id,
     identity.keyId,
@@ -141,26 +267,38 @@ function reserveInTransaction(identity: AttemptIdentity): void {
     JSON.stringify(identity.trace ?? []),
     identity.lane ?? "execution",
     identity.requestId ?? identity.id,
-    identity.parentAttemptId ?? null
+    identity.parentAttemptId ?? null,
+    leaseOwner,
+    now + DECISION_STAGE_LEASE_MS,
+    identity.requestedModel ?? null
   );
+  identity.leaseOwner = leaseOwner;
 }
 
 export function startDecisionAttempt(identity: AttemptIdentity): void {
+  assertSharedDecisionStorage();
   const db = getDbInstance();
   db.immediate(() => {
-    assertIdentityRow(identity, readDecisionAttemptReceipt(identity.id));
+    assertDecisionLease(identity);
     assertUncappedDecision(
       identity.keyId,
       identity.provider,
       identity.model,
-      identity.parentAttemptId ?? identity.id
+      identity.parentAttemptId ?? identity.id,
+      identity.requestedModel
     );
     if (identity.parentAttemptId) assertSelectedParent(identity);
     const result = db
       .prepare(
-        "UPDATE decision_application_attempts SET state='started',logical_counted=?,updated_at=? WHERE id=? AND state='reserved'"
+        "UPDATE decision_application_attempts SET state='started',logical_counted=?,updated_at=? WHERE id=? AND state='reserved' AND lease_owner=? AND lease_expires_at>?"
       )
-      .run(identity.parentAttemptId ? 0 : 1, new Date().toISOString(), identity.id);
+      .run(
+        identity.parentAttemptId ? 0 : 1,
+        new Date().toISOString(),
+        identity.id,
+        identity.leaseOwner,
+        Date.now()
+      );
     if (result.changes !== 1) throw new Error("decision_attempt_already_started");
     if (!identity.parentAttemptId) incrementKeyQuotaCounter(identity.keyId, "rpm", 1);
   });
@@ -194,6 +332,7 @@ function validUsage(usage: AttemptUsage): void {
     throw new Error("decision_usage_invalid");
 }
 export function settleDecisionAttempt(identity: AttemptIdentity, usage: AttemptUsage): void {
+  assertSharedDecisionStorage();
   validUsage(usage);
   const db = getDbInstance();
   db.immediate(() => settleInTransaction(identity, usage));
@@ -206,6 +345,7 @@ function settleInTransaction(identity: AttemptIdentity, usage: AttemptUsage): vo
   if (!row || !["started", "unknown", "completed"].includes(String(row.state)))
     throw new Error("decision_attempt_not_started");
   assertIdentityRow(identity, row);
+  assertLeaseOwner(identity, row);
   if (
     row.api_key_id !== identity.keyId ||
     row.connection_id !== identity.connectionId ||
@@ -292,7 +432,10 @@ function settleInTransaction(identity: AttemptIdentity, usage: AttemptUsage): vo
   );
 }
 
-export function cancelUnstartedDecision(id: string): void {
+export function cancelUnstartedDecision(id: string, leaseOwner?: string): void {
+  assertSharedDecisionStorage();
+  const row = readDecisionAttemptReceipt(id);
+  assertLeaseOwner({ leaseOwner }, row);
   getDbInstance()
     .prepare(
       "UPDATE decision_application_attempts SET state='cancelled',cost_usd=0,input_tokens=0,output_tokens=0,updated_at=? WHERE id=? AND state='reserved'"
@@ -340,6 +483,7 @@ export function decisionAuthorityStamp(identity: AttemptIdentity, expectedPolicy
 
 /** Application success is separate from raw provider HTTP success and possible billing. */
 export function finishDecisionApplication(id: string, status: number): void {
+  assertSharedDecisionStorage();
   const db = getDbInstance();
   db.immediate(() => finishInTransaction(id, status));
 }
@@ -381,6 +525,7 @@ function assertIdentityRow(identity: AttemptIdentity, row: Row): void {
     identity.lane ?? "execution",
     identity.requestId ?? identity.id,
     identity.parentAttemptId ?? null,
+    identity.requestedModel ?? null,
   ];
   const actual = [
     row.api_key_id,
@@ -393,6 +538,7 @@ function assertIdentityRow(identity: AttemptIdentity, row: Row): void {
     row.lane,
     row.request_id,
     row.parent_attempt_id,
+    row.requested_model,
   ];
   if (JSON.stringify(expected) !== JSON.stringify(actual))
     throw new Error("decision_attempt_identity");
@@ -412,6 +558,7 @@ function assertSelectedParent(child: AttemptIdentity): void {
     "selected",
     1,
     selectedBinding(child),
+    child.requestedModel ?? null,
   ];
   const actual = [
     parent.api_key_id,
@@ -424,6 +571,7 @@ function assertSelectedParent(child: AttemptIdentity): void {
     parent.decision_outcome,
     parent.logical_counted,
     parent.selected_binding,
+    parent.requested_model,
   ];
   if (JSON.stringify(expected) !== JSON.stringify(actual))
     throw new Error("decision_parent_invalid");
@@ -449,6 +597,7 @@ function countedLogicalRequest(keyId: string, ownerId?: string): boolean {
         lane: "execution",
         requestId: String(row.request_id),
         parentAttemptId: String(row.parent_attempt_id),
+        requestedModel: typeof row.requested_model === "string" ? row.requested_model : undefined,
       });
       return true;
     } catch {
@@ -465,11 +614,13 @@ export function handoverNativeDecision(
   child: AttemptIdentity,
   usage: AttemptUsage
 ): void {
+  assertSharedDecisionStorage();
   validUsage(usage);
   const db = getDbInstance();
   db.immediate(() => {
     const row = readDecisionAttemptReceipt(parent.id);
     assertIdentityRow(parent, row);
+    assertLeaseOwner(parent, row);
     if (
       row.lane !== "decision" ||
       usage.status !== 200 ||
@@ -480,10 +631,13 @@ export function handoverNativeDecision(
       throw new Error("decision_handover_invalid");
     if (row.decision_outcome === "selected") {
       assertSelectedParent(child);
-      assertIdentityRow(child, readDecisionAttemptReceipt(child.id));
+      const existingChild = readDecisionAttemptReceipt(child.id);
+      assertIdentityRow(child, existingChild);
+      assertLeaseOwner(child, existingChild);
       settleInTransaction(parent, usage);
       return;
     }
+    assertDecisionLease(parent);
     if (row.state !== "started") throw new Error("decision_handover_invalid");
     db.prepare(
       "UPDATE decision_application_attempts SET decision_outcome='selected',selected_binding=? WHERE id=?"
@@ -499,18 +653,20 @@ export function finishNativeDecision(
   outcome: string,
   status: number
 ): void {
+  assertSharedDecisionStorage();
   validUsage(usage);
   const db = getDbInstance();
   db.immediate(() => {
     const row = readDecisionAttemptReceipt(parent.id);
     assertIdentityRow(parent, row);
+    assertLeaseOwner(parent, row);
     if (row.lane !== "decision" || row.decision_outcome === "selected")
       throw new Error("decision_outcome_invalid");
     db.prepare("UPDATE decision_application_attempts SET decision_outcome=? WHERE id=?").run(
       outcome,
       parent.id
     );
-    if (row.state === "reserved") cancelUnstartedDecision(parent.id);
+    if (row.state === "reserved") cancelUnstartedDecision(parent.id, parent.leaseOwner);
     else settleInTransaction(parent, usage);
     finishInTransaction(parent.id, status);
   });

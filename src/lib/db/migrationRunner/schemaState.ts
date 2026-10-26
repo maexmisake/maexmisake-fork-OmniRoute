@@ -116,7 +116,10 @@ export function inferPhysicalSchemaBaseline(db: SqliteAdapter): {
 
 export function getPlausiblePendingCount(files: MigrationFile[], baselineVersion: string): number {
   const baseline = Number.parseInt(baselineVersion, 10);
-  return files.filter((file) => Number.parseInt(file.version, 10) > baseline).length;
+  return files.filter((file) => {
+    const version = Number.parseInt(file.version, 10);
+    return Number.isNaN(version) || version > baseline;
+  }).length;
 }
 
 /**

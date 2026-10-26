@@ -16,8 +16,9 @@ const { createCombo, updateCombo } = await import("../../src/lib/db/combos.ts");
 const { createApiKey } = await import("../../src/lib/db/apiKeys.ts");
 const { updateSettings } = await import("../../src/lib/db/settings.ts");
 const { resetDbInstance, getDbInstance } = await import("../../src/lib/db/core.ts");
-const { readDecisionAttempts, settleDecisionAttempt } =
+const { readDecisionAttempts, readDecisionAttemptReceipt, settleDecisionAttempt } =
   await import("../../src/lib/db/decisionAttempts.ts");
+type AttemptIdentity = import("../../src/lib/db/decisionAttempts.ts").AttemptIdentity;
 const { POST } = await import("../../src/app/api/v1/chat/completions/route.ts");
 const { proxyFetch } = await import("../../open-sse/utils/proxyFetch.ts");
 const { clearAllModelLockouts } = await import("../../open-sse/services/accountFallback.ts");
@@ -45,6 +46,32 @@ let responseMode = "json";
 let unexpectedFetches = 0;
 let ordinaryControl = false;
 let ordinaryAuxiliaryFetches = 0;
+let captureLateIdentity = false;
+let lateDispatchIdentity: AttemptIdentity | undefined;
+function captureTrustedDispatchIdentity(): void {
+  if (!captureLateIdentity) return;
+  const attempt = currentApplicationAttempt();
+  assert.ok(attempt);
+  const receipt = readDecisionAttemptReceipt(attempt.id);
+  assert.equal(typeof receipt.lease_owner, "string");
+  // Capture only at this originating synthetic send, never from a public receipt
+  // or by looking up another worker's capability during late settlement.
+  lateDispatchIdentity = {
+    id: attempt.id,
+    keyId: attempt.keyId,
+    comboId: String(receipt.combo_id),
+    candidateId: String(receipt.candidate_id),
+    provider: attempt.provider,
+    model: attempt.model,
+    connectionId: attempt.connectionId,
+    effort: attempt.effort,
+    requestedModel: String(receipt.requested_model),
+    leaseOwner: String(receipt.lease_owner),
+    lane: attempt.lane,
+    requestId: attempt.requestId,
+    parentAttemptId: attempt.parentAttemptId,
+  };
+}
 const server = createServer(async (req, res) => {
   let text = "";
   for await (const chunk of req) text += chunk;
@@ -109,6 +136,7 @@ before(async () => {
       unexpectedFetches++;
     assert.equal(url, "https://api.anthropic.com/v1/messages?beta=true");
     assert.equal(init?.method, "POST");
+    captureTrustedDispatchIdentity();
     return proxyFetch(`http://127.0.0.1:${address.port}/v1/messages`, init);
   };
   await updateSettings({
@@ -148,6 +176,8 @@ before(async () => {
 beforeEach(async () => {
   unexpectedFetches = 0;
   ordinaryControl = false;
+  captureLateIdentity = false;
+  lateDispatchIdentity = undefined;
   fixtureStatus = 200;
   stopReason = "end_turn";
   gate = null;
@@ -537,23 +567,23 @@ for (const mode of ["sse", "malformed"]) {
     if (mode === "sse") assert.equal(readDecisionAttempts(String(key.id)).at(-1)!.state, "unknown");
   });
 }
-test("current documented exact Claude 5.5 max contracts survive all formatters", () => {
+test("bounded Opus 5.5 medium/high contracts survive existing formatters", () => {
   initTranslators();
-  for (const model of ["claude-sonnet-5-5", "claude-haiku-5-5"]) {
+  const model = "claude-opus-5-5";
+  for (const effort of ["medium", "high"]) {
     const body = {
       model,
       messages: [{ role: "user", content: "synthetic" }],
-      reasoning_effort: "max",
+      reasoning_effort: effort,
     };
     assert.equal(
       sanitizeReasoningEffortForProvider(body, "claude", model).reasoning_effort,
-      "max",
-      model
+      effort
     );
     const formatted = translateRequest("openai", "claude", model, body, false, null, "claude");
-    assert.equal(formatted.output_config?.effort, "max", model);
-    assert.equal(formatted.thinking?.type, "adaptive", model);
-    assert.equal(resolveClaudeCodeCompatibleEffort(body, body, model), "max", model);
+    assert.equal(formatted.output_config?.effort, effort);
+    assert.equal(formatted.thinking?.type, "adaptive");
+    assert.equal(resolveClaudeCodeCompatibleEffort(body, body, model), effort);
   }
 });
 test("older and unverified Claude family restrictions are not widened", () => {
@@ -605,10 +635,18 @@ for (const [label, mutate] of [
 }
 test("partial Claude receipt survives reopen and late disclosure settles idempotently", async () => {
   delete fixtureUsage.cache_creation_input_tokens;
+  captureLateIdentity = true;
   const response = await POST(request());
+  captureLateIdentity = false;
+  const identity = lateDispatchIdentity;
+  lateDispatchIdentity = undefined;
   assert.equal(response.status, 200, await response.text());
+  assert.ok(identity, "originating trusted synthetic dispatch captured its private identity");
   const row = readDecisionAttempts(String(key.id)).at(-1)!;
-  const identity = {
+  assert.equal(identity.id, row.id);
+  assert.equal(Object.hasOwn(row, "lease_owner"), false);
+  assert.equal(JSON.stringify(row).includes(String(identity.leaseOwner)), false);
+  const publicIdentity = {
     id: String(row.id),
     keyId: String(key.id),
     comboId: String(row.combo_id),
@@ -617,6 +655,7 @@ test("partial Claude receipt survives reopen and late disclosure settles idempot
     model: String(row.model),
     connectionId,
     effort: String(row.effort),
+    requestedModel: String(row.requested_model),
   };
   const late = {
     status: 200,
@@ -634,6 +673,15 @@ test("partial Claude receipt survives reopen and late disclosure settles idempot
     readDecisionAttempts(String(key.id)).find((item) => item.id === row.id)!.uncached_input_tokens,
     8
   );
+  assert.throws(() => settleDecisionAttempt(publicIdentity, late), /decision_lease_owner/);
+  assert.throws(
+    () => settleDecisionAttempt({ ...identity, leaseOwner: "synthetic-forged-owner" }, late),
+    /decision_lease_owner/
+  );
+  assert.throws(
+    () => settleDecisionAttempt({ ...identity, requestedModel: "synthetic-forged-model" }, late),
+    /decision_attempt_identity/
+  );
   settleDecisionAttempt(identity, late);
   settleDecisionAttempt(identity, late);
   const history = getDbInstance()
@@ -649,18 +697,16 @@ test("partial Claude receipt survives reopen and late disclosure settles idempot
     0.005
   );
 });
-for (const model of ["claude-sonnet-5-5", "claude-haiku-5-5"]) {
-  test(`ordinary actual handler preserves documented max through the native OAuth formatter: ${model}`, async () => {
-    ordinaryControl = true;
-    const count = sent.length;
-    const response = await POST(
-      request(key.key, undefined, { model: `claude/${model}`, reasoning_effort: "max" })
-    );
-    assert.equal(response.status, 200, await response.text());
-    assert.equal(sent.length, count + 1);
-    const wire = sent.at(-1)!.body as Record<string, unknown>;
-    assert.equal(wire.model, model);
-    assert.equal((wire.output_config as Record<string, unknown>).effort, "max");
-    assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
-  });
-}
+test("ordinary Sonnet 5.5 max retains the stable OAuth high clamp outside bounded routing", async () => {
+  ordinaryControl = true;
+  const count = sent.length;
+  const response = await POST(
+    request(key.key, undefined, { model: "claude/claude-sonnet-5-5", reasoning_effort: "max" })
+  );
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(sent.length, count + 1);
+  const wire = sent.at(-1)!.body as Record<string, unknown>;
+  assert.equal(wire.model, "claude-sonnet-5-5");
+  assert.equal((wire.output_config as Record<string, unknown>).effort, "high");
+  assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
+});

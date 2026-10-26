@@ -89,6 +89,7 @@ function deps(
 ): SystemOneModelsDeps {
   return {
     listConnections: async () => connections,
+    isConnectionUnavailable: () => false,
     fetchSystemOne: async (url) => {
       const match = Object.keys(bodies).find((host) => url.includes(host));
       if (!match) throw new Error(`unexpected url ${url}`);
@@ -512,4 +513,25 @@ test("a caller cancellation is answered as a cancellation", async () => {
     deps([connection("openrouter")], { "openrouter.ai": OPENROUTER_LIST })
   );
   assert.equal(response.status, 499);
+});
+
+test("a session lease appearing after catalog selection blocks the metadata request", async () => {
+  let checks = 0,
+    fetches = 0;
+  const response = await handleSystemOneModels(
+    {},
+    deps(
+      [connection("typesafe")],
+      {},
+      {
+        isConnectionUnavailable: () => ++checks > 1,
+        fetchSystemOne: async () => {
+          fetches++;
+          throw new Error("unexpected catalog dispatch");
+        },
+      }
+    )
+  );
+  assert.equal(response.status, 502);
+  assert.equal(fetches, 0);
 });

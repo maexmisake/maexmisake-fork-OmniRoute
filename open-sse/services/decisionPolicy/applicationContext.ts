@@ -12,6 +12,8 @@ export type ApplicationAttempt = {
   requestId?: string;
   parentAttemptId?: string;
   signal: AbortSignal;
+  /** Release occupancy without asserting that a started remote call stopped. */
+  release?: () => void;
   dispatch: StrictValidationDispatch;
   assertIdle: () => void;
   assertFresh: () => void;

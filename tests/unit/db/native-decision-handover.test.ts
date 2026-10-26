@@ -76,13 +76,13 @@ test("atomic handover failure rolls back selection and projections; restart reta
   const line = output.split("\n").find((row) => row.startsWith("DECISION_RECOVERY_EVIDENCE "))!;
   assert.deepEqual(JSON.parse(line.slice("DECISION_RECOVERY_EVIDENCE ".length)), {
     states: ["started"],
-    blocked: true,
+    blocked: false,
   });
   handoverNativeDecision(parent, child, usage);
   handoverNativeDecision(parent, child, usage);
   rows = readDecisionAttempts(parent.keyId);
   assert.equal(rows.length, 2);
-  assert.equal(decisionAdmissionBlocked(parent.keyId), true);
+  assert.equal(decisionAdmissionBlocked(parent.keyId), false);
   assert.equal(rows.find((r) => r.lane === "decision")!.decision_outcome, "selected");
   startDecisionAttempt(child);
   assert.throws(() => startDecisionAttempt(child));

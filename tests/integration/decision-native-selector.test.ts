@@ -271,6 +271,10 @@ before(async () => {
   );
 });
 beforeEach(async () => {
+  // Each synthetic fixture starts with independent learned quota/queue state.
+  const { __resetRateLimitManagerForTests } =
+    await import("../../open-sse/services/rateLimitManager.ts");
+  await __resetRateLimitManagerForTests();
   key = (await createApiKey("synthetic-native-client", "synthetic-machine")) as typeof key;
   chosen = "deep";
   decisionStatus = 200;
@@ -749,31 +753,55 @@ test("mismatched successful decision model preserves cost but cannot execute", a
   assert.equal(executionCalls.length, e);
   assert.equal(readDecisionAttempts(key.id)[0].cost_usd, 0.001);
 });
-test("a concurrent request cannot enter the key slot while native decision is pending", async () => {
+test("four concurrent native stages are bounded without a whole-key lock", async () => {
+  const combo = await getComboByName("fixture-native-selector");
+  const config = structuredClone(combo!.config) as {
+    decisionPolicy: { selection: { timeoutMs: number }; policy: { timeoutMs: number } };
+  };
+  config.decisionPolicy.selection.timeoutMs = 2000;
+  config.decisionPolicy.policy.timeoutMs = 10000;
+  await updateCombo(comboId, { config });
   let release!: () => void;
   decisionGate = new Promise<void>((resolve) => {
     release = resolve;
   });
   const d = decisionCalls.length,
-    e = executionCalls.length,
-    pending = POST(request());
+    e = executionCalls.length;
+  const pending = Array.from({ length: 4 }, () => POST(request()));
   try {
-    await waitForDecision(d);
-    const second = await POST(request());
-    await second.text();
-    assert.ok(second.status >= 400);
-    assert.equal(decisionCalls.length, d + 1);
+    for (let tick = 0; tick < 100; tick++) {
+      if (
+        readDecisionAttempts(key.id).filter((row) =>
+          ["reserved", "started"].includes(String(row.state))
+        ).length === 4
+      )
+        break;
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.equal(
+      readDecisionAttempts(key.id).filter((row) =>
+        ["reserved", "started"].includes(String(row.state))
+      ).length,
+      4
+    );
+    const fifth = await POST(request());
+    await fifth.text();
+    assert.ok(fifth.status >= 400);
+    assert.ok(decisionCalls.length <= d + 4);
     assert.equal(executionCalls.length, e);
     release();
     decisionGate = null;
-    const first = await pending;
-    await first.text();
-    assert.equal(first.status, 200);
-    assert.equal(decisionCalls.length, d + 1);
-    assert.equal(executionCalls.length, e + 1);
+    const responses = await Promise.all(pending);
+    for (const response of responses) {
+      await response.text();
+      assert.equal(response.status, 200);
+    }
+    assert.equal(decisionCalls.length, d + 4);
+    assert.equal(executionCalls.length, e + 4);
   } finally {
     release();
     decisionGate = null;
+    await Promise.allSettled(pending);
   }
 });
 
@@ -1261,5 +1289,152 @@ test("free Zen tier change in execution queue after selection prevents physical 
     assert.equal(rows.find((row) => row.lane === "execution")!.state, "cancelled");
   } finally {
     release();
+  }
+});
+
+// Exclusive session leases are separate from the bounded attempt/journal lease.
+async function holdAccountLease(connectionId: string, provider: string) {
+  const { acquireExclusiveConnectionLease, releaseExclusiveConnectionLease } =
+    await import("../../src/lib/db/exclusiveConnectionLeases.ts");
+  const holder = await createApiKey("synthetic-other-exclusive-owner", "synthetic-machine");
+  const owner = `vlo_${"a".repeat(43)}`;
+  const claim = acquireExclusiveConnectionLease({
+    leaseOwnerId: owner,
+    apiKeyId: String(holder.id),
+    provider,
+    connectionId,
+  });
+  assert.ok("lease" in claim && claim.kind === "ACQUIRED");
+  return () =>
+    releaseExclusiveConnectionLease({
+      leaseOwnerId: owner,
+      apiKeyId: String(holder.id),
+      generation: claim.lease.generation,
+    });
+}
+for (const stage of ["selector", "execution"]) {
+  test(`another active exclusive session lease blocks ${stage} before every native dispatch`, async () => {
+    const releaseLease = await holdAccountLease(
+      stage === "selector" ? decisionConnection : executionConnection,
+      stage === "selector" ? "opencode-zen" : "claude"
+    );
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    try {
+      const response = await POST(request());
+      await response.text();
+      assert.equal(response.status, 409);
+      assert.equal(decisionCalls.length, d);
+      assert.equal(executionCalls.length, e);
+    } finally {
+      releaseLease();
+    }
+  });
+  test(`exclusive session lease acquired in ${stage} queue prevents the pending physical dispatch`, async () => {
+    const { acquire, getStats } = await import("../../open-sse/services/accountSemaphore.ts");
+    const connection = stage === "selector" ? decisionConnection : executionConnection;
+    const provider = stage === "selector" ? "opencode-zen" : "claude";
+    await updateProviderConnection(connection, { maxConcurrent: 1 });
+    const semaphore = `${provider}:${connection}`;
+    const releaseCapacity = await acquire(semaphore, { maxConcurrency: 1 });
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    let releaseLease: (() => unknown) | undefined;
+    const pending = POST(request());
+    try {
+      for (let n = 0; n < 200 && !getStats()[semaphore]?.queued; n++)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(
+        getStats()[semaphore]?.queued,
+        1,
+        "request reaches actual shared capacity queue"
+      );
+      releaseLease = await holdAccountLease(connection, provider);
+      releaseCapacity();
+      const response = await pending;
+      await response.text();
+      assert.equal(response.status, 409);
+      assert.equal(decisionCalls.length, d + (stage === "execution" ? 1 : 0));
+      assert.equal(executionCalls.length, e);
+    } finally {
+      releaseCapacity();
+      releaseLease?.();
+    }
+  });
+}
+
+test("expired decision lease cannot hand over, while its returned cost remains reconciled", async () => {
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  afterDecision = async () => {
+    getDbInstance()
+      .prepare(
+        "UPDATE decision_application_attempts SET lease_expires_at=? WHERE api_key_id=? AND lane='decision'"
+      )
+      .run(Date.now() - 1, key.id);
+  };
+  const response = await POST(request());
+  await response.text();
+  assert.equal(response.status, 409);
+  assert.equal(decisionCalls.length, d + 1);
+  assert.equal(executionCalls.length, e);
+  const rows = readDecisionAttempts(key.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].cost_usd, 0.001);
+  assert.equal(rows[0].decision_outcome, "selection_unavailable");
+});
+
+test("journal release failure returns a terminal response without fallback or replay", async () => {
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  afterDecision = async () => {
+    getDbInstance().exec(
+      "CREATE TEMP TRIGGER fail_native_terminal_cleanup BEFORE UPDATE OF state ON decision_application_attempts WHEN NEW.state IN ('completed','unknown') BEGIN SELECT RAISE(ABORT,'synthetic terminal cleanup failure'); END"
+    );
+    throw new Error("synthetic response delivery failure");
+  };
+  try {
+    const response = await POST(request());
+    await response.text();
+    assert.equal(response.status, 409);
+    assert.equal(decisionCalls.length, d + 1);
+    assert.equal(executionCalls.length, e);
+    const rows = readDecisionAttempts(key.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].state, "started");
+    assert.equal(rows[0].cost_usd, null);
+  } finally {
+    getDbInstance().exec("DROP TRIGGER IF EXISTS fail_native_terminal_cleanup");
+  }
+});
+
+test("queued expired decision reservation cannot send or acquire a fresh lease", async () => {
+  const { acquire, getStats } = await import("../../open-sse/services/accountSemaphore.ts");
+  await updateProviderConnection(decisionConnection, { maxConcurrent: 1 });
+  const semaphore = `opencode-zen:${decisionConnection}`;
+  const release = await acquire(semaphore, { maxConcurrency: 1 });
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  const pending = POST(request());
+  try {
+    for (let tick = 0; tick < 200 && !getStats()[semaphore]?.queued; tick++)
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    assert.equal(getStats()[semaphore]?.queued, 1);
+    getDbInstance()
+      .prepare("UPDATE decision_application_attempts SET lease_expires_at=? WHERE api_key_id=?")
+      .run(Date.now() - 1, key.id);
+    release();
+    const response = await pending;
+    await response.text();
+    assert.equal(response.status, 409);
+    assert.equal(decisionCalls.length, d);
+    assert.equal(executionCalls.length, e);
+    const rows = readDecisionAttempts(key.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].state, "cancelled");
+    assert.equal(rows[0].cost_usd, 0);
+  } finally {
+    release();
+    await Promise.allSettled([pending]);
   }
 });

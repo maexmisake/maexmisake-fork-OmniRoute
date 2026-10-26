@@ -128,19 +128,10 @@ export const claudeProvider: RegistryEntry = {
       contextLength: 1000000,
       maxOutputTokens: 128000,
       supportsXHighEffort: true,
-      // Current official effort contract: xhigh/max require adaptive thinking.
-      supportedThinkingEfforts: ["low", "medium", "high", "xhigh", "max"],
+      // Sonnet 5.5 caps effort at xhigh. Listing the tiers here makes the
+      // executor lower a requested "max" to "xhigh" instead of forwarding it.
+      supportedThinkingEfforts: ["low", "medium", "high", "xhigh"],
       unsupportedParams: ["temperature", "top_p", "top_k"],
-    },
-    {
-      id: "claude-haiku-5-5",
-      name: "Claude Haiku 5.5",
-      contextLength: 1000000,
-      maxOutputTokens: 128000,
-      supportsReasoning: true,
-      supportsVision: true,
-      supportsXHighEffort: true,
-      supportedThinkingEfforts: ["low", "medium", "high", "xhigh", "max"],
     },
     {
       id: "claude-sonnet-4-6",

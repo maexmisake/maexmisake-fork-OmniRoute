@@ -2,7 +2,7 @@
 
 **Purpose**: Domain-driven SQLite persistence. Each module owns a specific table set. Schema migrations are versioned and idempotent. No raw SQL in routes — all ops go through `src/lib/db/` modules.
 
-Live count: `ls src/lib/db/*.ts | wc -l` (currently 131). Migrations: `ls src/lib/db/migrations/*.sql | wc -l` (currently 148).
+Live count: `ls src/lib/db/*.ts | wc -l` (currently 131). Migrations: `rg --files src/lib/db/migrations -g '*.sql' | wc -l` (currently 213: 209 core + 4 bundled native-router files).
 
 ---
 
@@ -10,7 +10,7 @@ Live count: `ls src/lib/db/*.ts | wc -l` (currently 131). Migrations: `ls src/li
 
 - **`core.ts`** — `getDbInstance()` returns singleton `better-sqlite3` with WAL journaling. Exports `rowToCamel()` (snake_case → camelCase), `encryptConnectionFields()` for provider credentials at rest. `SCHEMA_SQL` defines **17 base tables** (verify: `grep -c "CREATE TABLE" src/lib/db/core.ts` minus 1 for `_omniroute_migrations`). Native-load / missing-driver classification lives in `sqliteLoadError.ts` and is re-exported from here.
 - **`migrationRunner.ts`** — Applies versioned SQL files from `db/migrations/` inside transactions. Tracks applied migrations in `_omniroute_migrations`. Each migration is idempotent.
-- **`db/migrations/`** — 148 SQL files (`001_initial_schema.sql` → `153_radar_local_model_state.sql`; numbering has intentional gaps). Each runs in a transaction, never fails partially.
+- **`db/migrations/`** — 213 SQL files (209 core files through `212_usage_history_provider_reported_cost.sql`, plus 4 namespaced native-router files; numbering has intentional gaps). Each runs in a transaction, never fails partially.
 - The old `localDb.ts` barrel has been removed — consumers must import from the owning named module below.
 
 ## Key Domain Modules
@@ -58,6 +58,8 @@ Full list: `ls src/lib/db/*.ts | wc -l` (131 files). Drift detection: `npm run c
 1. Create `src/lib/db/[module].ts` with CRUD functions
 2. If new tables: create migration in `db/migrations/NNN_[description].sql`
 3. Migration runs automatically at startup via `migrationRunner.ts`
+   Bundled native-router SQL uses the reserved `nr` namespace; see
+   [`NATIVE_ROUTER_MIGRATIONS.md`](../../../docs/architecture/NATIVE_ROUTER_MIGRATIONS.md).
 4. Add unit tests in `tests/unit/db/`
 
 ## Anti-Patterns

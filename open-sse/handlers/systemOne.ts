@@ -17,6 +17,7 @@
  * account and request-echo projection; raw error bodies never do.
  */
 
+import { NativeConnectionLeaseError } from "@/lib/decisionPolicy/exclusiveLease";
 import {
   projectSystemOneFailure,
   systemOneSensitiveValues,
@@ -539,6 +540,11 @@ async function requestFailure(
     await logCall(deps, call, status, tokenCounts(null, null), message);
     return errorResponse(status, message, deadline ? { code: "upstream_timeout" } : undefined);
   }
+  if (error instanceof NativeConnectionLeaseError)
+    return errorResponse(409, "Native connection is reserved by an exclusive session lease", {
+      type: "lease_error",
+      code: "LEASE_CAPACITY_UNAVAILABLE",
+    });
   error = normalizeCapacityFailure(error, timeoutSignal, upstreamStarted);
   const local = getClientSafeLocalRateLimitError(error);
   if (local) {

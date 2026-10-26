@@ -40,11 +40,10 @@ function count(table: string, keyId: string): number {
   );
 }
 after(() => resetDbInstance());
-test("exclusive reservation and one physical start; duplicate settlement projects usage and cost once", async () => {
+test("bounded reservation and one physical start; duplicate settlement projects usage and cost once", async () => {
   const a = await identity();
   reserveDecisionAttempt(a);
-  assert.throws(() => reserveDecisionAttempt({ ...a, id: randomUUID() }));
-  assert.equal(decisionAdmissionBlocked(a.keyId), true);
+  assert.equal(decisionAdmissionBlocked(a.keyId), false);
   startDecisionAttempt(a);
   assert.throws(() => startDecisionAttempt(a));
   const result = { status: 200, input: 8, output: 4, cost: 0.02 };
@@ -60,7 +59,7 @@ test("exclusive reservation and one physical start; duplicate settlement project
 test("cancel before dispatch is known zero and creates no successful usage", async () => {
   const a = await identity();
   reserveDecisionAttempt(a);
-  cancelUnstartedDecision(a.id);
+  cancelUnstartedDecision(a.id, a.leaseOwner);
   assert.equal(readDecisionAttempts(a.keyId)[0].state, "cancelled");
   assert.equal(readDecisionAttempts(a.keyId)[0].cost_usd, 0);
   assert.equal(count("usage_history", a.keyId), 0);
@@ -104,7 +103,7 @@ test("settlement projection failure rolls back every write, remains pending acro
   const line = output.split("\n").find((row) => row.startsWith("DECISION_RECOVERY_EVIDENCE "))!;
   assert.deepEqual(JSON.parse(line.slice("DECISION_RECOVERY_EVIDENCE ".length)), {
     states: ["started"],
-    blocked: true,
+    blocked: false,
   });
   settleDecisionAttempt(a, { status: 200, input: 8, output: 4, cost: 0.02 });
   for (const table of ["request_cost_ledger", "domain_cost_history", "usage_history"])

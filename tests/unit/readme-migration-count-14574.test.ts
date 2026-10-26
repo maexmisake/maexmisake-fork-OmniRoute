@@ -31,6 +31,41 @@ function validate(content: string) {
   return mirrorCheck.validate(content);
 }
 
+test("migration counts include bundled SQL without counting directories or following symlinks", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-count-tree-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "migration-count-outside-"));
+  try {
+    fs.writeFileSync(path.join(dir, "001_core.sql"), "-- fixture");
+    fs.mkdirSync(path.join(dir, "native-router"));
+    fs.writeFileSync(path.join(dir, "native-router", "213_feature.sql"), "-- fixture");
+    fs.mkdirSync(path.join(dir, "not-a-file.sql"));
+    fs.writeFileSync(path.join(outside, "999_external_fixture.sql"), "-- external fixture");
+    fs.symlinkSync(outside, path.join(dir, "linked-directory"), "junction");
+    assert.equal(countMigrations(dir), 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("the numbering gate checks bundled namespace duplicates and gaps separately", async () => {
+  const { inspectNativeRouterMigrationNumbers } =
+    await import("../../scripts/check/check-migration-numbering.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-number-tree-"));
+  try {
+    fs.mkdirSync(path.join(dir, "native-router"));
+    for (const name of ["213_one.sql", "213_duplicate.sql", "215_after_gap.sql"]) {
+      fs.writeFileSync(path.join(dir, "native-router", name), "-- fixture");
+    }
+    const result = inspectNativeRouterMigrationNumbers(dir);
+    assert.equal(result.count, 3);
+    assert.deepEqual(result.gaps, ["214"]);
+    assert.equal(result.duplicates[0]?.version, "213");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("all configured translated READMEs are covered by the strict migration gate", () => {
   assert.ok(mirrorCheck);
   assert.equal(mirrorCheck.strict, true);

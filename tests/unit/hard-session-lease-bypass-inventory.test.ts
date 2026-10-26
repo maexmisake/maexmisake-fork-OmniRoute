@@ -104,6 +104,10 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/sse/handlers/chat.ts": 2,
     "src/sse/services/auth.ts": 4,
     "src/sse/services/imageCredentialRetry.ts": 1,
+    // Native System One uses the shared selector, then rechecks the active-session
+    // lease at the native transport boundary. Managed session context is unsupported.
+    "src/app/api/v1/systemone/dispatch.ts": 1,
+    "src/lib/decisionPolicy/applicationSelection.ts": 1,
   },
   executor: {
     // The three executor.execute() sites that used to sit in chatCore.ts moved
@@ -124,6 +128,9 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "open-sse/services/compression/eval/executorModelClient.ts": 1,
     "src/lib/compression/judgeModelClient.ts": 1,
     "src/lib/services/quotaAutoPing.ts": 1,
+    // Bounded unmanaged execution: rejects managed request context, checks its
+    // pinned account lease before preparation and again after the capacity queue.
+    "src/lib/decisionPolicy/guardedRequest.ts": 1,
   },
   connection: {
     "open-sse/handlers/autoComboCandidates.ts": 1,
@@ -303,6 +310,13 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/shared/services/modelSyncScheduler.ts": 1,
     "src/sse/handlers/chatHelpers.ts": 1,
     "src/sse/services/auth.ts": 4,
+    // Native catalog/selector/execution reads are fenced against active exclusive
+    // sessions; the configured-provider list only projects state (class C).
+    "open-sse/handlers/systemOneModels.ts": 1,
+    "src/app/api/v1/systemone/dispatch.ts": 1,
+    "src/app/api/v1/systemone/route.ts": 1,
+    "src/lib/decisionPolicy/applicationCombo.ts": 2,
+    "src/lib/decisionPolicy/applicationSelection.ts": 2,
   },
 };
 
@@ -327,6 +341,7 @@ const CLASSIFICATION: Record<InventoryKind, Record<string, BypassClass>> = {
     "open-sse/services/compression/eval/executorModelClient.ts": "B",
     "src/lib/compression/judgeModelClient.ts": "B",
     "src/lib/services/quotaAutoPing.ts": "B",
+    "src/lib/decisionPolicy/guardedRequest.ts": "B",
   },
   connection: Object.fromEntries(
     Object.keys(EXPECTED.connection).map((file) => [
@@ -352,6 +367,10 @@ const CLASSIFICATION: Record<InventoryKind, Record<string, BypassClass>> = {
         "src/lib/vncSession/service.ts",
         "src/lib/warmupScheduler.ts",
         "src/shared/services/modelSyncScheduler.ts",
+        "open-sse/handlers/systemOneModels.ts",
+        "src/app/api/v1/systemone/dispatch.ts",
+        "src/lib/decisionPolicy/applicationCombo.ts",
+        "src/lib/decisionPolicy/applicationSelection.ts",
         "src/sse/services/auth.ts",
       ].includes(file)
         ? "B"

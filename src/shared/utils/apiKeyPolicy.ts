@@ -1,3 +1,4 @@
+import { parseModel } from "@omniroute/open-sse/services/model.ts";
 import { decisionAdmissionBlocked } from "@/lib/db/decisionAttempts";
 import { currentApplicationAttempt } from "@omniroute/open-sse/services/decisionPolicy/applicationContext.ts";
 /**
@@ -939,9 +940,17 @@ async function validateSelfLoopScopedAccess(
   return (await validateQuotaAccess(context)) ?? (await validateModelAccess(context));
 }
 
-function validateDecisionAdmission(apiKeyInfo: ApiKeyMetadata): Response | null {
+async function validateDecisionAdmission(
+  apiKeyInfo: ApiKeyMetadata,
+  modelStr: string | null
+): Promise<Response | null> {
   try {
-    return decisionAdmissionBlocked(apiKeyInfo.id, currentApplicationAttempt()?.id)
+    const comboName = modelStr ? await resolveRequestedComboName(modelStr) : null;
+    return decisionAdmissionBlocked(apiKeyInfo.id, currentApplicationAttempt()?.id, {
+      ...parseModel(modelStr),
+      requestedModel: comboName ?? modelStr,
+      requestedCombo: comboName !== null,
+    })
       ? errorResponse(429, "An automatic attempt has pending or unaccounted usage")
       : null;
   } catch {
@@ -985,7 +994,7 @@ export async function enforceApiKeyPolicy(
   const context = { request, apiKey, apiKeyInfo, modelStr };
   const statusRejection = validateKeyStatus(context);
   if (statusRejection) return { apiKey, apiKeyInfo, rejection: statusRejection };
-  const decisionRejection = validateDecisionAdmission(apiKeyInfo);
+  const decisionRejection = await validateDecisionAdmission(apiKeyInfo, modelStr);
   if (decisionRejection) return { apiKey, apiKeyInfo, rejection: decisionRejection };
   if (selfLoopScope.key) {
     return { apiKey, apiKeyInfo, rejection: await validateSelfLoopScopedAccess(context) };
