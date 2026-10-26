@@ -1,6 +1,9 @@
 import type { ApplicationToolHooks } from "../../../open-sse/services/decisionPolicy/applicationContext.ts";
 import type { ProviderCredentials } from "../../../open-sse/executors/base/validationDispatch.ts";
-import { assertBoundedAgyCredentials } from "../../../open-sse/executors/antigravity/bounded.ts";
+import {
+  assertBoundedAgyCredentials,
+  BOUNDED_AGY_OPUS_MODEL,
+} from "../../../open-sse/executors/antigravity/bounded.ts";
 import { sanitizeOpenAITools } from "../../../open-sse/services/toolSchemaSanitizer.ts";
 import {
   canonicalClientPrefix,
@@ -81,6 +84,7 @@ export class ApplicationGeminiTools {
     private proof?: ToolContinuationRequest
   ) {
     if (!continuation) return;
+    this.fixedNativeOpus(continuation.binding);
     if (continuation.replayOrigins.length !== request.history.length) fail();
     continuation.replayOrigins.forEach((origin, index) => {
       if (!origin.requiresThinkingReplay) fail();
@@ -98,6 +102,20 @@ export class ApplicationGeminiTools {
       if (group.correlationNamespace !== undefined)
         this.namespaces.set(occurrence, group.correlationNamespace);
     });
+  }
+  private fixedNativeOpus(
+    identity: Pick<AttemptIdentity, "model" | "provider" | "effort">
+  ): boolean {
+    if (identity.model !== BOUNDED_AGY_OPUS_MODEL) return false;
+    if (
+      identity.provider !== "agy" ||
+      identity.effort !== "high" ||
+      this.plan.config.applicationMode !== "provider-native-output-v1" ||
+      this.plan.config.nativeOutput?.acknowledgeNoTokenCeiling !== true ||
+      this.plan.config.nativeOutput.contextOutputTokens !== this.request.body.max_completion_tokens
+    )
+      fail();
+    return true;
   }
   claim(identity: AttemptIdentity): void {
     if (!this.proof) fail();
@@ -125,12 +143,14 @@ export class ApplicationGeminiTools {
       model,
       project,
       this.parts,
-      this.namespaces
+      this.namespaces,
+      { fixedNativeOpus: this.fixedNativeOpus(identity) }
     );
     return structuredClone(this.expectedWire);
   }
   attach(identity: AttemptIdentity, authority: string): ApplicationToolHooks {
     assertGeminiReplayIdentity(identity);
+    const fixedNativeOpus = this.fixedNativeOpus(identity);
     if (this.attached) fail();
     this.attached = true;
     const namespace = createGeminiCorrelationNamespace(identity.id);
@@ -140,6 +160,7 @@ export class ApplicationGeminiTools {
       allowedNames: names,
       allowToolUse: this.request.body.tool_choice !== "none",
       correlationNamespace: namespace,
+      fixedNativeOpus,
     });
     const client = new ClientOpenAIToolCollector(identity.model);
     const translator = new GeminiToolClient(

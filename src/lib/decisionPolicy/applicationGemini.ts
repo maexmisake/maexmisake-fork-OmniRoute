@@ -150,6 +150,9 @@ export function applicationAgyNativeOutputRequest(
 ): Json {
   const credentials = record(rawCredentials) as ProviderCredentials;
   const attempt = boundedAgyContext(model, credentials);
+  if (attempt?.executionContract !== AGY_OPUS_NATIVE_OUTPUT_CONTRACT) return reject();
+  if (attempt.tools?.geminiRequest)
+    return attempt.tools.geminiRequest(model, body, stream, rawCredentials);
   const allowed = [
     "model",
     "messages",
@@ -159,7 +162,6 @@ export function applicationAgyNativeOutputRequest(
     "stream_options",
   ];
   if (
-    attempt?.executionContract !== AGY_OPUS_NATIVE_OUTPUT_CONTRACT ||
     stream !== true ||
     body.reasoning_effort !== "high" ||
     body.max_completion_tokens !== attempt.nativeOutput?.contextOutputTokens ||
@@ -188,8 +190,7 @@ export function applicationAgyWireFacts(
   executionContract = "agy-gemini-high-v1"
 ) {
   const opus = executionContract === AGY_OPUS_NATIVE_OUTPUT_CONTRACT;
-  if ((!opus && executionContract !== "agy-gemini-high-v1") || (opus && validateTools))
-    return reject();
+  if (!opus && executionContract !== "agy-gemini-high-v1") return reject();
   const request = record(wire.request);
   const keys = ["contents", "systemInstruction", "generationConfig"];
   if (validateTools) keys.push("tools", "toolConfig");

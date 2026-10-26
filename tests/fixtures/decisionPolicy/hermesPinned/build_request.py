@@ -147,7 +147,7 @@ def load_functions(profile):
 
 def project(captured, driver):
     allowed = {"model", "messages", "tools", "max_tokens", "max_completion_tokens",
-               "reasoning_effort", "temperature", "top_p", "timeout", "extra_body"}
+               "reasoning_effort", "temperature", "top_p", "parallel_tool_calls", "timeout", "extra_body"}
     # The unchanged pinned profile merge already forwards top_p request_overrides.
     # Recognizing it in this fixture projection does not admit sampling at the router.
     if set(captured) - allowed:
@@ -173,10 +173,11 @@ def run(case):
     configured_controls = {"configured-temperature", "configured-top-p",
                            "configured-strict-absent", "configured-strict-false",
                            "configured-strict-true"}
+    omitted_tool_cases = {"omitted-cap-tools", "omitted-cap-tools-medium", "omitted-cap-tools-xhigh", "omitted-cap-tools-max", "omitted-cap-tools-parallel", "omitted-cap-tools-no-parallel"}
     allowed = {"explicit-medium", "explicit-high", "default-medium", "omitted-cap",
-               "stream-tools", "default-stream", "nonstream-tools", "tool-continuation",
+               "stream-tools", "omitted-cap-tools", "default-stream", "nonstream-tools", "tool-continuation",
                "unknown-provider", "unknown-import", "socket-canary",
-               "extra-body-collision"} | configured_controls | configured_reasoning
+               "extra-body-collision"} | configured_controls | configured_reasoning | omitted_tool_cases
     if case not in allowed:
         raise ClosedBoundaryError("unknown fixture case")
     profile = SimpleNamespace(name="custom", fixed_temperature=None, default_max_tokens=None,
@@ -199,7 +200,7 @@ def run(case):
         setattr(transport, method, MethodType(methods["ChatCompletionsTransport." + method], transport))
     agent = SimpleNamespace(
         provider="custom", model=MODEL, base_url=BASE, _base_url_lower=BASE,
-        max_tokens=None if case == "omitted-cap" else 64, _ollama_num_ctx=None,
+        max_tokens=None if case == "omitted-cap" or case in omitted_tool_cases else 64, _ollama_num_ctx=None,
         session_id="synthetic-session", openrouter_min_coding_score=None,
         _get_transport=lambda: transport, _is_qwen_portal=lambda: False,
         _is_openrouter_url=lambda: False, _is_direct_openai_url=lambda: False,
@@ -218,11 +219,11 @@ def run(case):
     sys.setprofile(trace)
     try:
         reasoning = profile.default_reasoning_config(MODEL) if case == "default-medium" else {
-            "enabled": True, "effort": "medium" if case == "explicit-medium" else "high",
+            "enabled": True, "effort": "medium" if case == "explicit-medium" else (case.removeprefix("omitted-cap-tools-") if case in {"omitted-cap-tools-medium", "omitted-cap-tools-xhigh", "omitted-cap-tools-max"} else "high"),
         }
         tools = [{"type": "function", "function": {"name": "synthetic_tool", "parameters": {
             "type": "object", "properties": {},
-        }}}] if case in {"stream-tools", "nonstream-tools"} else []
+        }}}] if case in {"stream-tools", "nonstream-tools"} | omitted_tool_cases else []
         if case in configured_controls:
             # Supplied synthetic configuration, not registry discovery or a default.
             tools = [{"type": "function", "function": {"name": "synthetic_tool", "parameters": {
@@ -232,6 +233,8 @@ def run(case):
             if case in {"configured-strict-false", "configured-strict-true"}:
                 tools[0]["function"]["strict"] = case == "configured-strict-true"
         overrides = {"extra_body": {"model": "unintended"}} if case == "extra-body-collision" else {}
+        if case in {"omitted-cap-tools-parallel", "omitted-cap-tools-no-parallel"}:
+            overrides = {"parallel_tool_calls": case == "omitted-cap-tools-parallel"}
         if case == "configured-temperature":
             overrides = {"temperature": 0.7}
         if case == "configured-top-p":
@@ -264,7 +267,7 @@ def run(case):
         captured.update(value)
 
     capture_create(**kwargs)
-    driver = {"stream": True, "stream_options": {"include_usage": True}} if case in {"stream-tools", "default-stream"} | configured_controls | configured_reasoning else {"stream": False}
+    driver = {"stream": True, "stream_options": {"include_usage": True}} if case in {"stream-tools", "default-stream"} | omitted_tool_cases | configured_controls | configured_reasoning else {"stream": False}
     return {
         "case": case, "pin": "749cb638ff43f9ce5333c186a1e4f67d473aa4f2",
         "proofKind": "original-source-kwargs-plus-declared-fixture-JSON-projection",

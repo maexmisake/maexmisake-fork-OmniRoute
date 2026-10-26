@@ -69,6 +69,7 @@ import { assertBoundedAgyCredentials } from "../../../open-sse/executors/antigra
 import {
   assertNativeDecisionCodexCredentials,
   nativeDecisionCodexWireFacts,
+  supportsNativeCodexToolRequest,
 } from "../../../open-sse/executors/codex/nativeDecision.ts";
 import type { ProviderNativeOutput } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import {
@@ -168,10 +169,11 @@ export async function prepareAutomaticCombo(
 }
 function prepareToolInput(
   clientInput: unknown,
-  body: unknown
+  body: unknown,
+  nativeOutput?: ProviderNativeOutput
 ): InspectedToolRequest | undefined | null {
-  const client = applicationToolRequest(clientInput),
-    working = applicationToolRequest(body);
+  const client = applicationToolRequest(clientInput, nativeOutput),
+    working = applicationToolRequest(body, nativeOutput);
   if (!client || !working) return null;
   const usesTools =
     !!client.body.tools?.length ||
@@ -190,15 +192,11 @@ function preparedApplicationInput(
   echo: boolean,
   nativeOutput?: ProviderNativeOutput
 ): { toolRequest?: InspectedToolRequest; reason?: string } {
-  if (nativeOutput)
-    return validRequestFacts(client, undefined, nativeOutput) &&
-      validRequestFacts(body, undefined, nativeOutput)
-      ? {}
-      : { reason: "native_output_request_unsupported" };
-  const toolRequest = prepareToolInput(client, body);
+  const toolRequest = prepareToolInput(client, body, nativeOutput);
   if (toolRequest === null) return { reason: "request_facts_unsupported" };
   if (toolRequest) return echo ? { reason: "tool_model_echo_unsupported" } : { toolRequest };
-  return validTextFacts(client) && validTextFacts(body)
+  return validRequestFacts(client, undefined, nativeOutput) &&
+    validRequestFacts(body, undefined, nativeOutput)
     ? {}
     : { reason: "request_facts_unsupported" };
 }
@@ -221,9 +219,6 @@ function validRequestFacts(
   )
     return null;
   return facts;
-}
-function validTextFacts(raw: unknown) {
-  return validRequestFacts(raw);
 }
 
 function matchesOpenAiWireContract(
@@ -847,10 +842,15 @@ function completedResponse(
   return native ? native.annotate(result) : annotateNoDecision(result, mode, attempt);
 }
 type SelectionState = { mode: ApplicationSelectionMode; native?: NativeStage };
-function supportedToolCandidate(candidate: Candidate, body: ChatPolicyBody): boolean {
+function supportedToolCandidate(
+  candidate: Candidate,
+  body: ChatPolicyBody,
+  nativeOutput = false
+): boolean {
+  if (candidate.provider === "codex") return nativeOutput && supportsNativeCodexToolRequest(body);
   if (candidate.provider === "claude")
     return isBoundedClaudePair(candidate.model, candidate.effort.value ?? "");
-  return isApplicationAgyPair(candidate) && supportsGeminiToolRequest(body);
+  return isApplicationAgyPair(candidate, nativeOutput) && supportsGeminiToolRequest(body);
 }
 async function assertExecutionContract(
   plan: AutomaticPlan,
@@ -860,7 +860,8 @@ async function assertExecutionContract(
 ) {
   if (!isApplicationEffortSupported(candidate, !!nativeOutputPlan(plan)))
     throw new Error("unsupported");
-  if (requiresTools && !supportedToolCandidate(candidate, body)) throw new Error("unsupported");
+  if (requiresTools && !supportedToolCandidate(candidate, body, !!nativeOutputPlan(plan)))
+    throw new Error("unsupported");
   const row = await getProviderConnectionById(plan.config.connections[candidate.id]);
   if (!row || row.provider !== candidate.provider || row.isActive !== true)
     throw new Error("unsupported");
@@ -972,6 +973,8 @@ export async function executeAutomaticCombo(
     const extracted = validRequestFacts(body, tools, nativeOutputPlan(plan));
     if (!extracted) return automaticRejection();
     const trace: Array<{ phase: string; id?: string; reason: string }> = [];
+    if (extracted.facts.difficulty)
+      trace.push({ phase: "difficulty", reason: `local_difficulty_${extracted.facts.difficulty}` });
     if (nativeOutputPlan(plan))
       trace.push({ phase: "output_policy", reason: "provider_native_limit_not_enforced" });
     const candidate = await selectApplicationCandidate(

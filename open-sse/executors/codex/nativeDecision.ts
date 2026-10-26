@@ -5,7 +5,11 @@ import { parseTokenExpiryMs } from "../../../src/lib/tokenHealthCheckExpiry";
 import { getForcedReasoningEffort } from "../../utils/reasoningRuleContext.ts";
 import { openaiToOpenAIResponsesRequest } from "../../translator/request/openai-responses/toResponses.ts";
 import { CODEX_CHAT_DEFAULT_INSTRUCTIONS } from "../../config/codexInstructions.ts";
-import type { ChatPolicyBody } from "../../services/decisionPolicy/requestFacts.ts";
+import { boundedJson, type ChatPolicyBody } from "../../services/decisionPolicy/requestFacts.ts";
+import {
+  canonicalToolId,
+  parseDecisionToolArguments,
+} from "../../services/decisionPolicy/toolContract.ts";
 import type { ExecuteInput, ProviderCredentials } from "../base.ts";
 
 export const NATIVE_DECISION_CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
@@ -133,9 +137,23 @@ export function nativeDecisionCodexHeaders(
     "User-Agent": NATIVE_DECISION_CODEX_USER_AGENT,
   };
 }
-function assertTextItem(value: unknown): void {
+function assertTextItem(value: unknown, tools = false): void {
   const item = record(value);
-  keys(item, ["type", "role", "content", "status"]);
+  keys(
+    item,
+    tools
+      ? [
+          "type",
+          "role",
+          "content",
+          "status",
+          "id",
+          "phase",
+          "encrypted_content",
+          "internal_chat_message_metadata_passthrough",
+        ]
+      : ["type", "role", "content", "status"]
+  );
   if (
     item.type !== "message" ||
     !["user", "assistant", "developer"].includes(String(item.role)) ||
@@ -143,14 +161,187 @@ function assertTextItem(value: unknown): void {
     (item.status !== undefined && item.status !== "completed")
   )
     reject();
+  if (tools) assertReplayMetadata(item);
   const expectedType = item.role === "assistant" ? "output_text" : "input_text";
-  for (const value of item.content) {
-    const part = record(value);
-    keys(part, ["type", "text"]);
-    if (part.type !== expectedType || typeof part.text !== "string") reject();
+  for (const value of item.content)
+    assertTextPart(value, expectedType, tools && item.role === "assistant");
+}
+function assertTextPart(value: unknown, expectedType: string, replay: boolean): void {
+  const part = record(value);
+  keys(part, replay ? ["type", "text", "annotations", "logprobs"] : ["type", "text"]);
+  if (part.type !== expectedType || typeof part.text !== "string") reject();
+  for (const key of ["annotations", "logprobs"])
+    if (
+      part[key] !== undefined &&
+      (!Array.isArray(part[key]) || part[key].length > 64 || !boundedJson(part[key]))
+    )
+      reject();
+}
+function assertReplayMetadata(item: Record<string, unknown>): void {
+  if (item.id !== undefined && (typeof item.id !== "string" || !item.id || item.id.length > 256))
+    reject();
+  if (
+    item.phase !== undefined &&
+    !["commentary", "partial_answer", "final_answer"].includes(String(item.phase))
+  )
+    reject();
+  if (
+    item.encrypted_content !== undefined &&
+    item.encrypted_content !== null &&
+    (typeof item.encrypted_content !== "string" ||
+      !item.encrypted_content ||
+      Buffer.byteLength(item.encrypted_content) > 65536)
+  )
+    reject();
+  if (
+    item.internal_chat_message_metadata_passthrough !== undefined &&
+    item.internal_chat_message_metadata_passthrough !== null
+  ) {
+    record(item.internal_chat_message_metadata_passthrough);
+    if (!boundedJson(item.internal_chat_message_metadata_passthrough)) reject();
   }
 }
-function assertNativeWire(body: Record<string, unknown>, model: string, effort: string): void {
+function assertReasoningItem(value: Record<string, unknown>): void {
+  keys(value, [
+    "type",
+    "id",
+    "summary",
+    "content",
+    "encrypted_content",
+    "internal_chat_message_metadata_passthrough",
+  ]);
+  assertReplayMetadata(value);
+  if (
+    typeof value.encrypted_content !== "string" ||
+    !value.encrypted_content ||
+    !Array.isArray(value.summary) ||
+    value.summary.length > 64
+  )
+    reject();
+  for (const raw of value.summary) {
+    const part = record(raw);
+    keys(part, ["type", "text"]);
+    if (part.type !== "summary_text" || typeof part.text !== "string") reject();
+  }
+  if (value.content === undefined) return;
+  if (!Array.isArray(value.content) || value.content.length > 64) reject();
+  for (const raw of value.content) {
+    const part = record(raw);
+    keys(part, ["type", "text"]);
+    if (!["reasoning_text", "text"].includes(String(part.type)) || typeof part.text !== "string")
+      reject();
+  }
+}
+function functionTools(body: Record<string, unknown>, allowed: boolean): Set<string> {
+  if (body.tools === undefined) return new Set();
+  if (!allowed || !Array.isArray(body.tools) || !body.tools.length || body.tools.length > 64)
+    reject();
+  const names = new Set<string>();
+  for (const raw of body.tools) {
+    const tool = record(raw);
+    keys(tool, ["type", "name", "description", "parameters", "strict"]);
+    if (
+      tool.type !== "function" ||
+      typeof tool.name !== "string" ||
+      !/^[A-Za-z_][A-Za-z0-9_-]{0,57}$/.test(tool.name) ||
+      names.has(tool.name) ||
+      typeof tool.strict !== "boolean" ||
+      (tool.description !== undefined && typeof tool.description !== "string")
+    )
+      reject();
+    record(tool.parameters);
+    if (!boundedJson(tool.parameters)) reject();
+    names.add(tool.name);
+  }
+  return names;
+}
+function assertToolOutput(value: unknown): void {
+  if (typeof value === "string") return;
+  if (!Array.isArray(value) || value.length > 64) reject();
+  for (const raw of value) {
+    const part = record(raw);
+    keys(part, ["type", "text"]);
+    if (part.type !== "input_text" || typeof part.text !== "string") reject();
+  }
+}
+function assertNativeInputs(input: unknown[], names: Set<string>, allowed: boolean): void {
+  const pending = new Set<string>(),
+    seen = new Set<string>();
+  for (const raw of input) {
+    const item = record(raw);
+    if (item.type === "message") {
+      assertTextItem(item, allowed);
+      continue;
+    }
+    if (!allowed) reject();
+    if (item.type === "reasoning") {
+      assertReasoningItem(item);
+      continue;
+    }
+    if (item.type === "function_call") {
+      assertFunctionInput(item, names, pending, seen);
+      continue;
+    }
+    if (item.type !== "function_call_output") reject();
+    keys(item, ["type", "call_id", "output", "status"]);
+    const id = canonicalToolId(item.call_id);
+    if (!pending.delete(id) || (item.status !== undefined && item.status !== "completed")) reject();
+    assertToolOutput(item.output);
+  }
+  if (pending.size) reject();
+}
+function assertFunctionMetadata(item: Record<string, unknown>): void {
+  keys(item, [
+    "type",
+    "id",
+    "call_id",
+    "name",
+    "arguments",
+    "status",
+    "namespace",
+    "encrypted_content",
+    "encrypted_function_args",
+    "internal_chat_message_metadata_passthrough",
+  ]);
+  assertReplayMetadata(item);
+  // This lane offers flat function definitions, never namespaced tools.
+  if (item.namespace != null) reject();
+  if (
+    item.encrypted_function_args !== undefined &&
+    item.encrypted_function_args !== null &&
+    (!Array.isArray(item.encrypted_function_args) ||
+      item.encrypted_function_args.length > 32 ||
+      item.encrypted_function_args.some(
+        (value) => typeof value !== "string" || !value || Buffer.byteLength(value) > 65536
+      ))
+  )
+    reject();
+}
+function assertFunctionInput(
+  item: Record<string, unknown>,
+  names: Set<string>,
+  pending: Set<string>,
+  seen: Set<string>
+): void {
+  assertFunctionMetadata(item);
+  const id = canonicalToolId(item.call_id);
+  if (
+    seen.has(id) ||
+    !names.has(String(item.name)) ||
+    (item.status !== undefined && item.status !== "completed")
+  )
+    reject();
+  parseDecisionToolArguments(String(item.arguments));
+  if (typeof item.arguments !== "string") reject();
+  seen.add(id);
+  pending.add(id);
+}
+function assertNativeWire(
+  body: Record<string, unknown>,
+  model: string,
+  effort: string,
+  tools = false
+): void {
   keys(body, [
     "model",
     "input",
@@ -161,6 +352,7 @@ function assertNativeWire(body: Record<string, unknown>, model: string, effort: 
     "include",
     "tool_choice",
     "parallel_tool_calls",
+    ...(tools ? ["tools"] : []),
   ]);
   if (
     body.model !== model ||
@@ -170,10 +362,13 @@ function assertNativeWire(body: Record<string, unknown>, model: string, effort: 
     !body.instructions.trim() ||
     !Array.isArray(body.input) ||
     !body.input.length ||
-    body.input.length > 128
+    body.input.length > (tools ? 512 : 128)
   )
     reject();
-  body.input.forEach(assertTextItem);
+  assertNativeInputs(body.input, functionTools(body, tools), tools);
+  assertNativeOptions(body, effort);
+}
+function assertNativeOptions(body: Record<string, unknown>, effort: string): void {
   const reasoning = record(body.reasoning);
   keys(reasoning, ["effort", "summary"]);
   if (reasoning.effort !== effort) reject();
@@ -200,7 +395,7 @@ export function nativeDecisionCodexProjection(
 ) {
   const attempt = nativeDecisionCodexContext(model, credentials);
   if (!attempt) reject();
-  const value = structuredClone(record(body));
+  let value = structuredClone(record(body));
   for (const cap of ["max_tokens", "max_completion_tokens", "max_output_tokens"]) {
     if (value[cap] !== undefined && value[cap] !== attempt.nativeOutput!.contextOutputTokens)
       reject();
@@ -210,7 +405,13 @@ export function nativeDecisionCodexProjection(
   // The shared protocol sanitizer strips store on non-OpenAI providers;
   // the existing Codex executor normally restores this required false value.
   if (value.store === undefined) value.store = false;
-  assertNativeWire(value, model, attempt.effort);
+  if (attempt.tools) {
+    if (!attempt.tools.codexRequest) reject();
+    value = record(
+      attempt.tools.codexRequest(model, value, true, credentials as Record<string, unknown>)
+    );
+  }
+  assertNativeWire(value, model, attempt.effort, !!attempt.tools);
   return value;
 }
 /** Recompute with the existing formatter from original accepted text, never from edited wire facts. */
@@ -223,7 +424,7 @@ export function nativeDecisionCodexWireFacts(
 ) {
   const attempt = nativeDecisionCodexContext(String(wire.model), credentials);
   if (!attempt || attempt.effort !== effort) reject();
-  assertNativeWire(wire, attempt.model, effort);
+  assertNativeWire(wire, attempt.model, effort, !!attempt.tools);
   const headers = new Headers(headerInput);
   const expectedHeaders = nativeDecisionCodexHeaders(attempt.model, credentials);
   const allowedHeaders = Object.keys(expectedHeaders).map((key) => key.toLowerCase());
@@ -244,9 +445,23 @@ export function nativeDecisionCodexWireFacts(
     credentials
   );
   if (!isDeepStrictEqual(wire, expected)) reject();
+  attempt.tools?.beforeFetch(wire);
   return {
     messages: originalBody.messages,
     output: attempt.nativeOutput!.contextOutputTokens,
     messageCount: originalBody.messages.length,
   };
+}
+/** Initial supported tool lane; old completed cycles without held authority stay excluded. */
+export function supportsNativeCodexToolRequest(body: ChatPolicyBody): boolean {
+  try {
+    if (!boundedJson(body) || body.stream !== true || !body.tools?.length) return false;
+    const latestUser = body.messages.findLastIndex((message) => message.role === "user");
+    return !body.messages.some(
+      (message, index) =>
+        index < latestUser && (message.role === "tool" || !!message.tool_calls?.length)
+    );
+  } catch {
+    return false;
+  }
 }

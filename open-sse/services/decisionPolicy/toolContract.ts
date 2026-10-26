@@ -1,4 +1,9 @@
-import { boundedJson, normalizeDecisionTextRequest, type ChatPolicyBody } from "./requestFacts.ts";
+import {
+  boundedJson,
+  normalizeDecisionTextRequest,
+  type ChatPolicyBody,
+  type ProviderNativeOutput,
+} from "./requestFacts.ts";
 
 export type ClientToolCall = { id: string; name: string; arguments: string };
 export type ClientToolGroup = {
@@ -174,12 +179,23 @@ function historyOf(body: ChatPolicyBody, toolContractJSON: string) {
   return history.result();
 }
 /** Parse a bounded accepted client request. No IDs or text here can grant authority. */
-export function inspectToolRequest(raw: unknown): InspectedToolRequest | null {
+export function inspectToolRequest(
+  raw: unknown,
+  nativeOutput?: ProviderNativeOutput
+): InspectedToolRequest | null {
   try {
-    const body = normalizeDecisionTextRequest(raw);
+    const body = normalizeDecisionTextRequest(raw, nativeOutput);
     if (!body || !body.messages.every(roleCarriersValid)) return null;
     checkTools(body);
     const toolContractJSON = canonicalToolJSON({
+      ...(nativeOutput
+        ? {
+            outputPolicy: {
+              mode: "provider-native-output-v1",
+              contextOutputTokens: nativeOutput.contextOutputTokens,
+            },
+          }
+        : {}),
       tools: body.tools ?? [],
       ...(body.tool_choice === undefined ? {} : { tool_choice: body.tool_choice }),
       ...(body.parallel_tool_calls === undefined

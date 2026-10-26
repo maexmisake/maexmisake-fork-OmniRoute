@@ -38,10 +38,12 @@ export default function OutputPolicyFields({ draft, disabled, update }: Props) {
             This separate opt-in permits provider-native generation length for the exact supported
             Codex and fixed-thinking AGY Opus profiles. No provider-enforced output-token ceiling is
             promised. Caller max_tokens or max_completion_tokens is rejected, never silently
-            dropped. Only streaming text is supported in this mode; tools and continuations are
-            rejected. Financially or token-capped client keys remain unsupported. A timeout or a
-            clipped stream does not limit tokens already generated remotely. Missing usage or cost
-            remains unknown; this mode is not a spending cap.
+            dropped. Only streaming requests are supported. Flat function tools require an
+            explicitly tool-capable supported profile; continuations retain their authenticated
+            original pair. Unsupported schemas, images and provider built-in tools still reject.
+            Financially or token-capped client keys remain unsupported. A timeout or a clipped
+            stream does not limit tokens already generated remotely. Missing usage or cost remains
+            unknown; this mode is not a spending cap.
           </p>
           <Input
             label="Output context-planning allowance (tokens)"

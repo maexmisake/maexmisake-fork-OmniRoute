@@ -342,6 +342,26 @@ test("original builder and profile preserve explicit cap/High and execute defaul
     )
   );
 });
+test("original pinned builder preserves supplied omitted-cap tool profiles without source or wire rewriting", () => {
+  for (const level of ["medium", "high", "xhigh", "max"]) {
+    const value = capture(level === "high" ? "omitted-cap-tools" : `omitted-cap-tools-${level}`);
+    assert.equal(value.capturedKwargs.max_tokens, undefined);
+    assert.equal(value.capturedKwargs.max_completion_tokens, undefined);
+    assert.equal(value.capturedKwargs.reasoning_effort, level);
+    assert.equal(
+      (value.capturedKwargs.tools as Array<{ function: { name: string } }>)[0].function.name,
+      "synthetic_tool"
+    );
+    assert.deepEqual(value.driverFlags, { stream: true, stream_options: { include_usage: true } });
+    assert.equal(value.body.reasoning_effort, level);
+    assert.equal(value.body.max_tokens, undefined);
+    assert.equal(value.fullHermesExecuted, false);
+  }
+  const parallel = capture("omitted-cap-tools-parallel");
+  assert.equal(parallel.capturedKwargs.parallel_tool_calls, true);
+  assert.equal(parallel.body.parallel_tool_calls, true);
+  assert.equal(parallel.capturedKwargs.max_tokens, undefined);
+});
 test("unknown providers/imports, socket access and extra_body collisions fail closed", () => {
   for (const name of [
     "unknown-provider",

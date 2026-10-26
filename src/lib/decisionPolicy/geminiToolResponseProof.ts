@@ -18,7 +18,11 @@ export type GeminiToolTurnProof = {
   calls: Array<GeminiToolCall & { nativeId: string | null; partIndex: number; ordinal: number }>;
   parts: Json[];
 };
-export type GeminiToolCorrelationOptions = { correlationNamespace?: string };
+export type GeminiToolCorrelationOptions = {
+  correlationNamespace?: string;
+  /** Exact private Claude CloudCode slot; absence is preserved, never synthesized. */
+  fixedNativeOpus?: boolean;
+};
 export const GEMINI_TOOL_PROOF_LIMITS = {
   calls: 32,
   parts: 64,
@@ -99,19 +103,21 @@ function appendCall(
   calls: GeminiToolTurnProof["calls"],
   ids: Set<string>,
   allowedNames: ReadonlySet<string> | undefined,
-  correlationNamespace: string | undefined
+  correlationNamespace: string | undefined,
+  fixedNativeOpus: boolean
 ): void {
   if (!("functionCall" in original)) return;
   if (calls.length >= GEMINI_TOOL_PROOF_LIMITS.calls) limited();
   const call = inspectGeminiFunctionCallPart(original, allowedNames);
   const ordinal = calls.length;
   const id = resolveGeminiClientCallId(call.nativeId, correlationNamespace, ordinal);
-  if (!calls.length && !signature.safeParse(original.thoughtSignature).success) fail();
+  if (!fixedNativeOpus && !calls.length && !signature.safeParse(original.thoughtSignature).success)
+    fail();
   if (ids.has(id)) fail();
   ids.add(id);
   calls.push({ ...call, id, partIndex, ordinal });
 }
-/** Static signed-Part validation only: this makes no raw EOF or terminal-response claim. */
+/** Static Part validation: Gemini requires a signature; fixed Opus preserves genuine absence. */
 export function validateGeminiToolParts(
   raw: unknown,
   allowedNames?: ReadonlySet<string>,
@@ -130,7 +136,15 @@ export function validateGeminiToolParts(
     for (const [partIndex, part] of raw.entries()) {
       if (!partSchema.safeParse(part).success) fail();
       const original = part as Json;
-      appendCall(original, partIndex, calls, ids, allowedNames, options.correlationNamespace);
+      appendCall(
+        original,
+        partIndex,
+        calls,
+        ids,
+        allowedNames,
+        options.correlationNamespace,
+        options.fixedNativeOpus === true
+      );
       parts.push(structuredClone(original));
     }
     return { calls, parts };
@@ -144,17 +158,21 @@ type CollectorOptions = {
   allowedNames: ReadonlySet<string> | readonly string[];
   allowToolUse: boolean;
   correlationNamespace?: string;
+  fixedNativeOpus?: boolean;
 };
 /** Caller owns byte framing, cancellation and the genuine EOF needed before finish(). */
 export class RawGeminiToolCollector {
   private proof: BoundedGeminiFrames;
   private names: ReadonlySet<string>;
   private correlationNamespace: string | undefined;
+  private fixedNativeOpus: boolean;
   private parts: Json[] = [];
   private failed = false;
   private sealed = false;
   private finishReason: string | null = null;
   constructor(options: CollectorOptions) {
+    if (options.fixedNativeOpus && options.model !== "claude-opus-4-6-thinking") fail();
+    this.fixedNativeOpus = options.fixedNativeOpus === true;
     const names =
       options.allowedNames instanceof Set ? [...options.allowedNames] : options.allowedNames;
     const parsed = z.array(toolName).max(64).safeParse(names);
@@ -192,6 +210,7 @@ export class RawGeminiToolCollector {
       const next = [...this.parts, ...(candidate?.content?.parts ?? [])];
       const turn = validateGeminiToolParts(next, this.names, {
         correlationNamespace: this.correlationNamespace,
+        fixedNativeOpus: this.fixedNativeOpus,
       });
       if (this.proof.refused && turn.calls.length) fail();
       this.parts = structuredClone(next);
@@ -208,6 +227,7 @@ export class RawGeminiToolCollector {
       this.proof.result();
       const result = validateGeminiToolParts(this.parts, this.names, {
         correlationNamespace: this.correlationNamespace,
+        fixedNativeOpus: this.fixedNativeOpus,
       });
       if (!result.calls.length) return null;
       if (this.finishReason !== "STOP") fail();

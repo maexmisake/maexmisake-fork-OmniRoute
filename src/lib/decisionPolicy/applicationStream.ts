@@ -69,7 +69,8 @@ class ProviderFrames {
     private identity: AttemptIdentity,
     private tools?: ApplicationToolHooks
   ) {
-    if (identity.provider === "codex") this.codex = new CodexResponseFrames(identity.model);
+    if (identity.provider === "codex")
+      this.codex = new CodexResponseFrames(identity.model, tools ? {} : undefined);
     if (identity.provider === "agy")
       this.gemini = new BoundedGeminiFrames(identity.model, {
         ...(tools?.geminiResponse
@@ -125,6 +126,7 @@ class ProviderFrames {
       if (events.length > 1 || (events.length === 1 && events[0] !== parsed.type))
         throw new Error("decision_stream_invalid");
       this.codex.accept(parsed);
+      this.observeRaw(parsed);
       this.refused = this.codex.refused;
     } else if (this.gemini) {
       const parsed = object(JSON.parse(data));

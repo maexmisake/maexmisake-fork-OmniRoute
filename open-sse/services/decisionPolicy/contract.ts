@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TASK_DIFFICULTY_LEVELS } from "./taskDifficulty.ts";
 
 const knownFlag = z.boolean().nullable();
 const effortName = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -61,6 +62,8 @@ export const policySchema = z
 export const requestSchema = z
   .object({
     task: z.string().min(1).max(100),
+    // Optional trusted local heuristic. A raw HTTP body cannot set this field.
+    difficulty: z.enum(TASK_DIFFICULTY_LEVELS).optional(),
     contextTokens: z.number().int().min(0),
     images: z.boolean(),
     tools: z.boolean(),

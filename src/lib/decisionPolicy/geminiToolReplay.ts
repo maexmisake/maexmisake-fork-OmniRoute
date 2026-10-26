@@ -13,7 +13,14 @@ type ReplayIdentity = Pick<
   "id" | "keyId" | "comboId" | "provider" | "model" | "connectionId" | "effort"
 >;
 type Entry = { binding: string; value: string; expires: number; bytes: number };
-export type GeminiReplayGroup = { parts: Json[]; correlationNamespace?: string };
+export type GeminiReplayGroup = {
+  parts: Json[];
+  correlationNamespace?: string;
+  fixedNativeOpus?: boolean;
+};
+const OPUS_REPLAY_TYPE = "agy-opus-tool-parts-v1";
+// Keep pure replay validation independent of executor/configuration initialization.
+const OPUS_REPLAY_MODEL = "claude-opus-4-6-thinking";
 const entries = new Map<string, Entry>();
 const LIMITS = { sources: 128, bytes: 4 * 1024 * 1024, groupBytes: 262144, ttlMs: 30 * 60_000 };
 function fail(): never {
@@ -22,7 +29,7 @@ function fail(): never {
 export function assertGeminiReplayIdentity(identity: ReplayIdentity): void {
   if (
     identity.provider !== "agy" ||
-    identity.model !== "gemini-3.8-flash-high" ||
+    !["gemini-3.8-flash-high", OPUS_REPLAY_MODEL].includes(identity.model) ||
     identity.effort !== "high" ||
     [identity.id, identity.keyId, identity.comboId, identity.connectionId].some(
       (value) => typeof value !== "string" || !value || value.length > 256
@@ -35,11 +42,12 @@ function checkedEnvelope(parsed: unknown): Json {
   const envelope = parsed[0] as Json;
   if (
     !envelope ||
-    !["gemini-tool-parts-v1", "gemini-tool-parts-v2"].includes(String(envelope.type))
+    typeof envelope.type !== "string" ||
+    !["gemini-tool-parts-v1", "gemini-tool-parts-v2", OPUS_REPLAY_TYPE].includes(envelope.type)
   )
     fail();
   const keys = ["type", "parts"];
-  if (envelope.type === "gemini-tool-parts-v2") keys.push("correlationNamespace");
+  if (envelope.type !== "gemini-tool-parts-v1") keys.push("correlationNamespace");
   if (Object.keys(envelope).some((key) => !keys.includes(key))) fail();
   return envelope;
 }
@@ -61,17 +69,22 @@ export function parseGeminiToolReplayGroup(
   try {
     if (typeof value !== "string" || Buffer.byteLength(value) > LIMITS.groupBytes) fail();
     const parsed: unknown = JSON.parse(value);
-    const envelope = checkedEnvelope(parsed),
-      namespace = checkedNamespace(envelope, identity);
-    const proof = validateGeminiToolParts(
-      envelope.parts,
-      undefined,
-      namespace === undefined ? undefined : { correlationNamespace: namespace }
-    );
+    const envelope = checkedEnvelope(parsed);
+    const fixedNativeOpus = envelope.type === OPUS_REPLAY_TYPE;
+    if (identity) {
+      assertGeminiReplayIdentity(identity);
+      if (fixedNativeOpus !== (identity.model === OPUS_REPLAY_MODEL)) fail();
+    }
+    const namespace = checkedNamespace(envelope, identity);
+    const proof = validateGeminiToolParts(envelope.parts, undefined, {
+      correlationNamespace: namespace,
+      fixedNativeOpus,
+    });
     if (!proof.calls.length || canonicalToolJSON(parsed) !== value) fail();
     return {
       parts: proof.parts,
       ...(namespace === undefined ? {} : { correlationNamespace: namespace }),
+      ...(fixedNativeOpus ? { fixedNativeOpus: true } : {}),
     };
   } catch {
     return fail();
@@ -88,13 +101,10 @@ export function assertGeminiReplayCalls(
   calls: readonly ContinuationCall[]
 ): void {
   const group = parseGeminiToolReplayGroup(value, identity);
-  const proof = validateGeminiToolParts(
-    group.parts,
-    undefined,
-    group.correlationNamespace === undefined
-      ? undefined
-      : { correlationNamespace: group.correlationNamespace }
-  );
+  const proof = validateGeminiToolParts(group.parts, undefined, {
+    correlationNamespace: group.correlationNamespace,
+    fixedNativeOpus: group.fixedNativeOpus,
+  });
   if (!Array.isArray(calls) || proof.calls.length !== calls.length) fail();
   proof.calls.forEach((native, index) => {
     const client = calls[index];
@@ -109,10 +119,13 @@ export function assertGeminiReplayCalls(
 }
 export function serializeGeminiToolReplay(
   parts: readonly Json[],
-  correlationNamespace?: string
+  correlationNamespace?: string,
+  fixedNativeOpus = false
 ): string {
-  const envelope =
-    correlationNamespace === undefined
+  if (fixedNativeOpus && correlationNamespace === undefined) fail();
+  const envelope = fixedNativeOpus
+    ? { type: OPUS_REPLAY_TYPE, correlationNamespace, parts }
+    : correlationNamespace === undefined
       ? { type: "gemini-tool-parts-v1", parts }
       : { type: "gemini-tool-parts-v2", correlationNamespace, parts };
   const value = canonicalToolJSON([envelope]);
@@ -132,14 +145,18 @@ function expire(): number {
   }
   return bytes;
 }
-/** Private worker memory only. Restart/cache loss rejects rather than reconstructing signatures. */
+/** Private worker memory only. Restart/cache loss rejects instead of inventing native replay Parts. */
 export function storeGeminiToolReplay(
   identity: ReplayIdentity,
   parts: readonly Json[],
   correlationNamespace?: string
 ): string {
   const bound = binding(identity),
-    value = serializeGeminiToolReplay(parts, correlationNamespace);
+    value = serializeGeminiToolReplay(
+      parts,
+      correlationNamespace,
+      identity.model === OPUS_REPLAY_MODEL
+    );
   parseGeminiToolReplayGroup(value, identity);
   const bytes = Buffer.byteLength(value),
     occupied = expire();

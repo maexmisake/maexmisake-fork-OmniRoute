@@ -12,6 +12,7 @@ import {
   isNativeDecisionCodexPair,
   nativeDecisionCodexProjection,
   nativeDecisionCodexWireFacts,
+  supportsNativeCodexToolRequest,
 } from "../../open-sse/executors/codex/nativeDecision.ts";
 import { openaiToOpenAIResponsesRequest } from "../../open-sse/translator/request/openai-responses/toResponses.ts";
 import {
@@ -61,6 +62,112 @@ function translated(body = originalBody()) {
     unknown
   >;
 }
+
+test("native tool projection validates original encrypted replay and exact wire before fetch", () => {
+  const body = originalBody();
+  body.tools = [
+    {
+      type: "function",
+      function: { name: "synthetic_tool", parameters: { type: "object", properties: {} } },
+    },
+  ];
+  const c = context();
+  let checked = 0;
+  const replay = [
+    { type: "reasoning", id: "rs_synthetic", summary: [], encrypted_content: "synthetic-cipher" },
+    {
+      type: "function_call",
+      id: "fc_synthetic",
+      call_id: "call_synthetic",
+      name: "synthetic_tool",
+      arguments: "{}",
+      status: "completed",
+      namespace: null,
+    },
+    { type: "function_call_output", call_id: "call_synthetic", output: "synthetic result" },
+  ];
+  c.attempt.tools = {
+    codexRequest: (_model, wire) => ({ ...wire, input: [...(wire.input as unknown[]), ...replay] }),
+    beforeFetch: () => {
+      checked++;
+    },
+    restoreThinking: () => [],
+    preserveWireThinking: () => false,
+    rawEvent() {},
+    rawComplete() {},
+    clientFrame: () => false,
+    validateClientComplete() {},
+    commitClientComplete() {},
+  };
+  withApplicationAttempt(c.attempt, () => {
+    const wire = nativeDecisionCodexProjection(body.model, translated(body), credentials);
+    const headers = new CodexExecutor().buildHeaders(credentials, true, null, body.model);
+    nativeDecisionCodexWireFacts(wire, headers, credentials, body, "max");
+    assert.equal(checked, 1);
+    assert.equal(Object.hasOwn(wire, "max_output_tokens"), false);
+    const altered = structuredClone(wire);
+    (altered.input as Record<string, unknown>[]).at(-1)!.output = "changed result";
+    assert.throws(() => nativeDecisionCodexWireFacts(altered, headers, credentials, body, "max"));
+    assert.equal(checked, 1);
+  });
+});
+test("native tool projection rejects orphaned results, unoffered calls and invented reasoning", () => {
+  const body = originalBody();
+  body.tools = [
+    {
+      type: "function",
+      function: { name: "synthetic_tool", parameters: { type: "object", properties: {} } },
+    },
+  ];
+  const c = context();
+  for (const bad of [
+    [{ type: "function_call_output", call_id: "orphan", output: "synthetic" }],
+    [{ type: "reasoning", summary: [], encrypted_content: null }],
+    [{ type: "function_call", call_id: "call", name: "unoffered", arguments: "{}" }],
+  ]) {
+    c.attempt.tools = {
+      codexRequest: (_model, wire) => ({ ...wire, input: [...(wire.input as unknown[]), ...bad] }),
+      beforeFetch() {},
+      restoreThinking: () => [],
+      preserveWireThinking: () => false,
+      rawEvent() {},
+      rawComplete() {},
+      clientFrame: () => false,
+      validateClientComplete() {},
+      commitClientComplete() {},
+    };
+    withApplicationAttempt(c.attempt, () =>
+      assert.throws(() => nativeDecisionCodexProjection(body.model, translated(body), credentials))
+    );
+  }
+  assert.equal(calls.length, 0);
+});
+test("native tool eligibility leaves historical unheld cycles unsupported", () => {
+  const body = originalBody();
+  body.tools = [
+    { type: "function", function: { name: "synthetic_tool", parameters: { type: "object" } } },
+  ];
+  assert.equal(supportsNativeCodexToolRequest(body), true);
+  assert.equal(supportsNativeCodexToolRequest({ ...body, stream: false }), false);
+  assert.equal(
+    supportsNativeCodexToolRequest({
+      ...body,
+      messages: [
+        { role: "user", content: "past" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "old", type: "function", function: { name: "synthetic_tool", arguments: "{}" } },
+          ],
+        },
+        { role: "tool", tool_call_id: "old", content: "old result" },
+        { role: "user", content: "new turn without held authority" },
+      ],
+    }),
+    false
+  );
+});
 function context(model = "gpt-6-sol", effort = "max", controller = new AbortController()) {
   const dispatch = {
     singleAttempt: true as const,

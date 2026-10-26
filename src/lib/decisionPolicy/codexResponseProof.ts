@@ -1,4 +1,11 @@
 import { z } from "zod";
+import {
+  CodexToolAssembly,
+  codexFunctionCallSchema,
+  type CodexToolOptions,
+  type CodexToolTurnProof,
+} from "./codexToolProof";
+export { validateCodexToolItems, type CodexToolTurnProof } from "./codexToolProof";
 
 const counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const nullableCounter = counter.nullable().optional();
@@ -23,7 +30,7 @@ const reasoningItem = z
     summary: z.array(summaryPart).max(64),
   })
   .passthrough();
-const item = z.discriminatedUnion("type", [messageItem, reasoningItem]);
+const item = z.discriminatedUnion("type", [messageItem, reasoningItem, codexFunctionCallSchema]);
 const usageSchema = z
   .object({
     input_tokens: nullableCounter,
@@ -133,9 +140,14 @@ export class CodexResponseFrames {
   private usage: Usage = {};
   private terminalUsage: Usage = {};
   private nonFinalTurn = false;
+  private toolAssembly?: CodexToolAssembly;
   refused = false;
-  constructor(private expectedModel: string) {
+  constructor(
+    private expectedModel: string,
+    tools?: CodexToolOptions
+  ) {
     if (!z.string().min(1).max(200).safeParse(expectedModel).success) invalid();
+    if (tools) this.toolAssembly = new CodexToolAssembly(tools);
   }
   get applicationStatus(): number | undefined {
     if (this.terminal === "cancelled") return 499;
@@ -188,11 +200,21 @@ export class CodexResponseFrames {
       return this.finish(event);
     if (["response.output_item.added", "response.output_item.done"].includes(event.type))
       return this.outputItem(event);
+    if (
+      ["response.function_call_arguments.delta", "response.function_call_arguments.done"].includes(
+        event.type
+      )
+    ) {
+      if (!this.toolAssembly) invalid();
+      return this.toolAssembly.acceptArguments(event);
+    }
     if (event.type.startsWith("response.reasoning_summary_")) return this.summary(event);
     this.text(event);
   }
   private response(event: z.infer<typeof eventEnvelope>) {
     const response = parsed(responseSchema, event.response);
+    if (!this.toolAssembly && response.output?.some((value) => value.type === "function_call"))
+      invalid();
     if (response.model !== undefined && response.model !== this.expectedModel) invalid();
     this.assertHeaders(response.headers);
     if (this.responseId !== null && response.id !== this.responseId) invalid();
@@ -217,14 +239,20 @@ export class CodexResponseFrames {
     const response = this.response(event);
     const status = event.type.slice("response.".length);
     if (response.status !== undefined && status !== response.status) invalid();
-    if (status === "completed") this.assertCompleted(response);
+    if (status === "completed") {
+      this.assertCompleted(response);
+      // A terminal refusal still carries a usage receipt, but can never
+      // publish executable tool replay. Early refusal remains fail-closed.
+      if (!this.refused && !containsRefusal(response.output ?? []))
+        this.toolAssembly?.complete(response.output);
+    }
     // Provisional lifecycle output counters are not a final receipt. A missing
     // terminal counter must stay unknown instead of inheriting an initial zero.
     this.terminalUsage = response.usage ? validateUsage(response.usage) : {};
     if (response.usage) this.usage = this.terminalUsage;
     this.refused ||= containsRefusal(response.output ?? []);
     this.responseId ??= response.id;
-    this.nonFinalTurn = response.end_turn === false;
+    this.nonFinalTurn = response.end_turn === false && !this.toolAssembly?.hasCalls;
     this.terminal = status;
   }
   private assertCompleted(response: z.infer<typeof responseSchema>): void {
@@ -247,7 +275,9 @@ export class CodexResponseFrames {
   }
   private outputItem(event: z.infer<typeof eventEnvelope>): void {
     const value = parsed(itemEvent, event);
+    if (value.item.type === "function_call" && !this.toolAssembly) invalid();
     this.refused ||= containsRefusal([value.item]);
+    if (!this.refused) this.toolAssembly?.acceptItem(event);
     const key =
       value.output_index === undefined
         ? value.item.id === undefined
@@ -357,6 +387,11 @@ export class CodexResponseFrames {
       invalid();
     }
   }
+  toolResult(): CodexToolTurnProof | null {
+    if (!this.toolAssembly || !this.terminal || this.failed || this.applicationStatus !== undefined)
+      invalid();
+    return this.toolAssembly.result();
+  }
   result() {
     if (this.failed) invalid();
     this.sealed = true;
@@ -369,5 +404,19 @@ export class CodexResponseFrames {
       // interpret undocumented cost fields, credits or balances as a charge.
       cost: null,
     };
+  }
+}
+/** Independent native proof for the existing signed application continuation transaction. */
+export class RawCodexToolCollector {
+  private frames: CodexResponseFrames;
+  constructor(options: CodexToolOptions & { model: string }) {
+    this.frames = new CodexResponseFrames(options.model, options);
+  }
+  accept(event: unknown): void {
+    this.frames.accept(event);
+  }
+  finish(): CodexToolTurnProof | null {
+    this.frames.result();
+    return this.frames.toolResult();
   }
 }

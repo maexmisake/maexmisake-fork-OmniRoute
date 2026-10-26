@@ -1,3 +1,4 @@
+import { inspectToolRequest } from "../../open-sse/services/decisionPolicy/toolContract.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -118,11 +119,25 @@ for (const extra of [
   { temperature: 0 },
   { tool_choice: "none" },
   { parallel_tool_calls: false },
-  {
-    tools: [{ type: "function", function: { name: "synthetic", parameters: { type: "object" } } }],
-  },
 ]) {
   test(`unsupported native client control ${Object.keys(extra).join(",")} fails closed`, () => {
     assert.equal(normalizeDecisionTextRequest({ ...input(), ...extra }, planning), null);
   });
 }
+
+test("native flat function declarations enter the guarded tool contract without a caller cap", () => {
+  const raw = {
+    ...input(),
+    tools: [{ type: "function", function: { name: "synthetic", parameters: { type: "object" } } }],
+    tool_choice: "auto",
+    parallel_tool_calls: false,
+  };
+  const normalized = normalizeDecisionTextRequest(raw, planning);
+  assert.ok(normalized);
+  assert.equal(normalized.max_completion_tokens, planning.contextOutputTokens);
+  const inspected = inspectToolRequest(raw, planning);
+  assert.ok(inspected);
+  assert.deepEqual(inspected.body.tools, raw.tools);
+  assert.equal(Object.hasOwn(raw, "max_tokens"), false);
+  assert.equal(Object.hasOwn(raw, "max_completion_tokens"), false);
+});

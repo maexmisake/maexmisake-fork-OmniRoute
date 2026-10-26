@@ -30,6 +30,7 @@ const tokens = {
 let expectedEffort = "high";
 let offeredIds = ["opus-high", "sonnet-high"];
 let initialConfig: Record<string, unknown>;
+let afterDecision: (() => Promise<void> | void) | undefined;
 let reportedCost: number | null = 0.003;
 let truncate = false,
   refuse = false;
@@ -61,9 +62,9 @@ function originalFixture(file: string, input?: unknown) {
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
-function sourceBody() {
+function sourceBody(caseName = "stream-tools") {
   const capture = originalFixture("../fixtures/decisionPolicy/hermesPinned/build_request.py", {
-    case: "stream-tools",
+    case: caseName,
   });
   assert.equal(capture.sdkWireCaptured, false);
   assert.equal(capture.fullHermesExecuted, false);
@@ -232,6 +233,7 @@ before(async () => {
         assert.ok(!body.includes(privateValue));
       const ids = Object.keys(sent.questions.route.criteria);
       assert.deepEqual(ids.sort(), [...offeredIds].sort());
+      await afterDecision?.();
       return Response.json({
         model: "jev-1.13-free",
         answers: {
@@ -355,6 +357,7 @@ beforeEach(async () => {
   key = await createApiKey("synthetic-tools-client-" + randomUUID(), "synthetic");
   decisions = 0;
   executions = 0;
+  afterDecision = undefined;
   wires.length = 0;
   selected = "sonnet-high";
   expectedEffort = "high";
@@ -513,8 +516,7 @@ async function throughDone(response: Response) {
   }
   return { text, reader };
 }
-async function begin() {
-  const body = sourceBody();
+async function begin(body = sourceBody()) {
   const response = await POST(request(body));
   assert.equal(response.status, 200);
   const result = await throughDone(response);
@@ -678,44 +680,155 @@ test("reused IDs in a second complete group retain separate occurrence-bound sig
 });
 
 for (const family of ["opus", "sonnet", "haiku"] as const)
-  for (const effort of ["medium", "high", "xhigh", "max"]) {
-    test(`synthetic adjusted Hermes tools continue with exact ${family} ${effort}`, async () => {
-      expectedEffort = effort;
-      selected = `${family}-${effort}`;
-      const other = family === "opus" ? "sonnet" : "opus";
-      const config = structuredClone(initialConfig) as { decisionPolicy: Record<string, unknown> };
-      const policy = config.decisionPolicy.policy as Record<string, unknown>;
-      policy.candidates = [candidate(other, effort), candidate(family, effort)];
-      offeredIds = [`${other}-${effort}`, selected];
-      policy.taskOrder = { tools: offeredIds, continuation: offeredIds };
-      config.decisionPolicy.connections = {
-        [`${other}-${effort}`]: other === "opus" ? opusId : sonnetId,
-        [selected]: family === "opus" ? opusId : family === "sonnet" ? sonnetId : haikuId,
-      };
-      await updateCombo(comboId, { config });
-      // Explicit synthetic effort/model-pool substitution, not captured Hermes defaults.
-      const body = { ...sourceBody(), reasoning_effort: effort };
-      const initial = await POST(request(body));
-      assert.equal(initial.status, 200);
-      const first = await throughDone(initial);
-      const continued = await POST(request({ ...body, messages: protocol() }));
-      assert.equal(
-        continued.status,
-        200,
-        continued.headers.get("x-omniroute-decision-reason") ?? ""
-      );
-      await consume(continued);
-      await first.reader.cancel();
-      assert.equal(decisions, 1);
-      assert.equal(executions, 2);
-      for (const row of executionRows()) {
-        assert.equal(row.model, `claude-${family}-5-5`);
-        assert.equal(row.effort, effort);
-        assert.equal(row.application_status, 200);
-      }
-    });
-  }
+  for (const effort of ["medium", "high", "xhigh", "max"])
+    for (const native of [false, true]) {
+      test(`synthetic ${native ? "native-output " : ""}adjusted Hermes tools continue with exact ${family} ${effort}`, async () => {
+        expectedEffort = effort;
+        selected = `${family}-${effort}`;
+        const other = family === "opus" ? "sonnet" : "opus";
+        const config = structuredClone(initialConfig) as {
+          decisionPolicy: Record<string, unknown>;
+        };
+        const policy = config.decisionPolicy.policy as Record<string, unknown>;
+        policy.candidates = [candidate(other, effort), candidate(family, effort)];
+        offeredIds = [`${other}-${effort}`, selected];
+        policy.taskOrder = { tools: offeredIds, continuation: offeredIds };
+        config.decisionPolicy.connections = {
+          [`${other}-${effort}`]: other === "opus" ? opusId : sonnetId,
+          [selected]: family === "opus" ? opusId : family === "sonnet" ? sonnetId : haikuId,
+        };
+        if (native) {
+          config.decisionPolicy.applicationMode = "provider-native-output-v1";
+          config.decisionPolicy.nativeOutput = {
+            acknowledgeNoTokenCeiling: true,
+            contextOutputTokens: 64,
+          };
+        }
+        await updateCombo(comboId, { config });
+        // Explicit synthetic effort/model-pool substitution, not captured Hermes defaults.
+        const body = {
+          ...sourceBody(native ? "omitted-cap-tools" : "stream-tools"),
+          reasoning_effort: effort,
+        };
+        const initial = await POST(request(body));
+        assert.equal(initial.status, 200);
+        const first = await throughDone(initial);
+        const continued = await POST(request({ ...body, messages: protocol() }));
+        assert.equal(
+          continued.status,
+          200,
+          continued.headers.get("x-omniroute-decision-reason") ?? ""
+        );
+        await consume(continued);
+        await first.reader.cancel();
+        assert.equal(decisions, 1);
+        assert.equal(executions, 2);
+        for (const row of executionRows()) {
+          assert.equal(row.model, `claude-${family}-5-5`);
+          assert.equal(row.effort, effort);
+          assert.equal(row.application_status, 200);
+        }
+      });
+    }
 
+async function configureNativeTools(patch: Record<string, unknown> = {}) {
+  const config = structuredClone(initialConfig) as { decisionPolicy: Record<string, unknown> };
+  Object.assign(
+    config.decisionPolicy,
+    {
+      applicationMode: "provider-native-output-v1",
+      nativeOutput: { acknowledgeNoTokenCeiling: true, contextOutputTokens: 64 },
+    },
+    patch
+  );
+  await updateCombo(comboId, { config });
+}
+for (const change of ["mode", "planning", "tool-schema", "account", "missing-replay"]) {
+  test(`native-output tool continuation rejects changed ${change} before another stage`, async () => {
+    await configureNativeTools();
+    const body = await begin(sourceBody("omitted-cap-tools"));
+    if (change === "mode")
+      await configureNativeTools({ applicationMode: "bounded-v1", nativeOutput: undefined });
+    if (change === "planning")
+      await configureNativeTools({
+        nativeOutput: { acknowledgeNoTokenCeiling: true, contextOutputTokens: 128 },
+      });
+    if (change === "tool-schema")
+      (
+        body.tools as Array<{ function: { parameters: Record<string, unknown> } }>
+      )[0].function.parameters.description = "Changed native schema";
+    if (change === "account") await updateProviderConnection(sonnetId, { isActive: false });
+    if (change === "missing-replay") clearClaudeThinkingStore();
+    const response = await POST(request({ ...body, messages: protocol() }));
+    assert.equal(response.status, 409);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.equal(readToolContinuations(key.id, comboId)[0].state, "issued");
+    if (change === "mode" || change === "planning") {
+      await configureNativeTools();
+      const resumed = await POST(request({ ...body, messages: protocol() }));
+      // Saving even identical values changes the authority revision. Reverting
+      // a policy must not resurrect a pin admitted under an earlier revision.
+      assert.equal(resumed.status, 409);
+      assert.equal(decisions, 1);
+      assert.equal(executions, 1);
+    }
+  });
+}
+for (const field of ["max_tokens", "max_completion_tokens"]) {
+  test(`native-output continuation preserves pin after recovery-added ${field} rejection`, async () => {
+    await configureNativeTools();
+    const body = await begin(sourceBody("omitted-cap-tools"));
+    const rejected = await POST(request({ ...body, [field]: 64, messages: protocol() }));
+    assert.equal(rejected.status, 409);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.equal(readToolContinuations(key.id, comboId)[0].state, "issued");
+    const permitted = await POST(request({ ...body, messages: protocol() }));
+    assert.equal(permitted.status, 200);
+    await consume(permitted);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 2);
+  });
+}
+for (const status of [401, 403, 429]) {
+  test(`native-output tool selector HTTP${status} never executes or falls back`, async () => {
+    await configureNativeTools();
+    denyDecision = status;
+    const response = await POST(request(sourceBody("omitted-cap-tools")));
+    assert.ok(response.status >= 400);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 0);
+    assert.equal(readToolContinuations(key.id, comboId).length, 0);
+  });
+}
+test("native-output tool unoffered choice cannot trigger execution", async () => {
+  await configureNativeTools();
+  selected = "unoffered-native-choice";
+  const response = await POST(request(sourceBody("omitted-cap-tools")));
+  assert.ok(response.status >= 400);
+  assert.equal(decisions, 1);
+  assert.equal(executions, 0);
+});
+for (const change of ["cancel", "policy", "connection"]) {
+  test(`native-output tool queued ${change} stops before execution`, async () => {
+    await configureNativeTools();
+    const abort = new AbortController();
+    afterDecision = async () => {
+      if (change === "cancel") abort.abort();
+      else if (change === "connection")
+        await updateProviderConnection(sonnetId, { isActive: false });
+      else
+        await configureNativeTools({
+          nativeOutput: { acknowledgeNoTokenCeiling: true, contextOutputTokens: 128 },
+        });
+    };
+    const response = await POST(request(sourceBody("omitted-cap-tools"), abort.signal));
+    assert.ok(response.status >= 400);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 0);
+  });
+}
 for (const order of [undefined, [], ["opus-high"]])
   test(`continuation preference ${order === undefined ? "missing" : order.length ? "excludes pin" : "empty"} cannot resurrect the pinned candidate`, async () => {
     const config = structuredClone(initialConfig) as {

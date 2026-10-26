@@ -3,6 +3,7 @@ import Button from "@/shared/components/Button";
 import Card from "@/shared/components/Card";
 import Input from "@/shared/components/Input";
 import Select from "@/shared/components/Select";
+import DifficultyOrderFields, { difficultyOrderLabel } from "./DifficultyOrderFields";
 import type { Candidate, Draft, EditorOptions } from "./decisionRoutingDraft";
 import {
   addProfile,
@@ -377,17 +378,40 @@ function TaskFields({
       </p>
       <p className="text-sm text-text-muted">
         {nativeOutput
-          ? "Tool and continuation preferences are retained but do not authorize requests in provider-native output mode."
+          ? "Native streaming function tools require a declared supported profile; a valid continuation keeps its original account, model and effort without another decision. Unsupported schemas and histories still reject."
           : "Tool requests use the tools order and only tool-capable profiles; a valid continuation keeps its original pair without a new decision."}
       </p>
+      <DifficultyOrderFields
+        orders={orders}
+        disabled={disabled}
+        update={(next) => update({ taskOrder: JSON.stringify(next, null, 2) })}
+      />
       {tasks.map((task) => {
         const label = Object.hasOwn(TASK_LABELS, task)
           ? TASK_LABELS[task]
-          : `${task} (custom mapping unknown)`;
+          : (difficultyOrderLabel(task) ?? `${task} (custom mapping unknown)`);
         const values = Object.hasOwn(orders, task) ? orders[task] : [];
         return (
           <fieldset key={task} className="rounded-control border border-border p-3">
             <legend>{label}</legend>
+            {difficultyOrderLabel(task) && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={disabled}
+                onClick={() =>
+                  update({
+                    taskOrder: JSON.stringify(
+                      Object.fromEntries(Object.entries(orders).filter(([key]) => key !== task)),
+                      null,
+                      2
+                    ),
+                  })
+                }
+              >
+                Use base preferences for {label}
+              </Button>
+            )}
             <ol>
               <OrderEntries
                 values={values}
@@ -474,7 +498,8 @@ export default function ProfileFields(props: Props) {
         Tool requests need a profile that declares tool support; image and nonstreaming tool
         requests are unsupported. Codex and AGY Opus High stay excluded from bounded output. The
         distinct provider-native output opt-in permits only their exact original profiles for
-        streaming text, without a provider-enforced token ceiling.
+        streaming text and guarded function-tool continuations, without a provider-enforced token
+        ceiling.
       </p>
       {!editable && (
         <p role="alert" className="mt-3">

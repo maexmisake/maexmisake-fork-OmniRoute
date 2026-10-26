@@ -19,6 +19,7 @@ import {
 import { useDecisionRoutingEditor } from "./useDecisionRoutingEditor";
 
 import ProfileFields from "./ProfileFields";
+import DecisionAttemptsPanel from "./DecisionAttemptsPanel";
 import OutputPolicyFields from "./OutputPolicyFields";
 
 function NativeFields({
@@ -329,6 +330,7 @@ export default function DecisionRoutingClient() {
             write. An unconfirmed response requires reloading saved settings before further edits.
             No automatic test, discovery or inference runs on this page.
           </p>
+          <DecisionAttemptsPanel key={editor.comboId} comboId={editor.comboId} />
           <ConnectionTierSettings
             connections={options.connections}
             disabled={disabled || editor.dirty}

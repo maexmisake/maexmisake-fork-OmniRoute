@@ -1,5 +1,8 @@
 import { ANTIGRAVITY_DEFAULT_SYSTEM } from "../../../open-sse/config/constants.ts";
-import { BOUNDED_AGY_MODEL } from "../../../open-sse/executors/antigravity/bounded.ts";
+import {
+  BOUNDED_AGY_MODEL,
+  BOUNDED_AGY_OPUS_MODEL,
+} from "../../../open-sse/executors/antigravity/bounded.ts";
 import type { ChatPolicyBody } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import { boundedJson } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import {
@@ -126,9 +129,10 @@ function provenParts(
   row: Row,
   parts: readonly GeminiToolJson[],
   names: ReadonlySet<string>,
-  correlationNamespace?: string
+  correlationNamespace?: string,
+  fixedNativeOpus = false
 ) {
-  const proof = validateGeminiToolParts(parts, names, { correlationNamespace });
+  const proof = validateGeminiToolParts(parts, names, { correlationNamespace, fixedNativeOpus });
   const calls = row.tool_calls!.map(canonicalClientToolCall);
   const expected = calls.map((call, ordinal) => ({
     ordinal,
@@ -181,7 +185,8 @@ class ToolWireContents {
   constructor(
     private body: ChatPolicyBody,
     private replay: ReadonlyMap<number, readonly GeminiToolJson[]>,
-    replayNamespaces?: ReadonlyMap<number, string>
+    replayNamespaces?: ReadonlyMap<number, string>,
+    private fixedNativeOpus = false
   ) {
     if (!(replay instanceof Map) || replay.size > 32) reject();
     // Bound all retained provider metadata before proof traversal or cloning.
@@ -193,7 +198,13 @@ class ToolWireContents {
     const row = this.body.messages[index],
       original = this.replay.get(index);
     if (!original) return reject();
-    const proof = provenParts(row, original, this.names, this.namespaces.get(index));
+    const proof = provenParts(
+      row,
+      original,
+      this.names,
+      this.namespaces.get(index),
+      this.fixedNativeOpus
+    );
     this.used.add(index);
     this.contents.push({ role: "model", parts: proof.parts });
     const responses = new Map<string, Row>();
@@ -250,11 +261,12 @@ export function buildGeminiToolWire(
   model: string,
   projectId: string,
   replay: ReadonlyMap<number, readonly GeminiToolJson[]>,
-  replayNamespaces?: ReadonlyMap<number, string>
+  replayNamespaces?: ReadonlyMap<number, string>,
+  options: { fixedNativeOpus?: boolean } = {}
 ): GeminiToolJson {
   const body = checkedBody(raw);
   if (
-    model !== BOUNDED_AGY_MODEL ||
+    model !== (options.fixedNativeOpus ? BOUNDED_AGY_OPUS_MODEL : BOUNDED_AGY_MODEL) ||
     typeof projectId !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(projectId) ||
     projectId === "__REQUIRES_GCP_PROJECT__"
@@ -262,14 +274,16 @@ export function buildGeminiToolWire(
     return reject();
   const functions = declarations(body);
   const request = {
-    contents: new ToolWireContents(body, replay, replayNamespaces).build(),
+    contents: new ToolWireContents(body, replay, replayNamespaces, options.fixedNativeOpus).build(),
     systemInstruction: { role: "system", parts: [{ text: ANTIGRAVITY_DEFAULT_SYSTEM }] },
-    generationConfig: {
-      maxOutputTokens: body.max_completion_tokens,
-      thinkingConfig: { thinkingLevel: "high" },
-      topK: 40,
-      topP: 1,
-    },
+    generationConfig: options.fixedNativeOpus
+      ? { topK: 40, topP: 1 }
+      : {
+          maxOutputTokens: body.max_completion_tokens,
+          thinkingConfig: { thinkingLevel: "high" },
+          topK: 40,
+          topP: 1,
+        },
     ...(functions.length
       ? {
           tools: [{ functionDeclarations: functions }],
@@ -283,7 +297,7 @@ export function buildGeminiToolWire(
   if (!boundedJson(envelope)) return reject();
   return envelope;
 }
-/** Exact expected-wire equality, including original ordered signed Parts and result order. */
+/** Exact expected-wire equality, including original ordered Parts and result order. */
 export function assertGeminiToolWire(actual: unknown, expected: unknown): void {
   if (canonicalToolJSON(actual) !== canonicalToolJSON(expected)) reject();
 }

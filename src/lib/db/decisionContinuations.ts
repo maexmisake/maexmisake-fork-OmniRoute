@@ -5,6 +5,7 @@ import {
   assertGeminiReplayCalls,
   parseGeminiToolReplay,
 } from "../decisionPolicy/geminiToolReplay";
+import { parseCodexToolReplay, assertCodexReplayCalls } from "../decisionPolicy/codexToolReplay";
 import { getDbInstance } from "./core";
 import {
   assertUncappedDecision,
@@ -318,6 +319,10 @@ function checkedThinking(value: string): void {
     fail("thinking_shape");
 }
 function checkedReplay(value: string, identity: AttemptIdentity): void {
+  if (identity.provider === "codex") {
+    parseCodexToolReplay(value, identity);
+    return;
+  }
   if (identity.provider !== "agy") return checkedThinking(value);
   assertGeminiReplayIdentity(identity);
   parseGeminiToolReplay(value, identity);
@@ -330,10 +335,13 @@ function validateIssue(origin: AttemptIdentity, proof: IssueProof): void {
     Buffer.byteLength(proof.expectedAuthority) > 1048576
   )
     fail("authority");
-  if (origin.provider === "agy" && proof.thinkingBlocksJSON === undefined) fail("replay_missing");
+  if (["agy", "codex"].includes(origin.provider) && proof.thinkingBlocksJSON === undefined)
+    fail("replay_missing");
   if (proof.thinkingBlocksJSON !== undefined) checkedReplay(proof.thinkingBlocksJSON, origin);
   if (origin.provider === "agy" && proof.thinkingBlocksJSON !== undefined)
     assertGeminiReplayCalls(proof.thinkingBlocksJSON, origin, proof.calls);
+  if (origin.provider === "codex" && proof.thinkingBlocksJSON !== undefined)
+    assertCodexReplayCalls(proof.thinkingBlocksJSON, origin, proof.calls);
 }
 function cleanupExpired(keyId: string, comboId: string, now: number): void {
   // Retain lineage while either the source or its claimed descendant can mint again.

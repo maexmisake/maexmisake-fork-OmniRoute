@@ -2,6 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { StrictValidationDispatch } from "../../executors/base/validationDispatch.ts";
 
 export type ApplicationToolHooks = {
+  /** Private native Responses replay projection, bound to the prepared tool turn. */
+  codexRequest?: (
+    model: string,
+    body: Record<string, unknown>,
+    stream: boolean,
+    credentials: Record<string, unknown> | null
+  ) => Record<string, unknown>;
   /** Exact private native request hook; runs before legacy signature/cache translation. */
   geminiRequest?: (
     model: string,

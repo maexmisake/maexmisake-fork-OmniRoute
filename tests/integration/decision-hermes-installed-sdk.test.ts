@@ -19,6 +19,7 @@ import {
   BOUNDED_AGY_STREAM_URL,
 } from "../../open-sse/executors/antigravity/bounded.ts";
 import { NATIVE_DECISION_CODEX_ENDPOINT } from "../../open-sse/executors/codex/nativeDecision.ts";
+import { __clearCodexToolReplayForTests } from "../../src/lib/decisionPolicy/codexToolReplay.ts";
 import { currentApplicationAttempt } from "../../open-sse/services/decisionPolicy/applicationContext.ts";
 import {
   createGeminiCorrelationNamespace,
@@ -42,6 +43,14 @@ let POST: (request: Request) => Promise<Response>;
 let key: Awaited<ReturnType<typeof createApiKey>>;
 let comboId: string, selectorId: string, sonnetId: string, opusId: string, agyId: string;
 let nativeTarget: "codex" | "agy" | null = null;
+let nativeToolMode = false;
+let nativeExecutionTools = false;
+let nativeMalformedArguments = false;
+let nativeLargeUsage = false;
+let nativeToolTurns = 1;
+let nativeParallelCalls = false;
+let nativeParallelMismatch = false;
+let nativeModel = "gpt-6-sol";
 let codexId: string;
 let delegated = false;
 let widePool = false;
@@ -111,7 +120,10 @@ function config(wide = false) {
   return {
     decisionPolicy: {
       enabled: true,
-      applicationMode: "bounded-v1",
+      applicationMode: nativeToolMode ? "provider-native-output-v1" : "bounded-v1",
+      ...(nativeToolMode
+        ? { nativeOutput: { acknowledgeNoTokenCeiling: true, contextOutputTokens: 64 } }
+        : {}),
       selection: {
         mode: "native",
         provider: "opencode-zen",
@@ -139,19 +151,25 @@ function config(wide = false) {
   };
 }
 // Source fragments + locked SDK + real handler only; not full Hermes or live-provider proof.
-async function configureNativeText(provider: "codex" | "agy") {
+async function configureNativeText(
+  provider: "codex" | "agy",
+  options: { tools?: boolean; model?: string; effort?: string } = {}
+) {
   nativeTarget = provider;
+  nativeExecutionTools = options.tools === true;
+  nativeModel = options.model ?? (provider === "codex" ? "gpt-6-sol" : BOUNDED_AGY_OPUS_MODEL);
+  effort = options.effort ?? "high";
   const target = {
     ...candidate("sonnet", "high"),
-    id: `${provider}-native-high`,
+    id: `${provider}-native-${effort}`,
     provider,
-    model: provider === "codex" ? "gpt-6-sol" : BOUNDED_AGY_OPUS_MODEL,
-    capabilities: { ...candidate("sonnet", "high").capabilities, tools: false },
+    model: nativeModel,
+    capabilities: { ...candidate("sonnet", effort).capabilities, tools: nativeExecutionTools },
     effort: {
-      mode: provider === "agy" ? "fixed" : "set",
-      value: "high",
-      supported: ["high"],
-      evidence: "Synthetic original-pool High contract; not live availability",
+      mode: provider === "agy" || nativeModel === "gpt-6-luna" ? "fixed" : "set",
+      value: effort,
+      supported: [effort],
+      evidence: "Synthetic original-pool declared effort; not live availability",
     },
   };
   const base = config();
@@ -163,16 +181,118 @@ async function configureNativeText(provider: "codex" | "agy") {
         nativeOutput: { acknowledgeNoTokenCeiling: true, contextOutputTokens: 64 },
         connections: {
           [target.id]: provider === "codex" ? codexId : agyId,
-          "sonnet-high": sonnetId,
+          [`sonnet-${effort}`]: sonnetId,
         },
         policy: {
           ...base.decisionPolicy.policy,
-          candidates: [target, candidate("sonnet", "high")],
-          taskOrder: { explanation: [target.id, "sonnet-high"] },
+          candidates: [target, candidate("sonnet", effort)],
+          taskOrder: {
+            explanation: [target.id, `sonnet-${effort}`],
+            tools: [target.id, `sonnet-${effort}`],
+            continuation: [target.id, `sonnet-${effort}`],
+          },
         },
       },
     },
   });
+}
+function nativeCodexToolResponse(model: string) {
+  const reasoning = {
+    type: "reasoning",
+    id: `rs_sdk_native_${executions}`,
+    summary: [],
+    encrypted_content: `synthetic-sdk-native-encrypted-reasoning-${executions}`,
+  };
+  const call = {
+    type: "function_call",
+    id: `fc_sdk_native_${executions}`,
+    call_id: executions === 1 ? "fixture-call-one" : "fixture-call-two",
+    name: "synthetic_tool",
+    arguments: '{"item":"synthetic lamp"}',
+    status: "completed",
+  };
+  const calls = [
+    call,
+    ...(nativeParallelCalls
+      ? [
+          {
+            ...call,
+            id: "fc_sdk_native_parallel",
+            call_id: "fixture-call-two",
+            arguments: '{"item":"synthetic switch"}',
+          },
+        ]
+      : []),
+  ];
+  const base = {
+    id: "synthetic-sdk-native-tool-response",
+    object: "response",
+    model,
+    status: "in_progress",
+    output: [],
+  };
+  const events: Array<Record<string, unknown>> = [
+    { type: "response.created", response: base },
+    { type: "response.output_item.added", output_index: 0, item: reasoning },
+    { type: "response.output_item.done", output_index: 0, item: reasoning },
+  ];
+  for (const [index, item] of calls.entries())
+    events.push(
+      {
+        type: "response.output_item.added",
+        output_index: index + 1,
+        item: { ...item, arguments: "", status: "in_progress" },
+      },
+      {
+        type: "response.function_call_arguments.delta",
+        output_index: index + 1,
+        item_id: item.id,
+        delta: item.arguments,
+      }
+    );
+  // Valid parallel completions arrive out of order. Identity remains tied to
+  // original output_index/item_id, while terminal.output is canonical order.
+  for (const [index, item] of [...calls.entries()].reverse())
+    events.push(
+      {
+        type: "response.function_call_arguments.done",
+        output_index: index + 1,
+        item_id: item.id,
+        arguments: item.arguments,
+      },
+      {
+        type: "response.output_item.done",
+        output_index: nativeParallelMismatch && index === 1 ? 1 : index + 1,
+        item: item,
+      }
+    );
+  events.push({
+    type: "response.completed",
+    response: {
+      ...base,
+      status: "completed",
+      end_turn: false,
+      output: [
+        reasoning,
+        ...calls.map((item, index) =>
+          nativeMalformedArguments && index === 0
+            ? { ...item, arguments: '{"item":"different"}' }
+            : item
+        ),
+      ],
+      usage: {
+        input_tokens: 8,
+        output_tokens: nativeLargeUsage ? 96 : 4,
+        total_tokens: nativeLargeUsage ? 104 : 12,
+        input_tokens_details: { cached_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: nativeLargeUsage ? 32 : 2 },
+      },
+    },
+  });
+  return new Response(
+    events.map((row) => `event: ${row.type}\ndata: ${JSON.stringify(row)}\n\n`).join(""),
+    { headers: { "content-type": "text/event-stream" } }
+  );
 }
 function nativeCodexResponse(model: string) {
   const id = "synthetic-sdk-native-response";
@@ -228,10 +348,10 @@ function nativeCodexResponse(model: string) {
         output: [item],
         usage: {
           input_tokens: 8,
-          output_tokens: 4,
-          total_tokens: 12,
+          output_tokens: nativeLargeUsage ? 96 : 4,
+          total_tokens: nativeLargeUsage ? 104 : 12,
           input_tokens_details: { cached_tokens: 0 },
-          output_tokens_details: { reasoning_tokens: 2 },
+          output_tokens_details: { reasoning_tokens: nativeLargeUsage ? 32 : 2 },
           cost: 123,
         },
       },
@@ -423,7 +543,7 @@ before(async () => {
       assert.deepEqual(
         ids.sort(),
         (nativeTarget
-          ? [`${nativeTarget}-native-high`, "sonnet-high"]
+          ? [`${nativeTarget}-native-${effort}`, `sonnet-${effort}`]
           : agy
             ? ["agy-high", "sonnet-high"]
             : delegated
@@ -437,7 +557,7 @@ before(async () => {
       assert.ok(!text.includes("synthetic lamp"));
       assert.ok(!text.includes('"item"'));
       const selected = nativeTarget
-        ? `${nativeTarget}-native-high`
+        ? `${nativeTarget}-native-${effort}`
         : agy
           ? "agy-high"
           : `sonnet-${effort}`;
@@ -461,16 +581,26 @@ before(async () => {
     if (nativeTarget) {
       const attempt = currentApplicationAttempt();
       assert.equal(attempt?.connectionId, nativeTarget === "codex" ? codexId : agyId);
-      assert.equal(attempt?.effort, "high");
+      assert.equal(attempt?.effort, effort);
       for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens"])
         assert.equal(body[field], undefined);
+      if (denial)
+        return Response.json(
+          {
+            error: { message: "Synthetic native SDK access denied" },
+            usage: { cost: 123, prompt_tokens: 8, completion_tokens: 4 },
+          },
+          { status: denial, headers: denial === 429 ? { "retry-after": "17" } : {} }
+        );
       if (nativeTarget === "codex") {
         assert.equal(url, NATIVE_DECISION_CODEX_ENDPOINT);
         assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-codex-oauth");
         assert.equal(headers.get("chatgpt-account-id"), "synthetic-sdk-workspace");
-        assert.equal(body.model, "gpt-6-sol");
-        assert.equal(body.reasoning.effort, "high");
-        return nativeCodexResponse(body.model);
+        assert.equal(body.model, nativeModel);
+        assert.equal(body.reasoning.effort, effort);
+        return nativeExecutionTools && executions <= nativeToolTurns
+          ? nativeCodexToolResponse(body.model)
+          : nativeCodexResponse(body.model);
       }
       assert.equal(url, BOUNDED_AGY_STREAM_URL);
       assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-agy-oauth");
@@ -483,15 +613,29 @@ before(async () => {
             candidates: [
               {
                 index: 0,
-                content: { role: "model", parts: [{ text: "Synthetic SDK OK" }] },
+                content: {
+                  role: "model",
+                  parts:
+                    nativeExecutionTools && executions === 1
+                      ? [
+                          {
+                            functionCall: {
+                              id: "fixture-call-one",
+                              name: "synthetic_tool",
+                              args: { item: "synthetic lamp" },
+                            },
+                          },
+                        ]
+                      : [{ text: "Synthetic SDK OK" }],
+                },
                 finishReason: "STOP",
               },
             ],
             usageMetadata: {
               promptTokenCount: 2,
-              candidatesTokenCount: 3,
-              thoughtsTokenCount: 1,
-              totalTokenCount: 6,
+              candidatesTokenCount: nativeLargeUsage ? 96 : 3,
+              thoughtsTokenCount: nativeLargeUsage ? 32 : 1,
+              totalTokenCount: nativeLargeUsage ? 130 : 6,
             },
           },
         })}\n\n`,
@@ -608,6 +752,7 @@ beforeEach(async () => {
   const { __resetRateLimitManagerForTests } =
     await import("../../open-sse/services/rateLimitManager.ts");
   await __resetRateLimitManagerForTests();
+  nativeToolMode = false;
   key = await createApiKey("synthetic-sdk-client-" + randomUUID(), "synthetic");
   for (const family of ["opus", "sonnet"]) {
     const row = await createProviderConnection({
@@ -623,8 +768,34 @@ beforeEach(async () => {
     if (family === "opus") opusId = String(row.id);
     else sonnetId = String(row.id);
   }
+  // Each synthetic account owns its failure state; an earlier deliberate 401
+  // must not contaminate a later independent native-provider contract case.
+  for (const provider of ["codex", "agy"] as const) {
+    const connection = await createProviderConnection({
+      provider,
+      authType: "oauth",
+      name: `synthetic-sdk-${provider}-${randomUUID()}`,
+      accessToken: `synthetic-sdk-${provider}-oauth`,
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      isActive: true,
+      testStatus: "active",
+      providerSpecificData:
+        provider === "codex"
+          ? { workspaceId: "synthetic-sdk-workspace" }
+          : { projectId: "synthetic-sdk-agy-project" },
+    });
+    if (provider === "codex") codexId = String(connection.id);
+    else agyId = String(connection.id);
+  }
   await updateCombo(comboId, { config: config() });
   nativeTarget = null;
+  nativeExecutionTools = false;
+  nativeMalformedArguments = false;
+  nativeLargeUsage = false;
+  nativeToolTurns = 1;
+  nativeParallelCalls = false;
+  nativeParallelMismatch = false;
+  nativeModel = "gpt-6-sol";
   agy = false;
   agyParallel = false;
   agyRefuse = false;
@@ -688,6 +859,7 @@ async function sdk(capture: ReturnType<typeof source>, mode: string) {
   const readers = new Map<number, ReadableStreamDefaultReader<Uint8Array>>();
   const requests: Record<string, unknown>[] = [];
   const observations: Record<string, unknown>[] = [];
+  const nativeClientText = new Map<number, string>();
   let result: Message | undefined,
     failure: unknown,
     stderrBytes = 0;
@@ -726,7 +898,10 @@ async function sdk(capture: ReturnType<typeof source>, mode: string) {
           requests.push(body);
           assert.equal(body.model, MODEL);
           assert.ok(!Object.hasOwn(body, "timeout"));
-          if (missingReplay && id === 2) clearClaudeThinkingStore();
+          if (missingReplay && id === 2) {
+            if (nativeTarget === "codex") __clearCodexToolReplayForTests();
+            else clearClaudeThinkingStore();
+          }
           const response = await POST(
             new Request("https://hermes.fixture.invalid/api/v1/chat/completions", {
               method: "POST",
@@ -736,6 +911,8 @@ async function sdk(capture: ReturnType<typeof source>, mode: string) {
           );
           observations.push({
             status: response.status,
+            outputPolicy: response.headers.get("x-omniroute-output-policy"),
+            outputLimitEnforced: response.headers.get("x-omniroute-output-limit-enforced"),
             reason: response.headers.get("x-omniroute-decision-reason"),
             keys: Object.keys(body),
             tools: body.tools,
@@ -760,6 +937,12 @@ async function sdk(capture: ReturnType<typeof source>, mode: string) {
         assert.equal(row.kind, "pull");
         try {
           const value = await reader.read();
+          if (!value.done && nativeTarget === "codex" && nativeExecutionTools) {
+            const text = (nativeClientText.get(id) ?? "") + new TextDecoder().decode(value.value);
+            assert.ok(text.length <= 1048576);
+            assert.equal(text.includes("synthetic-sdk-native-encrypted-reasoning"), false);
+            nativeClientText.set(id, text);
+          }
           send(
             value.done
               ? { kind: "end", id }
@@ -815,6 +998,320 @@ const options = {
   skip: AVAILABLE ? false : "Exact external SDK venv is not configured; no SDK execution",
   timeout: 40000,
 };
+for (const provider of ["claude", "agy"] as const) {
+  test(
+    `installed SDK native-output original omitted-cap-tools ${provider} High continues without reselection`,
+    options,
+    async () => {
+      nativeToolMode = true;
+      if (provider === "agy") await configureAgy(false);
+      else await updateCombo(comboId, { config: config() });
+      const capture = source("omitted-cap-tools");
+      const originalKwargs = structuredClone(capture.capturedKwargs);
+      assert.equal(capture.capturedKwargs.max_tokens, undefined);
+      assert.equal(capture.capturedKwargs.tools[0].function.name, "synthetic_tool");
+      assert.equal(capture.driverFlags.stream, true);
+      const { result, requests, observations } = await sdk(capture, "tool-loop");
+      assert.equal(result.ok, true, JSON.stringify({ error: result.errorClass, observations }));
+      assert.deepEqual(capture.capturedKwargs, originalKwargs);
+      assert.equal(result.fullHermesExecuted, false);
+      assert.equal(result.actualToolsRun, false);
+      assert.equal(requests.length, 2);
+      for (const request of requests) {
+        assert.equal(request.reasoning_effort, "high");
+        assert.equal(request.max_tokens, undefined);
+        assert.equal(request.max_completion_tokens, undefined);
+      }
+      assert.equal(decisions, 1);
+      assert.equal(executions, 2);
+      const receipts = readDecisionAttempts(key.id);
+      assert.equal(receipts.length, 3);
+      for (const receipt of receipts.filter((row) => row.lane === "execution")) {
+        assert.equal(receipt.provider, provider);
+        assert.equal(receipt.model, provider === "agy" ? BOUNDED_AGY_MODEL : "claude-sonnet-5-5");
+        assert.equal(receipt.effort, "high");
+        assert.equal(receipt.connection_id, provider === "agy" ? agyId : sonnetId);
+        assert.equal(receipt.application_status, 200);
+      }
+      assert.equal(readToolContinuations(key.id, comboId).length, 1);
+      assert.equal(readToolContinuations(key.id, comboId)[0].state, "consumed");
+    }
+  );
+}
+const nativeToolPairs = [
+  ["codex", "gpt-6-luna", "max"],
+  ...["gpt-5.6-sol", "gpt-6-sol"].flatMap((model) =>
+    ["medium", "high", "xhigh", "max"].map((level) => ["codex", model, level])
+  ),
+  ["agy", BOUNDED_AGY_OPUS_MODEL, "high"],
+] as const;
+for (const [provider, model, level] of nativeToolPairs) {
+  test(
+    `installed SDK native-output original ${provider} ${model} ${level} tool loop preserves private replay`,
+    options,
+    async () => {
+      assert.ok(provider === "codex" || provider === "agy");
+      await configureNativeText(provider, { tools: true, model, effort: level });
+      const capture = source(level === "high" ? "omitted-cap-tools" : `omitted-cap-tools-${level}`);
+      const originalKwargs = structuredClone(capture.capturedKwargs);
+      const { result, requests, observations } = await sdk(capture, "tool-loop");
+      assert.equal(result.ok, true, JSON.stringify({ error: result.errorClass, observations }));
+      assert.deepEqual(capture.capturedKwargs, originalKwargs);
+      assert.equal(result.fullHermesExecuted, false);
+      assert.equal(result.actualToolsRun, false);
+      assert.equal(requests.length, 2);
+      for (const request of requests) {
+        assert.equal(request.reasoning_effort, level);
+        for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens"])
+          assert.equal(request[field], undefined);
+      }
+      assert.equal(decisions, 1);
+      assert.equal(executions, 2);
+      const rows = readDecisionAttempts(key.id);
+      assert.equal(rows.length, 3);
+      for (const row of rows.filter((item) => item.lane === "execution")) {
+        assert.equal(row.provider, provider);
+        assert.equal(row.model, model);
+        assert.equal(row.effort, level);
+        assert.equal(row.connection_id, provider === "codex" ? codexId : agyId);
+        assert.equal(row.cost_usd, null);
+        assert.equal(row.application_status, 200);
+      }
+      if (provider === "codex") {
+        assert.ok(JSON.stringify(wires[1]).includes("synthetic-sdk-native-encrypted-reasoning"));
+        assert.equal(
+          JSON.stringify(requests).includes("synthetic-sdk-native-encrypted-reasoning"),
+          false
+        );
+        assert.ok(
+          (wires[1].input as Array<Record<string, unknown>>).some(
+            (item) => item.type === "function_call_output" && item.call_id === "fixture-call-one"
+          )
+        );
+      } else {
+        assert.equal(JSON.stringify(wires[1]).includes("thoughtSignature"), false);
+        assert.equal(wires[1].request.generationConfig.maxOutputTokens, undefined);
+      }
+      assert.equal(readToolContinuations(key.id, comboId)[0].state, "consumed");
+    }
+  );
+}
+test(
+  "installed SDK native-output Codex preserves explicit parallel false and rejects disobeying multi-call output",
+  options,
+  async () => {
+    await configureNativeText("codex", { tools: true });
+    nativeParallelCalls = true;
+    const capture = source("omitted-cap-tools-no-parallel");
+    assert.equal(capture.capturedKwargs.parallel_tool_calls, false);
+    const { result, requests } = await sdk(capture, "tool-loop");
+    assert.equal(result.ok, false);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].parallel_tool_calls, false);
+    assert.equal(wires[0].parallel_tool_calls, false);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.deepEqual(readToolContinuations(key.id, comboId), []);
+  }
+);
+for (const mismatch of [false, true]) {
+  test(
+    `installed SDK native-output Codex parallel out-of-order completions ${mismatch ? "reject mismatched identity" : "preserve both calls and reversed results"}`,
+    options,
+    async () => {
+      await configureNativeText("codex", { tools: true });
+      nativeParallelCalls = true;
+      nativeParallelMismatch = mismatch;
+      const capture = source("omitted-cap-tools-parallel");
+      assert.equal(capture.capturedKwargs.parallel_tool_calls, true);
+      const { result, requests, observations } = await sdk(capture, "tool-loop");
+      assert.equal(
+        result.ok,
+        !mismatch,
+        JSON.stringify({ error: result.errorClass, observations })
+      );
+      assert.equal(decisions, 1);
+      assert.equal(executions, mismatch ? 1 : 2);
+      assert.equal(requests.length, mismatch ? 1 : 2);
+      if (mismatch) {
+        assert.deepEqual(readToolContinuations(key.id, comboId), []);
+        return;
+      }
+      assert.equal((result.summaries as Array<Record<string, unknown>>)[0].callCount, 2);
+      assert.equal(wires[0].parallel_tool_calls, true);
+      const input = wires[1].input as Array<Record<string, unknown>>;
+      assert.deepEqual(
+        input.filter((item) => item.type === "function_call_output").map((item) => item.call_id),
+        ["fixture-call-two", "fixture-call-one"]
+      );
+      assert.deepEqual(
+        input
+          .filter((item) => item.type === "function_call")
+          .map((item) => JSON.parse(String(item.arguments)).item),
+        ["synthetic lamp", "synthetic switch"]
+      );
+      assert.equal(readToolContinuations(key.id, comboId)[0].state, "consumed");
+    }
+  );
+}
+test(
+  "native-output Codex third actual-handler turn retains two SDK-established origin groups without reselection",
+  options,
+  async () => {
+    await configureNativeText("codex", { tools: true });
+    nativeToolTurns = 2;
+    const { result, requests, observations } = await sdk(source("omitted-cap-tools"), "tool-loop");
+    assert.equal(result.ok, true, JSON.stringify({ error: result.errorClass, observations }));
+    assert.equal(requests.length, 2);
+    const summary = (result.summaries as Array<Record<string, unknown>>)[1];
+    const calls = summary.calls as Array<{ id: string; name: string; arguments: string }>;
+    assert.equal(calls.length, 1);
+    // This third request is an explicit synthetic handler fixture, constructed
+    // from actual SDK call values; the bounded SDK driver itself still runs twice.
+    const thirdBody = {
+      ...requests[1],
+      messages: [
+        ...(requests[1].messages as unknown[]),
+        {
+          role: "assistant",
+          content: summary.content,
+          tool_calls: calls.map((call) => ({
+            id: call.id,
+            type: "function",
+            function: { name: call.name, arguments: call.arguments },
+          })),
+        },
+        ...calls.map((call) => ({
+          role: "tool",
+          tool_call_id: call.id,
+          content: "Synthetic second result",
+        })),
+      ],
+    };
+    const response = await POST(
+      new Request("https://hermes.fixture.invalid/api/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key.key}` },
+        body: JSON.stringify(thirdBody),
+      })
+    );
+    assert.equal(response.status, 200, response.headers.get("x-omniroute-decision-reason") ?? "");
+    const text = await response.text();
+    assert.match(text, /Synthetic SDK OK/);
+    assert.equal(text.includes("synthetic-sdk-native-encrypted-reasoning"), false);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 3);
+    const input = wires[2].input as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      input.filter((item) => item.type === "function_call_output").map((item) => item.call_id),
+      ["fixture-call-one", "fixture-call-two"]
+    );
+    assert.ok(JSON.stringify(input).includes("synthetic-sdk-native-encrypted-reasoning-1"));
+    assert.ok(JSON.stringify(input).includes("synthetic-sdk-native-encrypted-reasoning-2"));
+    const pins = readToolContinuations(key.id, comboId);
+    assert.equal(pins.length, 2);
+    assert.ok(pins.every((pin) => pin.state === "consumed"));
+    const executionsRows = readDecisionAttempts(key.id).filter((row) => row.lane === "execution");
+    assert.equal(executionsRows.length, 3);
+    assert.ok(
+      executionsRows.every(
+        (row) =>
+          row.connection_id === codexId &&
+          row.effort === "high" &&
+          row.model === "gpt-6-sol" &&
+          row.cost_usd === null
+      )
+    );
+  }
+);
+for (const provider of ["codex", "agy"] as const) {
+  test(
+    `installed SDK native-output ${provider} tools account usage beyond planning allowance without claiming a ceiling`,
+    options,
+    async () => {
+      await configureNativeText(provider, { tools: true });
+      nativeLargeUsage = true;
+      const { result, observations } = await sdk(source("omitted-cap-tools"), "tool-loop");
+      assert.equal(result.ok, true, JSON.stringify({ error: result.errorClass, observations }));
+      assert.equal(decisions, 1);
+      assert.equal(executions, 2);
+      for (const row of readDecisionAttempts(key.id).filter((item) => item.lane === "execution")) {
+        assert.equal(row.output_tokens, provider === "agy" ? 128 : 96);
+        assert.equal(row.reasoning_tokens, 32);
+        assert.equal(row.cost_usd, null);
+      }
+      for (const observed of observations) {
+        assert.equal(observed.outputPolicy, "provider-native");
+        assert.equal(observed.outputLimitEnforced, "false");
+      }
+    }
+  );
+}
+for (const provider of ["codex", "agy"] as const) {
+  for (const status of [401, 403, 429]) {
+    test(
+      `installed SDK native-output ${provider} tools HTTP${status} is terminal with unknown usage and no pin`,
+      options,
+      async () => {
+        await configureNativeText(provider, { tools: true });
+        denial = status;
+        const { result, requests } = await sdk(source("omitted-cap-tools"), "tool-loop");
+        assert.equal(result.ok, false);
+        assert.equal(requests.length, 1);
+        assert.equal(decisions, 1);
+        assert.equal(executions, 1);
+        assert.deepEqual(readToolContinuations(key.id, comboId), []);
+        const execution = readDecisionAttempts(key.id).find((row) => row.lane === "execution")!;
+        assert.equal(execution.http_status, status);
+        assert.equal(execution.input_tokens, null);
+        assert.equal(execution.output_tokens, null);
+        assert.equal(execution.cost_usd, null);
+      }
+    );
+  }
+}
+test(
+  "installed SDK native-output Codex tools fail closed after private replay loss",
+  options,
+  async () => {
+    await configureNativeText("codex", { tools: true });
+    missingReplay = true;
+    const { result, requests, observations } = await sdk(source("omitted-cap-tools"), "tool-loop");
+    assert.equal(result.ok, false);
+    assert.equal(requests.length, 2);
+    assert.equal(observations[1].status, 409);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.equal(readToolContinuations(key.id, comboId)[0].state, "issued");
+  }
+);
+test(
+  "installed SDK native-output Codex tools reject changed terminal arguments without authority",
+  options,
+  async () => {
+    await configureNativeText("codex", { tools: true });
+    nativeMalformedArguments = true;
+    const { result, requests } = await sdk(source("omitted-cap-tools"), "tool-loop");
+    assert.equal(result.ok, false);
+    assert.equal(requests.length, 1);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.deepEqual(readToolContinuations(key.id, comboId), []);
+  }
+);
+test(
+  "installed SDK native-output Codex cancellation cannot issue continuation authority",
+  options,
+  async () => {
+    await configureNativeText("codex", { tools: true });
+    const { result, requests } = await sdk(source("omitted-cap-tools"), "cancel");
+    assert.equal(result.ok, true);
+    assert.equal(requests.length, 1);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.deepEqual(readToolContinuations(key.id, comboId), []);
+  }
+);
 for (const provider of ["codex", "agy"] as const) {
   test(
     `installed SDK native-output omitted-cap source reaches original ${provider} High once`,

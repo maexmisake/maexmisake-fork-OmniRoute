@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { PolicyRequest } from "./contract.ts";
+import { assessTaskDifficulty } from "./taskDifficulty.ts";
 
 const effort = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const message = z
@@ -83,6 +84,16 @@ const textAliases = requestBody
       context.addIssue({ code: "custom", message: "Conflicting effort directives" });
   });
 export type ProviderNativeOutput = { contextOutputTokens: number };
+function orphanToolControls(body: {
+  tools?: unknown[];
+  tool_choice?: unknown;
+  parallel_tool_calls?: unknown;
+}): boolean {
+  return (
+    !body.tools?.length &&
+    (body.tool_choice !== undefined || body.parallel_tool_calls !== undefined)
+  );
+}
 function normalizeText(
   raw: unknown,
   allowEnabledAlias: boolean,
@@ -99,10 +110,7 @@ function normalizeText(
       parsed.data.max_tokens !== undefined ||
       parsed.data.max_completion_tokens !== undefined ||
       parsed.data.stream !== true ||
-      parsed.data.tools?.length ||
-      parsed.data.tool_choice !== undefined ||
-      parsed.data.parallel_tool_calls !== undefined ||
-      parsed.data.messages.some((row) => row.role === "tool" || row.tool_calls?.length)
+      orphanToolControls(parsed.data)
     )
       return null;
   } else if (
@@ -272,6 +280,12 @@ function continuationValid(body: ChatPolicyBody): boolean {
   }
   return offered.size === answered.size;
 }
+function explicitCodingIntent(text: string): boolean {
+  // Intent chooses an existing operator task key, not a difficulty or model rank.
+  return /\b(?:write|create|build|generate|implement|refactor|fix|optimi[sz]e|modify|update|complete|test|review)\b[\s\S]{0,160}\b(?:code|function|program|script|algorithm|class|module|service|api|parser|test|migration)\b/i.test(
+    text
+  );
+}
 function classifyTask(
   text: string,
   inputTokens: number,
@@ -280,13 +294,17 @@ function classifyTask(
   continuation: boolean,
   reasoning: boolean
 ): string {
-  let task = /\b(explain|describe|summarize|what|why|translate)\b/i.test(text)
-    ? "explanation"
-    : "unresolved";
+  let task =
+    /\b(explain|describe|summarize|what|why|translate|rewrite|reformat|research|compare|extract)\b/i.test(
+      text
+    )
+      ? "explanation"
+      : "unresolved";
   if (reasoning)
     task = /\b(debug|algorithm|function|code|program|invariant)\b/i.test(text)
       ? "complex_code"
       : "reasoning";
+  if (explicitCodingIntent(text)) task = "complex_code";
   if (inputTokens > 32000) task = "long_context";
   if (tools) task = "tools";
   if (images) task = "image";
@@ -315,6 +333,7 @@ export function extractRequestFacts(
   if (!Number.isSafeInteger(inputTokens) || inputTokens === null || inputTokens < 0)
     return { ok: false, reason: "context_unknown" };
   const tools = !!body.tools?.length || continuation;
+  const assessment = assessTaskDifficulty(contents.text);
   const reasoning = /\b(prove|derive|reason|debug|complex|algorithm|invariant)\b/i.test(
     contents.text
   );
@@ -331,6 +350,7 @@ export function extractRequestFacts(
     body,
     facts: {
       task,
+      difficulty: assessment.difficulty,
       contextTokens: inputTokens + body.max_completion_tokens,
       images: contents.images,
       tools,
@@ -341,6 +361,7 @@ export function extractRequestFacts(
       state: JSON.stringify({
         extractor: options.nativeOutput ? "provider-native-output-v1" : "bounded-chat-v1",
         task,
+        assessment,
         reasoning,
         images: contents.images,
         tools,

@@ -5,8 +5,12 @@ import {
   inspectToolRequest,
   type InspectedToolRequest,
 } from "../../../open-sse/services/decisionPolicy/toolContract.ts";
-import type { ChatPolicyBody } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
+import type {
+  ChatPolicyBody,
+  ProviderNativeOutput,
+} from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import type { AutomaticPlan } from "./applicationCombo";
+import { ApplicationCodexTools } from "./applicationCodexTools";
 import { ApplicationGeminiTools } from "./applicationGeminiTools";
 import type { AttemptIdentity } from "../db/decisionAttempts";
 import { finishDecisionApplicationWithMetadata } from "../db/decisionAttempts";
@@ -142,8 +146,11 @@ function proofRequest(
     completedCallIds: request.completedCallIds,
   };
 }
-export function applicationToolRequest(raw: unknown): InspectedToolRequest | null {
-  const request = inspectToolRequest(raw);
+export function applicationToolRequest(
+  raw: unknown,
+  nativeOutput?: ProviderNativeOutput
+): InspectedToolRequest | null {
+  const request = inspectToolRequest(raw, nativeOutput);
   if (!request) return null;
   // The first continuation slice is the existing Hermes text SSE protocol.
   if ((request.body.tools?.length || request.current) && request.body.stream !== true) return null;
@@ -156,6 +163,7 @@ export class ApplicationTools {
   private blocks = new Map<string, ClaudeSignedThinkingBlock[]>();
   private replay: Record<string, string> = {};
   private gemini?: ApplicationGeminiTools;
+  private codex?: ApplicationCodexTools;
   constructor(
     private plan: AutomaticPlan,
     private keyId: string,
@@ -166,6 +174,10 @@ export class ApplicationTools {
       this.proof = proofRequest(plan, keyId, request);
       this.continuation = prepareToolContinuation(this.proof);
       if (this.continuation.replayOrigins.length !== request.history.length) fail();
+      if (this.continuation.binding.provider === "codex") {
+        this.codex = new ApplicationCodexTools(plan, keyId, request, this.continuation, this.proof);
+        return;
+      }
       if (this.continuation.binding.provider === "agy") {
         this.gemini = new ApplicationGeminiTools(
           plan,
@@ -181,11 +193,13 @@ export class ApplicationTools {
     }
   }
   claim(identity: AttemptIdentity): void {
+    if (this.codex) return this.codex.claim(identity);
     if (this.gemini) return this.gemini.claim(identity);
     if (!this.proof) return fail();
     claimToolContinuation(this.proof, identity, this.replay);
   }
   assertFresh(identity: AttemptIdentity): void {
+    if (this.codex) return this.codex.assertFresh(identity);
     if (this.gemini) return this.gemini.assertFresh(identity);
     if (this.proof) assertToolContinuationClaim(this.proof, identity, this.replay);
   }
@@ -210,6 +224,11 @@ export class ApplicationTools {
     return this.thinkingAt(originalIndex);
   }
   attach(identity: AttemptIdentity, authority: string): ApplicationToolHooks {
+    if (identity.provider === "codex") {
+      this.codex ??= new ApplicationCodexTools(this.plan, this.keyId, this.request);
+      return this.codex.attach(identity, authority);
+    }
+    if (this.codex) return fail();
     if (identity.provider === "agy") {
       this.gemini ??= new ApplicationGeminiTools(this.plan, this.keyId, this.request);
       return this.gemini.attach(identity, authority);

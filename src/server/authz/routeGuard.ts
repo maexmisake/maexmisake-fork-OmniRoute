@@ -257,6 +257,7 @@ export const ALWAYS_PROTECTED_API_PATTERNS: ReadonlyArray<RegExp> = [
   // the pipeline could treat a cookie-bearing write as anonymous and skip its
   // normal dashboard Origin/CSRF check before the handler accepts the session.
   /^\/api\/decision-routing\/options\/?$/,
+  /^\/api\/decision-routing\/attempts\/?$/,
   /^\/api\/decision-routing\/connections\/[^/]+\/tier\/?$/,
   /^\/api\/combos\/[^/]+\/decision-policy\/?$/,
   // `export` hands the caller the raw token; `apply-local` writes it into the

@@ -296,13 +296,15 @@ function emitFunctionCallPart(
   });
 }
 
-function isBoundedAgyTextOnly(): boolean {
+function isPrivateAgyProjection(): boolean {
   const attempt = currentApplicationAttempt();
+  if (attempt?.provider !== "agy" || attempt.effort !== "high") return false;
+  if (attempt.executionContract === "agy-gemini-high-v1")
+    return attempt.model === "gemini-3.8-flash-high";
   return (
-    attempt?.executionContract === "agy-gemini-high-v1" &&
-    attempt.provider === "agy" &&
-    attempt.model === "gemini-3.8-flash-high" &&
-    attempt.effort === "high"
+    attempt.executionContract === "agy-opus-fixed-native-output-v1" &&
+    attempt.model === "claude-opus-4-6-thinking" &&
+    !!attempt.nativeOutput
   );
 }
 
@@ -310,7 +312,12 @@ function isBoundedAgyTextOnly(): boolean {
 export function geminiToOpenAIResponse(chunk, state) {
   if (!chunk) return null;
   const automatic = currentApplicationAttempt();
-  if (automatic?.executionContract === "agy-gemini-high-v1" && automatic.tools) {
+  if (
+    automatic?.tools &&
+    (automatic.executionContract === "agy-gemini-high-v1" ||
+      (automatic.executionContract === "agy-opus-fixed-native-output-v1" &&
+        isPrivateAgyProjection()))
+  ) {
     // Raw usage may already be settled; projection must not reopen its lease.
     // Tool authority is independently rechecked by the atomic publication step.
     automatic.signal.throwIfAborted();
@@ -498,7 +505,7 @@ export function geminiToOpenAIResponse(chunk, state) {
           : partText;
         if (!afterReasoning) continue;
         // This prepared text-only lane never promotes assistant prose to a tool call.
-        if (isBoundedAgyTextOnly()) {
+        if (isPrivateAgyProjection()) {
           emitTextDelta(afterReasoning, state, results);
           continue;
         }

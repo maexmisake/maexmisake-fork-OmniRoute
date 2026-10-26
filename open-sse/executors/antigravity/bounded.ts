@@ -1,4 +1,7 @@
-import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
+import {
+  currentApplicationAttempt,
+  type ApplicationAttempt,
+} from "../../services/decisionPolicy/applicationContext.ts";
 import { ANTIGRAVITY_RUNTIME_BASE_URLS } from "../../config/antigravityUpstream.ts";
 import { isCliCompatEnabled } from "../../config/cliFingerprints.ts";
 import { parseTokenExpiryMs } from "../../../src/lib/tokenHealthCheckExpiry";
@@ -11,6 +14,10 @@ export const BOUNDED_AGY_USER_AGENT = "OmniRoute-Antigravity/1.0";
 export const BOUNDED_AGY_STREAM_URL = `${ANTIGRAVITY_RUNTIME_BASE_URLS[0]}/v1internal:streamGenerateContent?alt=sse`;
 function reject(): never {
   throw new Error("decision_agy_contract_unsupported");
+}
+function assertNativeOpusContext(attempt: ApplicationAttempt): void {
+  if (!attempt.nativeOutput || (attempt.tools && typeof attempt.tools.geminiRequest !== "function"))
+    reject();
 }
 /** Internal request-local capability; no HTTP field or provider alias can enable it. */
 export function boundedAgyContext(model: string, credentials: ProviderCredentials) {
@@ -26,7 +33,7 @@ export function boundedAgyContext(model: string, credentials: ProviderCredential
     attempt.dispatch.singleAttempt !== true
   )
     reject();
-  if (opus && (!attempt.nativeOutput || attempt.tools)) reject();
+  if (opus) assertNativeOpusContext(attempt);
   attempt.signal.throwIfAborted();
   return attempt;
 }

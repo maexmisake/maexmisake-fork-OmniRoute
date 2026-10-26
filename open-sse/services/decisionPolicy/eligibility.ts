@@ -69,13 +69,21 @@ export function exclusionReasons(
   return reasons;
 }
 
+/** A difficulty preference is active only when the operator explicitly stores its order. */
+export function taskPreferenceKey(config: PolicyConfig, request: PolicyRequest): string {
+  const scoped = request.difficulty ? `${request.task}:${request.difficulty}` : null;
+  return scoped && Object.hasOwn(config.taskOrder, scoped) ? scoped : request.task;
+}
+
 export function eligibleCandidates(
   config: PolicyConfig,
   request: PolicyRequest,
   snapshot: Snapshot,
   trace: Trace[]
 ): Candidate[] {
-  const order = Object.hasOwn(config.taskOrder, request.task) ? config.taskOrder[request.task] : [];
+  const key = taskPreferenceKey(config, request);
+  const order = Object.hasOwn(config.taskOrder, key) ? config.taskOrder[key] : [];
+  if (key !== request.task) trace.push({ phase: "preference", reason: "difficulty_scoped_order" });
   const byId = new Map(config.candidates.map((candidate) => [candidate.id, candidate]));
   const eligible: Candidate[] = [];
   for (const candidate of config.candidates) {

@@ -316,9 +316,9 @@ describe("decision routing settings", () => {
     expect(screen.getByText(/Acknowledge that provider-native output/)).toBeTruthy();
     const copy = document.body.textContent ?? "";
     expect(copy).toContain("Caller max_tokens or max_completion_tokens is rejected");
-    expect(copy).toContain("Only streaming text is supported");
+    expect(copy).toContain("Only streaming requests are supported");
     expect(copy).toContain(
-      "Tool and continuation preferences are retained but do not authorize requests in provider-native output mode."
+      "Native streaming function tools require a declared supported profile; a valid continuation keeps its original account, model and effort without another decision. Unsupported schemas and histories still reject."
     );
     expect(copy).toContain("Missing usage or cost remains unknown");
     expect(copy).toContain("Financially or token-capped client keys remain unsupported");
@@ -662,7 +662,7 @@ describe("decision routing settings", () => {
     expect(draftOrders.image).toEqual([]);
     expect(saveButton().disabled).toBe(true);
     expect(screen.getByText(/reserved task category __proto__ cannot be saved/)).toBeTruthy();
-    expect(screen.getByText("Image (unsupported)")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Image (unsupported)" })).toBeTruthy();
     expect(api.calls.filter((call) => call.init.method === "PUT")).toHaveLength(0);
   });
 

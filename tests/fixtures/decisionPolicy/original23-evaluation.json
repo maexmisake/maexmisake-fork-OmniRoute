@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "sourceSha256": "94ede7d46a28347417694ddee3cf8086117c7bf42a2c366e9bda1a763b2e7f27",
+  "evidence": "Historical user preference order, not measured quality. Canonical identities/capabilities below are synthetic offline declarations, not live availability or entitlement.",
+  "liveCapabilities": "unknown",
+  "syntheticCapabilities": {
+    "text": true,
+    "reasoning": true,
+    "images": false,
+    "tools": false,
+    "contextTokens": 100000
+  },
+  "profiles": [
+    {
+      "historicalId": "agy/claude-opus-4-6-thinking",
+      "id": "agy_claude-opus-4-6-thinking",
+      "provider": "agy",
+      "model": "claude-opus-4-6-thinking",
+      "effort": "high",
+      "fixed": true
+    },
+    {
+      "historicalId": "cc/claude-haiku-5-5-medium",
+      "id": "cc_claude-haiku-5-5-medium",
+      "provider": "claude",
+      "model": "claude-haiku-5-5",
+      "effort": "medium",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-6-luna-max",
+      "id": "cx_gpt-6-luna-max",
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "fixed": true
+    },
+    {
+      "historicalId": "cc/claude-haiku-5-5-high",
+      "id": "cc_claude-haiku-5-5-high",
+      "provider": "claude",
+      "model": "claude-haiku-5-5",
+      "effort": "high",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-5.6-sol-medium",
+      "id": "cx_gpt-5_6-sol-medium",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "effort": "medium",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-6-sol-medium",
+      "id": "cx_gpt-6-sol-medium",
+      "provider": "codex",
+      "model": "gpt-6-sol",
+      "effort": "medium",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-sonnet-5-5-medium",
+      "id": "cc_claude-sonnet-5-5-medium",
+      "provider": "claude",
+      "model": "claude-sonnet-5-5",
+      "effort": "medium",
+      "fixed": false
+    },
+    {
+      "historicalId": "agy/gemini-3.8-flash-high",
+      "id": "agy_gemini-3_8-flash-high",
+      "provider": "agy",
+      "model": "gemini-3.8-flash-high",
+      "effort": "high",
+      "fixed": true
+    },
+    {
+      "historicalId": "cc/claude-haiku-5-5-xhigh",
+      "id": "cc_claude-haiku-5-5-xhigh",
+      "provider": "claude",
+      "model": "claude-haiku-5-5",
+      "effort": "xhigh",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-5.6-sol-high",
+      "id": "cx_gpt-5_6-sol-high",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-6-sol-high",
+      "id": "cx_gpt-6-sol-high",
+      "provider": "codex",
+      "model": "gpt-6-sol",
+      "effort": "high",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-haiku-5-5-max",
+      "id": "cc_claude-haiku-5-5-max",
+      "provider": "claude",
+      "model": "claude-haiku-5-5",
+      "effort": "max",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-5.6-sol-xhigh",
+      "id": "cx_gpt-5_6-sol-xhigh",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "effort": "xhigh",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-6-sol-xhigh",
+      "id": "cx_gpt-6-sol-xhigh",
+      "provider": "codex",
+      "model": "gpt-6-sol",
+      "effort": "xhigh",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-sonnet-5-5-high",
+      "id": "cc_claude-sonnet-5-5-high",
+      "provider": "claude",
+      "model": "claude-sonnet-5-5",
+      "effort": "high",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-5.6-sol-max",
+      "id": "cx_gpt-5_6-sol-max",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "effort": "max",
+      "fixed": false
+    },
+    {
+      "historicalId": "cx/gpt-6-sol-max",
+      "id": "cx_gpt-6-sol-max",
+      "provider": "codex",
+      "model": "gpt-6-sol",
+      "effort": "max",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-opus-5-5-medium",
+      "id": "cc_claude-opus-5-5-medium",
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-sonnet-5-5-xhigh",
+      "id": "cc_claude-sonnet-5-5-xhigh",
+      "provider": "claude",
+      "model": "claude-sonnet-5-5",
+      "effort": "xhigh",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-opus-5-5-high",
+      "id": "cc_claude-opus-5-5-high",
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-opus-5-5-xhigh",
+      "id": "cc_claude-opus-5-5-xhigh",
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "xhigh",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-sonnet-5-5-max",
+      "id": "cc_claude-sonnet-5-5-max",
+      "provider": "claude",
+      "model": "claude-sonnet-5-5",
+      "effort": "max",
+      "fixed": false
+    },
+    {
+      "historicalId": "cc/claude-opus-5-5-max",
+      "id": "cc_claude-opus-5-5-max",
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "max",
+      "fixed": false
+    }
+  ]
+}
