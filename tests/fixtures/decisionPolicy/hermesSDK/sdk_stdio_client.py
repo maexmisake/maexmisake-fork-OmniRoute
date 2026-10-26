@@ -32,7 +32,7 @@ def emit(value):
 
 
 def check_versions():
-    selected = json.loads((ROOT / "selected-wheels.json").read_text())
+    selected = json.loads((ROOT / "selected-wheels.json").read_text(encoding="utf-8"))
     for package in selected["packages"]:
         if importlib.metadata.version(package["name"]) != package["version"]:
             raise RuntimeError("SDK fixture requires exact installed lock")
@@ -47,7 +47,7 @@ def load_tool_helpers():
     spec.loader.exec_module(module)
     raw = (path.parent / "tool-protocol-fragments.json").read_bytes()
     import hashlib
-    provenance = json.loads((path.parent / "fragment-provenance.json").read_text())
+    provenance = json.loads((path.parent / "fragment-provenance.json").read_text(encoding="utf-8"))
     if hashlib.sha256(raw).hexdigest() != provenance["fragmentFileSHA256"]:
         raise RuntimeError("SDK fixture fragment integrity")
     env, statements, _imports, _closed_import = module.load_fragments(json.loads(raw)["fragments"])

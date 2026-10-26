@@ -74,7 +74,7 @@ def load_fragments(fragments):
 def pinned_id_helpers():
     """Execute only the two hashed, original pure ID bodies; never import the adapter."""
     raw = (ROOT / "tool-id-fragments.json").read_bytes()
-    provenance = json.loads((ROOT / "tool-id-provenance.json").read_text())
+    provenance = json.loads((ROOT / "tool-id-provenance.json").read_text(encoding="utf-8"))
     if hashlib.sha256(raw).hexdigest() != provenance["fragmentFileSHA256"]:
         raise ClosedBoundaryError("Pinned ID fragment integrity")
     payload = json.loads(raw)
@@ -153,7 +153,7 @@ def construct(env, statements, calls, *, result_order=None, preface=None):
 
 def run():
     raw = (ROOT / "tool-protocol-fragments.json").read_bytes()
-    provenance = json.loads((ROOT / "fragment-provenance.json").read_text())
+    provenance = json.loads((ROOT / "fragment-provenance.json").read_text(encoding="utf-8"))
     if hashlib.sha256(raw).hexdigest() != provenance["fragmentFileSHA256"]:
         raise ClosedBoundaryError("Aggregate integrity mismatch")
     bundle = json.loads(raw)
@@ -210,7 +210,7 @@ def run():
                 openAISDKWireCaptured=False, providerRequests=0)
 
 if __name__ == "__main__":
-    supplied = sys.stdin.read(4096)
+    supplied = sys.stdin.buffer.read(4096).decode("utf-8")
     config = json.loads(supplied) if supplied.strip() else {}
     if set(config) - {"tool_name"}: raise ClosedBoundaryError("Unexpected runner input")
     if "tool_name" in config:

@@ -368,8 +368,10 @@ function TaskFields({
       <p className="text-sm text-text-muted">
         Choose which profiles each task may use, then order them. Empty or omitted categories have
         no route; unresolved is its own category, never a fallback. These are your preferences, not
-        measured model quality. Image, tool and continuation requests remain unsupported regardless
-        of these orders. Custom category data is retained; no current request mapping is assumed.
+        measured model quality. Tool requests use the tools order and only tool-capable profiles; a
+        valid continuation keeps its original pair without a new decision. Image requests remain
+        unsupported regardless of these orders. Custom category data is retained; no current request
+        mapping is assumed.
       </p>
       {tasks.map((task) => {
         const label = Object.hasOwn(TASK_LABELS, task)
@@ -459,9 +461,11 @@ export default function ProfileFields(props: Props) {
         Declare exact provider/model/effort profiles and their evidence. No capabilities, rankings,
         live availability or account entitlement are inferred. OpenAI uses an explicit
         operator-supplied model ID. This bounded path supports claude-opus-5-5, claude-sonnet-5-5
-        and claude-haiku-5-5 at medium/high/xhigh/max. All twelve pairs have synthetic JSON tests;
-        streaming tests cover representative pairs. Live account access remains unverified.
-        Image/tool/continuation requests are unsupported.
+        and claude-haiku-5-5 at medium/high/xhigh/max, plus exact agy/gemini-3.8-flash-high at High.
+        The twelve Claude pairs have synthetic JSON and tool-streaming tests; plain-text streaming
+        tests cover representative pairs. Live account access remains unverified. Tool requests need
+        a profile that declares tool support; image and nonstreaming tool requests are unsupported.
+        Codex and AGY Opus High stay excluded until their output caps are proven.
       </p>
       {!editable && (
         <p role="alert" className="mt-3">

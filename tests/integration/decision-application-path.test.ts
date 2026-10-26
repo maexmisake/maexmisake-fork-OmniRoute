@@ -444,19 +444,25 @@ test("ordinary metadata mentioning a disabled feature is not a routing reference
 });
 
 test("a bare flagged combo name cannot override a known provider/model pin", async () => {
-  await createCombo({
+  // Remove the flagged combo afterwards: a combo named after a candidate model is a
+  // recursion hazard that later automatic-selection tests must not inherit.
+  const bare = await createCombo({
     name: "gpt-5.4",
     models: ["openai/gpt-5.4"],
     config: { decisionPolicy: { enabled: true } },
   });
-  const count = observations.length;
-  const response = await POST(request("openai/gpt-5.4"));
-  assert.equal(
-    response.status,
-    200,
-    String(response.headers.get("x-omniroute-decision-reason")) + (await response.text())
-  );
-  assert.equal(observations.length, count + 1);
+  try {
+    const count = observations.length;
+    const response = await POST(request("openai/gpt-5.4"));
+    assert.equal(
+      response.status,
+      200,
+      String(response.headers.get("x-omniroute-decision-reason")) + (await response.text())
+    );
+    assert.equal(observations.length, count + 1);
+  } finally {
+    await deleteCombo(String(bare.id));
+  }
 });
 
 test("normal guardrail rerouting to a decision combo is rejected before its target expansion", async () => {
@@ -661,9 +667,15 @@ test("automatic reasoning selection sets its supported high effort without a cli
   assert.equal(observations.at(-1)?.effort, "high");
 });
 test("unsupported text/image/tool/effort inputs and unauthorized client cause zero automatic sends", async () => {
+  // Bounded text SSE is a supported lane (decision-application-stream.test.ts). Against this
+  // JSON-only fixture upstream it dispatches exactly once and fails closed without a retry.
+  const beforeStream = observations.length;
+  const streamed = await POST(await boundedRequest(validKey, { stream: true }));
+  assert.notEqual(streamed.status, 200);
+  await streamed.text();
+  assert.equal(observations.length, beforeStream + 1);
   const count = observations.length;
   for (const extra of [
-    { stream: true },
     { reasoning_effort: "max" },
     {
       messages: [

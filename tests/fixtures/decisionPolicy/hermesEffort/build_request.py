@@ -37,7 +37,7 @@ def checked_fragment(fragment):
 
 def source_fragments():
     raw = (ROOT / "upstream-fragments.json").read_bytes()
-    provenance = json.loads((ROOT / "provenance.json").read_text())
+    provenance = json.loads((ROOT / "provenance.json").read_text(encoding="utf-8"))
     if hashlib.sha256(raw).hexdigest() != provenance["fragmentFileSHA256"]:
         raise ClosedBoundaryError("fragment aggregate mismatch")
     data = json.loads(raw)
@@ -179,7 +179,7 @@ def run(incoming):
     env.update(base_url_host_matches=host_matches,
                effective_request_overrides=lambda agent: dict(agent.request_overrides),
                _prompt_cache_scope_for_agent=lambda _agent: None)
-    patch_pin = json.loads((PACKAGE / "PATCH-PIN.json").read_text())
+    patch_pin = json.loads((PACKAGE / "PATCH-PIN.json").read_text(encoding="utf-8"))
     if hashlib.sha256((PACKAGE / "hermes-749cb638.patch").read_bytes()).hexdigest() != patch_pin["patchSHA256"]:
         raise ClosedBoundaryError("patch artifact mismatch")
     for name, row in fragments.items():
@@ -189,7 +189,7 @@ def run(incoming):
         if name == "_build_api_kwargs_for_mode" and case != "unpatched-missing-profile":
             source = patched_function(name, source, patch_pin)
         compile_function(source, env, row["path"])
-    old_rows = json.loads((ROOT.parent / "hermesPinned/upstream-fragments.json").read_text())["fragments"]
+    old_rows = json.loads((ROOT.parent / "hermesPinned/upstream-fragments.json").read_text(encoding="utf-8"))["fragments"]
     original_builder = next(row["source"] for row in old_rows if row["qualifiedName"] == "_build_chat_completions_kwargs")
     patched = original_builder if case == "unpatched-missing-profile" else patched_function(
         "_build_chat_completions_kwargs", original_builder, patch_pin)
@@ -272,7 +272,7 @@ def run(incoming):
 
 if __name__ == "__main__":
     try:
-        incoming = json.loads(sys.stdin.read(131073))
+        incoming = json.loads(sys.stdin.buffer.read(131073).decode("utf-8"))
         print(json.dumps(run(incoming), sort_keys=True))
     except ClosedBoundaryError:
         print(json.dumps({"ok": False, "error": "closed-fixture-boundary"}))

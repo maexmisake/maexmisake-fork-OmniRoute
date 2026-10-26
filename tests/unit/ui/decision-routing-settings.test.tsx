@@ -478,6 +478,11 @@ describe("decision routing settings", () => {
       (screen.getByLabelText("Task preference orders (JSON object)") as HTMLTextAreaElement).value
     ).toBe("{}");
     expect(screen.queryByRole("button", { name: /test|run|discover/i })).toBeNull();
+    const copy = document.body.textContent ?? "";
+    expect(copy).toContain("plus exact agy/gemini-3.8-flash-high at High");
+    expect(copy).toContain("Tool requests need a profile that declares tool support");
+    expect(copy).toContain("Codex and AGY Opus High stay excluded");
+    expect(copy).not.toMatch(/tool\/continuation requests are unsupported/i);
     expect(api.calls.map((call) => call.url)).toEqual([
       "/api/decision-routing/options",
       "/api/combos/combo-a/decision-policy",

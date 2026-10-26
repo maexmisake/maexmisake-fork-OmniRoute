@@ -398,3 +398,40 @@ test("optimizePackageImports excludes the internal @omniroute/open-sse workspace
     assert.ok(list.includes(lib), `expected external barrel lib ${lib} to stay optimized`);
   }
 });
+
+test("OMNIROUTE_BUILD_WEBPACK_CACHE=0 disables only the production webpack cache", async () => {
+  const { default: nextConfig } = await loadNextConfig("webpack-cache");
+  const original = process.env.OMNIROUTE_BUILD_WEBPACK_CACHE;
+  const run = (dev: boolean): false | { type: string } => {
+    const config: { cache: false | { type: string; maxMemoryGenerations: number } } & Record<
+      string,
+      unknown
+    > = {
+      context: process.cwd(),
+      cache: { type: "filesystem", maxMemoryGenerations: Infinity },
+      plugins: [],
+      externals: [],
+      ignoreWarnings: [],
+      resolve: { fallback: {} },
+    };
+    nextConfig.webpack(config, {
+      dev,
+      isServer: false,
+      defaultLoaders: { babel: {} },
+      webpack: { IgnorePlugin: class {} },
+    });
+    return config.cache;
+  };
+  try {
+    delete process.env.OMNIROUTE_BUILD_WEBPACK_CACHE;
+    assert.equal(run(false).type, "filesystem");
+    process.env.OMNIROUTE_BUILD_WEBPACK_CACHE = "1";
+    assert.equal(run(false).type, "filesystem");
+    process.env.OMNIROUTE_BUILD_WEBPACK_CACHE = "0";
+    assert.equal(run(false), false);
+    assert.equal(run(true).type, "filesystem");
+  } finally {
+    if (original === undefined) delete process.env.OMNIROUTE_BUILD_WEBPACK_CACHE;
+    else process.env.OMNIROUTE_BUILD_WEBPACK_CACHE = original;
+  }
+});

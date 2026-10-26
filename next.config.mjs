@@ -357,6 +357,11 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   webpack(config, { dev, webpack }) {
+    // Opt-in for memory-capped one-shot builders: Next's production filesystem cache
+    // keeps every module entry in memory (maxMemoryGenerations: Infinity) and then
+    // serializes the whole pack. A fresh release build gains nothing from it, and the
+    // emitted bundles are identical without it. Default behavior is unchanged.
+    if (!dev && process.env.OMNIROUTE_BUILD_WEBPACK_CACHE === "0") config.cache = false;
     config.ignoreWarnings = [
       ...(config.ignoreWarnings || []),
       isNextIntlExtractorDynamicImportWarning,

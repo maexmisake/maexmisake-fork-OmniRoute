@@ -71,7 +71,7 @@ class UnavailableDeveloperModels:
 
 def load_functions(profile):
     raw = (ROOT / "upstream-fragments.json").read_bytes()
-    provenance = json.loads((ROOT / "provenance.json").read_text())
+    provenance = json.loads((ROOT / "provenance.json").read_text(encoding="utf-8"))
     if hashlib.sha256(raw).hexdigest() != provenance["fragmentFileSHA256"]:
         raise ClosedBoundaryError("fragment aggregate mismatch")
     fragments = json.loads(raw)
@@ -277,7 +277,7 @@ def run(case):
 
 if __name__ == "__main__":
     try:
-        incoming = json.loads(sys.stdin.read(4096))
+        incoming = json.loads(sys.stdin.buffer.read(4096).decode("utf-8"))
         if set(incoming) != {"case"} or not isinstance(incoming["case"], str):
             raise ClosedBoundaryError("invalid fixture input")
         print(json.dumps(run(incoming["case"]), sort_keys=True))
