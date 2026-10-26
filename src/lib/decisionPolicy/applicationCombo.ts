@@ -13,7 +13,10 @@ import {
   type CandidateState,
 } from "../../../open-sse/services/decisionPolicy/contract.ts";
 import { eligibleCandidates } from "../../../open-sse/services/decisionPolicy/eligibility.ts";
-import { extractRequestFacts } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
+import {
+  extractRequestFacts,
+  normalizeDecisionTextRequest,
+} from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import {
   currentApplicationAttempt,
   withApplicationAttempt,
@@ -34,6 +37,7 @@ import {
   assertDecisionLease,
   type AttemptIdentity,
   readDecisionAttemptReceipt,
+  readLogicalDecisionCost,
 } from "../db/decisionAttempts";
 import { boundedDecisionEnabled } from "../../../open-sse/services/decisionPolicy/applicationGate.ts";
 import {
@@ -90,7 +94,8 @@ export function automaticRejection(reason = "unsupported"): Response {
 export async function prepareAutomaticCombo(
   model: string,
   body: unknown,
-  keyId?: string
+  keyId?: string,
+  clientInput: unknown = body
 ): Promise<AutomaticPlan | Response | null> {
   const combo = await getComboByName(model);
   if (!combo || !boundedDecisionEnabled(combo)) return null;
@@ -109,7 +114,8 @@ export async function prepareAutomaticCombo(
   createValidationPluginFence().assertIdle();
   if (!parsed.success) return automaticRejection("invalid_configuration");
   if (!keyId) return automaticRejection("authentication_required");
-  if (!validTextFacts(body)) return automaticRejection("request_facts_unsupported");
+  if (!validTextFacts(clientInput) || !validTextFacts(body))
+    return automaticRejection("request_facts_unsupported");
   // Only explicit exact names in this initial lane; aliases/nesting never fall into legacy execution.
   return {
     comboId: String(combo.id),
@@ -129,6 +135,23 @@ function validTextFacts(raw: unknown) {
     !facts.body.messages.some((row) => row.role === "tool" || row.tool_calls?.length)
     ? facts
     : null;
+}
+
+function matchesOpenAiWireContract(
+  wire: Record<string, unknown> | null,
+  candidate: Candidate,
+  outputLimit: number
+): boolean {
+  if (!wire) return false;
+  // Preserve every actual effort/output carrier for the same strict alias check.
+  // Only this already-allowlisted provider-generated cache field is outside it.
+  const { prompt_cache_key: _cache, ...body } = wire;
+  const normalized = normalizeDecisionTextRequest(body);
+  return (
+    normalized !== null &&
+    normalized.reasoning_effort === candidate.effort.value &&
+    normalized.max_completion_tokens === outputLimit
+  );
 }
 
 function numberOrNull(value: unknown, integer = false): number | null {
@@ -379,8 +402,7 @@ async function buildAttempt(
           headers.has("api-key") ||
           details.url !== endpoint.href ||
           wire?.model !== candidate.model ||
-          (!contract.claude &&
-            (wire?.reasoning_effort ?? wire?.reasoning?.effort) !== candidate.effort.value) ||
+          (!contract.claude && !matchesOpenAiWireContract(wire, candidate, outputLimit)) ||
           wire?.stream === true ||
           (!contract.claude &&
             Object.keys(wire ?? {}).some(
@@ -487,6 +509,48 @@ function releaseAttempt(attempt: ApplicationAttempt | undefined): void {
     // Cleanup failure cannot reopen routing. Durable pending usage expires to unknown.
   }
 }
+type ApplicationSelectionMode = "native" | "sole-eligible" | "deterministic";
+function applicationSelectionMode(
+  plan: AutomaticPlan,
+  eligibleCount: number
+): ApplicationSelectionMode {
+  if (plan.config.selection?.mode !== "native") return "deterministic";
+  return eligibleCount === 1 ? "sole-eligible" : "native";
+}
+function traceNoDecisionSelection(
+  trace: Array<{ phase: string; id?: string; reason: string }>,
+  candidate: Candidate,
+  mode: ApplicationSelectionMode
+): void {
+  trace.push({
+    phase: "selection",
+    id: candidate.id,
+    reason: mode === "sole-eligible" ? "sole_eligible_no_decision" : "deterministic_no_decision",
+  });
+}
+function annotateNoDecision(
+  response: Response,
+  mode: ApplicationSelectionMode,
+  attempt?: ApplicationAttempt
+): Response {
+  response.headers.set("x-omniroute-selection-mode", mode);
+  response.headers.set("x-omniroute-decision-status", "no-decision");
+  if (attempt) {
+    try {
+      const cost = readLogicalDecisionCost(attempt.id);
+      response.headers.set("x-omniroute-routing-cost", JSON.stringify(cost));
+      response.headers.set(
+        "x-omniroute-routing-cost-status",
+        cost.totalUsd === null ? "unknown" : "known"
+      );
+    } catch {
+      // A failed annotation read cannot replay completed work or manufacture zero.
+      response.headers.delete("x-omniroute-routing-cost");
+      response.headers.set("x-omniroute-routing-cost-status", "unknown");
+    }
+  }
+  return response;
+}
 export async function executeAutomaticCombo(
   plan: AutomaticPlan,
   body: Record<string, unknown>,
@@ -502,6 +566,7 @@ export async function executeAutomaticCombo(
   signal = AbortSignal.any([signal, AbortSignal.timeout(plan.config.policy.timeoutMs)]);
   let attempt: ApplicationAttempt | undefined;
   let native: NativeStage | undefined;
+  let mode = applicationSelectionMode(plan, 0);
   try {
     signal.throwIfAborted();
     if (body.model !== plan.name) return automaticRejection();
@@ -511,11 +576,15 @@ export async function executeAutomaticCombo(
     const trace: Array<{ phase: string; id?: string; reason: string }> = [];
     const eligible = eligibleCandidates(plan.config.policy, extracted.facts, snapshot, trace);
     let candidate = eligible[0];
-    if (plan.config.selection?.mode === "native") {
+    if (!candidate) throw new Error("decision_no_route");
+    mode = applicationSelectionMode(plan, eligible.length);
+    if (mode === "native") {
       native = await prepareNativeStage(plan, eligible, keyId, signal);
       candidate = await native.select(extracted.facts);
+    } else {
+      traceNoDecisionSelection(trace, candidate, mode);
     }
-    if (!candidate || (await getComboByName(`${candidate.provider}/${candidate.model}`)))
+    if (await getComboByName(`${candidate.provider}/${candidate.model}`))
       throw new Error("decision_no_route");
     attempt = await buildAttempt(
       plan,
@@ -548,12 +617,12 @@ export async function executeAutomaticCombo(
     });
     result.headers.set("x-omniroute-decision-attempt", attempt.id);
     result.headers.set("x-omniroute-decision-candidate", candidate.id);
-    return native ? native.annotate(result) : result;
+    return native ? native.annotate(result) : annotateNoDecision(result, mode, attempt);
   } catch (error) {
     const status = failureStatus(signal, callerSignal, native);
     native?.finishFailure(status);
     const response = rejectedAttempt(attempt, error, status);
-    return native ? native.annotate(response) : response;
+    return native ? native.annotate(response) : annotateNoDecision(response, mode, attempt);
   } finally {
     releaseAttempt(attempt);
   }

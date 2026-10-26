@@ -201,7 +201,13 @@ test("unknown context, conflicting effort carriers, streaming and route identity
   const agent = new MockAgent();
   for (const patch of [
     { measureContext: () => null },
-    { body: { ...(options(agent).body as object), reasoning: { effort: "high" } } },
+    {
+      body: {
+        ...(options(agent).body as object),
+        reasoning_effort: "medium",
+        reasoning: { effort: "high" },
+      },
+    },
     { body: { ...(options(agent).body as object), stream: true } },
     { body: { ...(options(agent).body as object), model: "unrequested-explicit-model" } },
     { body: { ...(options(agent).body as object), globalFallbackModel: "forbidden" } },

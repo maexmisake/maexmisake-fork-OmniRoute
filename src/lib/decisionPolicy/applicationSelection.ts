@@ -465,10 +465,18 @@ export async function prepareNativeStage(
       }
       result.headers.set("x-omniroute-selection-mode", "native");
       result.headers.set("x-omniroute-decision-request", identity.id);
-      result.headers.set(
-        "x-omniroute-routing-cost",
-        JSON.stringify(readLogicalDecisionCost(identity.id))
-      );
+      try {
+        const cost = readLogicalDecisionCost(identity.id);
+        result.headers.set("x-omniroute-routing-cost", JSON.stringify(cost));
+        result.headers.set(
+          "x-omniroute-routing-cost-status",
+          cost.totalUsd === null ? "unknown" : "known"
+        );
+      } catch {
+        // Response annotation cannot replay already-settled decision/execution work.
+        result.headers.delete("x-omniroute-routing-cost");
+        result.headers.set("x-omniroute-routing-cost-status", "unknown");
+      }
       return result;
     },
   };

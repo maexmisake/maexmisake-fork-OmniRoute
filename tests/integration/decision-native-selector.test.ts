@@ -701,15 +701,22 @@ for (const restriction of ["quota", "endpoint", "model", "connection"])
     assert.equal(decisionCalls.length, d);
     assert.equal(executionCalls.length, e);
   });
-test("one remaining eligible option cannot silently bypass mandatory native selection", async () => {
+test("one remaining eligible option executes explicitly without a native decision", async () => {
   await mutateConfig((c) => (c.policy.candidates[0].capabilities.text = null));
   const d = decisionCalls.length,
     e = executionCalls.length;
   const response = await POST(request());
-  await response.text();
-  assert.equal(response.status, 409);
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(response.headers.get("x-omniroute-selection-mode"), "sole-eligible");
+  assert.equal(response.headers.get("x-omniroute-decision-status"), "no-decision");
+  assert.equal(response.headers.has("x-omniroute-decision-request"), false);
   assert.equal(decisionCalls.length, d);
-  assert.equal(executionCalls.length, e);
+  assert.equal(executionCalls.length, e + 1);
+  assert.equal((executionCalls.at(-1)!.output_config as Record<string, unknown>).effort, "high");
+  const rows = readDecisionAttempts(key.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lane, "execution");
+  assert.ok(String(rows[0].selection_trace).includes("sole_eligible_no_decision"));
 });
 
 test("native selection honors an allowed different provider/model pair without executing the other", async () => {
@@ -1438,3 +1445,324 @@ test("queued expired decision reservation cannot send or acquire a fresh lease",
     await Promise.allSettled([pending]);
   }
 });
+
+async function hermesShapedRequest(
+  extra: Record<string, unknown> = {},
+  signal?: AbortSignal,
+  token: string | null = key.key
+) {
+  const source = request(token, signal);
+  const body = { ...(await source.json()), ...extra };
+  for (const [name, value] of Object.entries(body)) if (value === undefined) delete body[name];
+  return new Request(source.url, {
+    method: "POST",
+    headers: source.headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+for (const [label, aliases] of [
+  ["max_tokens alias", { max_completion_tokens: undefined, max_tokens: 4096 }],
+  ["equal token aliases", { max_completion_tokens: 4096, max_tokens: 4096 }],
+] as const) {
+  test(`Hermes-shaped text ${label} preserves a native choice and exact output reservation`, async () => {
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    const response = await POST(await hermesShapedRequest(aliases));
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(response.headers.get("x-omniroute-selection-mode"), "native");
+    assert.equal(decisionCalls.length, d + 1);
+    assert.equal(executionCalls.length, e + 1);
+    assert.equal(executionCalls.at(-1)!.max_tokens, 4096);
+  });
+}
+for (const aliases of [
+  { reasoning_effort: "high" },
+  { reasoning: { effort: "high" } },
+  { reasoning_effort: "high", reasoning: { effort: "high" } },
+]) {
+  test(`Hermes-shaped explicit High ${JSON.stringify(aliases)} has one exact execution and no Jev usage`, async () => {
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    const response = await POST(
+      await hermesShapedRequest({ ...aliases, max_completion_tokens: undefined, max_tokens: 4096 })
+    );
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(response.headers.get("x-omniroute-selection-mode"), "sole-eligible");
+    assert.equal(response.headers.get("x-omniroute-decision-status"), "no-decision");
+    assert.equal(decisionCalls.length, d);
+    assert.equal(executionCalls.length, e + 1);
+    assert.equal((executionCalls.at(-1)!.output_config as Record<string, unknown>).effort, "high");
+    assert.equal(executionCalls.at(-1)!.max_tokens, 4096);
+    const rows = readDecisionAttempts(key.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].lane, "execution");
+    assert.equal(rows[0].model, "claude-opus-5-5");
+    assert.equal(rows[0].connection_id, executionConnection);
+  });
+}
+for (const [label, aliases] of [
+  ["conflicting token aliases", { max_tokens: 2048 }],
+  ["conflicting effort aliases", { reasoning_effort: "high", reasoning: { effort: "medium" } }],
+  [
+    "disabled contradicts explicit High",
+    { reasoning_effort: "high", reasoning: { enabled: false } },
+  ],
+  ["unknown nested property", { reasoning: { effort: "high", privateUnknown: true } }],
+  ["invalid token string", { max_tokens: "4096" }],
+  ["token overflow", { max_completion_tokens: undefined, max_tokens: Number.MAX_SAFE_INTEGER + 1 }],
+  ["bounded token ceiling", { max_completion_tokens: 1000001 }],
+  ["invalid nested effort", { reasoning: { effort: "turbo" } }],
+  ["stream remains unsupported", { stream: true }],
+  ["temperature remains unsupported", { temperature: 0.7 }],
+  [
+    "tools remain unsupported",
+    { tools: [{ type: "function", function: { name: "synthetic_tool", parameters: {} } }] },
+  ],
+] as const) {
+  test(`Hermes-shaped invalid ${label} makes zero decision and execution sends`, async () => {
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    const response = await POST(await hermesShapedRequest(aliases));
+    await response.text();
+    assert.ok(response.status >= 400);
+    assert.equal(decisionCalls.length, d);
+    assert.equal(executionCalls.length, e);
+  });
+}
+test("Hermes-shaped text normalization does not mutate caller-owned nested input in the actual handler", async () => {
+  const { handleChat } = await import("../../src/sse/handlers/chat.ts");
+  const body = {
+    model: "fixture-native-selector",
+    stream: false,
+    max_tokens: 4096,
+    reasoning: { effort: "high" },
+    messages: [{ role: "user", content: "Explain a synthetic readonly fixture" }],
+  };
+  const initial = JSON.stringify(body);
+  Object.freeze(body.reasoning);
+  Object.freeze(body.messages[0]);
+  Object.freeze(body.messages);
+  Object.freeze(body);
+  const response = await handleChat(request(), null, body);
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(JSON.stringify(body), initial);
+  assert.equal(Object.hasOwn(body, "max_completion_tokens"), false);
+  assert.equal(Object.hasOwn(body, "reasoning_effort"), false);
+});
+for (const change of ["auth", "cancel", "zero-eligible", "queued-policy", "queued-lease"]) {
+  test(`sole-eligible text ${change} cannot produce an unintended decision or execution`, async () => {
+    const { acquire, getStats } = await import("../../open-sse/services/accountSemaphore.ts");
+    const controller = new AbortController();
+    if (change === "cancel") controller.abort();
+    if (change === "zero-eligible")
+      await mutateConfig((c) => {
+        for (const row of c.policy.candidates) row.capabilities.text = null;
+      });
+    const queued = change.startsWith("queued");
+    if (queued) await updateProviderConnection(executionConnection, { maxConcurrent: 1 });
+    const semaphore = `claude:${executionConnection}`;
+    const releaseCapacity = queued ? await acquire(semaphore, { maxConcurrency: 1 }) : () => {};
+    let releaseLease: (() => unknown) | undefined;
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    const pending = POST(
+      await hermesShapedRequest(
+        { reasoning_effort: "high" },
+        controller.signal,
+        change === "auth" ? "synthetic-invalid" : key.key
+      )
+    );
+    try {
+      if (queued) {
+        for (let n = 0; n < 200 && !getStats()[semaphore]?.queued; n++)
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        assert.equal(getStats()[semaphore]?.queued, 1);
+        if (change === "queued-policy")
+          await updateApiKeyPermissions(key.id, { allowedConnections: [decisionConnection] });
+        else releaseLease = await holdAccountLease(executionConnection, "claude");
+        releaseCapacity();
+      }
+      const response = await pending;
+      await response.text();
+      assert.ok(response.status >= 400);
+      assert.equal(decisionCalls.length, d);
+      assert.equal(executionCalls.length, e);
+    } finally {
+      releaseCapacity();
+      releaseLease?.();
+    }
+  });
+}
+test("deterministic text aliases remain explicitly distinct from sole-eligible native mode", async () => {
+  await configure("deterministic");
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  const response = await POST(
+    await hermesShapedRequest({
+      max_completion_tokens: undefined,
+      max_tokens: 4096,
+      reasoning: { effort: "high" },
+    })
+  );
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(response.headers.get("x-omniroute-selection-mode"), "deterministic");
+  assert.equal(response.headers.get("x-omniroute-decision-status"), "no-decision");
+  assert.equal(decisionCalls.length, d);
+  assert.equal(executionCalls.length, e + 1);
+});
+
+test("ordinary non-combo text normalization remains outside the bounded alias contract", async () => {
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  const response = await POST(
+    await hermesShapedRequest({
+      model: "openai/gpt-5.4",
+      reasoning_effort: "high",
+      reasoning: { enabled: false },
+      temperature: 0.7,
+    })
+  );
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(response.headers.has("x-omniroute-selection-mode"), false);
+  assert.equal(decisionCalls.length, d);
+  assert.equal(executionCalls.length, e + 1);
+});
+
+test("sole-eligible receipt annotation failure returns unknown cost without replay or escaping", async (context) => {
+  const db = getDbInstance();
+  const prepare = db.prepare.bind(db);
+  let annotationReads = 0;
+  const mocked = context.mock.method(db, "prepare", (sql: string) => {
+    if (sql === "SELECT cost_usd FROM decision_application_attempts WHERE request_id=?") {
+      annotationReads++;
+      throw new Error("synthetic aggregate receipt read failure");
+    }
+    return prepare(sql);
+  });
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  let response: Response;
+  try {
+    response = await POST(await hermesShapedRequest({ reasoning_effort: "high" }));
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(response.headers.get("x-omniroute-selection-mode"), "sole-eligible");
+    assert.equal(response.headers.get("x-omniroute-routing-cost-status"), "unknown");
+    assert.equal(response.headers.has("x-omniroute-routing-cost"), false);
+    await response.text();
+  } finally {
+    mocked.mock.restore();
+  }
+  assert.equal(annotationReads, 1);
+  assert.equal(decisionCalls.length, d);
+  assert.equal(executionCalls.length, e + 1);
+  const rows = readDecisionAttempts(key.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].cost_usd, 0.002);
+});
+
+test("Hermes-shaped multipart caller data stays immutable through the actual guarded handler", async () => {
+  const { handleChat } = await import("../../src/sse/handlers/chat.ts");
+  const part = Object.freeze({ type: "text", text: "Explain a synthetic multipart fixture" });
+  const body = Object.freeze({
+    model: "fixture-native-selector",
+    stream: false,
+    max_tokens: 4096,
+    reasoning: Object.freeze({ effort: "high" }),
+    messages: Object.freeze([Object.freeze({ role: "user", content: Object.freeze([part]) })]),
+  });
+  const initial = JSON.stringify(body);
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  const response = await handleChat(request(), null, body);
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(JSON.stringify(body), initial);
+  assert.equal(decisionCalls.length, d);
+  assert.equal(executionCalls.length, e + 1);
+});
+
+test("native receipt annotation failure returns unknown cost without replay or duplicate settlement", async (context) => {
+  const db = getDbInstance();
+  const prepare = db.prepare.bind(db);
+  let annotationReads = 0;
+  const mocked = context.mock.method(db, "prepare", (sql: string) => {
+    if (sql === "SELECT cost_usd FROM decision_application_attempts WHERE request_id=?") {
+      annotationReads++;
+      throw new Error("synthetic native aggregate receipt read failure");
+    }
+    return prepare(sql);
+  });
+  const d = decisionCalls.length,
+    e = executionCalls.length;
+  try {
+    const response = await POST(request());
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(response.headers.get("x-omniroute-selection-mode"), "native");
+    assert.equal(response.headers.get("x-omniroute-routing-cost-status"), "unknown");
+    assert.equal(response.headers.has("x-omniroute-routing-cost"), false);
+    await response.text();
+  } finally {
+    mocked.mock.restore();
+  }
+  assert.equal(annotationReads, 1);
+  assert.equal(decisionCalls.length, d + 1);
+  assert.equal(executionCalls.length, e + 1);
+  const rows = readDecisionAttempts(key.id);
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((row) => row.lane === "decision")!.cost_usd, 0.001);
+  assert.equal(rows.find((row) => row.lane === "execution")!.cost_usd, 0.002);
+  for (const row of rows) {
+    const ledger = db
+      .prepare("SELECT COUNT(*) AS n FROM request_cost_ledger WHERE request_id=?")
+      .get(row.id) as { n: number };
+    const usage = db
+      .prepare("SELECT COUNT(*) AS n FROM usage_history WHERE decision_attempt_id=?")
+      .get(row.id) as { n: number };
+    assert.equal(ledger.n, 1);
+    assert.equal(usage.n, 1);
+  }
+});
+
+for (const change of [
+  "secondary-output-conflict",
+  "secondary-effort-conflict",
+  "nested-effort-extra",
+  "equal-secondary-carriers",
+]) {
+  test(`final text wire ${change} preserves every selected effort and reserved output carrier`, async () => {
+    const { getExecutor } = await import("../../open-sse/executors/index.ts");
+    await mutateConfig((c) => {
+      c.policy.candidates[1].provider = "openai";
+      c.policy.candidates[1].model = "gpt-5.4";
+      c.connections.deep = openaiConnection;
+    });
+    const executor = await getExecutor("openai"),
+      original = executor.transformRequest;
+    executor.transformRequest = async function (...args: Parameters<typeof original>) {
+      const wire = await original.apply(this, args);
+      if (change === "secondary-output-conflict")
+        return { ...wire, max_completion_tokens: 4096, max_tokens: 8192 };
+      if (change === "secondary-effort-conflict")
+        return { ...wire, reasoning: { effort: "medium" } };
+      if (change === "nested-effort-extra")
+        return { ...wire, reasoning: { effort: "high", privateExtra: true } };
+      return {
+        ...wire,
+        max_completion_tokens: 4096,
+        max_tokens: 4096,
+        reasoning: { effort: "high" },
+      };
+    };
+    const d = decisionCalls.length,
+      e = executionCalls.length;
+    try {
+      const response = await POST(await hermesShapedRequest({ reasoning_effort: "high" }));
+      await response.text();
+      assert.equal(response.status, change === "equal-secondary-carriers" ? 200 : 409);
+      assert.equal(decisionCalls.length, d);
+      assert.equal(executionCalls.length, e + (change === "equal-secondary-carriers" ? 1 : 0));
+    } finally {
+      executor.transformRequest = original;
+    }
+  });
+}

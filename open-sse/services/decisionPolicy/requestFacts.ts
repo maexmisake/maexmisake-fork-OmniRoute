@@ -49,6 +49,45 @@ const requestBody = z
     max_completion_tokens: z.number().int().positive().max(1000000),
   })
   .strict();
+// These are explicit ordinary chat aliases, not permission to accept arbitrary
+// reasoning/sampling controls or infer an absent output reservation.
+const textAliases = requestBody
+  .partial({ max_completion_tokens: true })
+  .extend({
+    max_tokens: z.number().int().positive().max(1000000).optional(),
+    reasoning: z.object({ effort }).strict().optional(),
+  })
+  .superRefine((body, context) => {
+    if (body.max_tokens === undefined && body.max_completion_tokens === undefined)
+      context.addIssue({ code: "custom", message: "Explicit output reservation required" });
+    if (
+      body.max_tokens !== undefined &&
+      body.max_completion_tokens !== undefined &&
+      body.max_tokens !== body.max_completion_tokens
+    )
+      context.addIssue({ code: "custom", message: "Conflicting output reservations" });
+    if (
+      body.reasoning_effort !== undefined &&
+      body.reasoning !== undefined &&
+      body.reasoning_effort !== body.reasoning.effort
+    )
+      context.addIssue({ code: "custom", message: "Conflicting effort directives" });
+  });
+export function normalizeDecisionTextRequest(raw: unknown): ChatPolicyBody | null {
+  if (!boundedJson(raw)) return null;
+  const parsed = textAliases.safeParse(raw);
+  if (!parsed.success) return null;
+  const { max_tokens, reasoning, ...body } = parsed.data;
+  const selectedEffort = body.reasoning_effort ?? reasoning?.effort;
+  const normalized = requestBody.safeParse({
+    ...body,
+    max_completion_tokens: body.max_completion_tokens ?? max_tokens,
+    ...(selectedEffort === undefined ? {} : { reasoning_effort: selectedEffort }),
+  });
+  // Unknown content parts were bounded as plain JSON; detach them before any
+  // downstream working-copy transformation can mutate caller-owned objects.
+  return normalized.success ? structuredClone(normalized.data) : null;
+}
 export type ChatPolicyBody = z.infer<typeof requestBody>;
 export type ContextMeasure = (body: Readonly<ChatPolicyBody>) => number | null;
 export type FactResult =
@@ -60,10 +99,15 @@ export type FactResult =
 
 type JsonScan = { children: unknown[]; chars: number };
 function safeDescriptor(key: string, entry: PropertyDescriptor): boolean {
-  return !entry.get && !entry.set && !["__proto__", "constructor", "prototype"].includes(key);
+  return (
+    entry.enumerable === true &&
+    !entry.get &&
+    !entry.set &&
+    !["__proto__", "constructor", "prototype"].includes(key)
+  );
 }
 function objectScan(value: object, seen: Set<object>): JsonScan | null {
-  if (seen.has(value)) return null;
+  if (seen.has(value) || Object.getOwnPropertySymbols(value).length > 0) return null;
   if (Array.isArray(value) && value.length > 256) return null;
   seen.add(value);
   const proto = Object.getPrototypeOf(value);
@@ -191,12 +235,10 @@ export function extractRequestFacts(
     continuationCandidateId?: string | null;
   }
 ): FactResult {
-  if (!boundedJson(raw)) return { ok: false, reason: "unsupported_or_unbounded_request" };
-  const parsed = requestBody.safeParse(raw);
-  if (!parsed.success || !continuationValid(parsed.data))
+  const body = normalizeDecisionTextRequest(raw);
+  if (!body || !continuationValid(body))
     return { ok: false, reason: "unsupported_or_unbounded_request" };
-  const body = parsed.data,
-    contents = contentFacts(body);
+  const contents = contentFacts(body);
   if (!contents) return { ok: false, reason: "unsupported_or_unbounded_request" };
   const continuation = body.messages.some((row) => row.role === "tool");
   if (continuation && !options.continuationCandidateId)

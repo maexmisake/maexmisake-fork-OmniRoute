@@ -480,6 +480,9 @@ async function handleChatImplementation(
   }
 
   if ((body = rejectPayload(body, request, reqId)) instanceof Response) return body;
+  // Retain the caller's original controls before ordinary normalization can erase
+  // an unsupported/conflicting carrier. Only an actual bounded combo inspects it.
+  const boundedClientInput = body;
   // Only the server's policy resolver may attach execution directives or route traces.
   // Discard lookalike JSON fields supplied by callers before evaluating any rule.
   if (body && typeof body === "object") {
@@ -811,8 +814,15 @@ async function handleChatImplementation(
   const apiKeyInfo = policy.apiKeyInfo;
   const decisionRejection = await decisionPolicyModelRejection(modelStr);
   if (decisionRejection) return decisionRejection;
-  const automaticPlan = await prepareAutomaticCombo(modelStr, body, apiKeyInfo?.id);
+  const automaticPlan = await prepareAutomaticCombo(
+    modelStr,
+    body,
+    apiKeyInfo?.id,
+    boundedClientInput
+  );
   if (automaticPlan instanceof Response) return automaticPlan;
+  // Only this validated, bounded lane needs an owned working copy before hooks.
+  if (automaticPlan) body = structuredClone(body);
   let managedLease: ManagedLeaseDispatchContext | null = null;
   if (isExclusiveLeaseManagedKey(apiKeyInfo)) {
     try {
