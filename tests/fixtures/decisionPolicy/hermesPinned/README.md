@@ -59,9 +59,12 @@ with existing body keys, reserved driver flags or timeout fail. Unknown kwargs a
 
 The ordinary combo name yields source-built `max_tokens: 64` and top-level
 `reasoning_effort: medium/high`. No temperature is added by the source builder. Driver fixtures
-then add `stream: false` for the supported text subset, or source-derived default
-`stream: true`/`stream_options.include_usage` for rejection cases. These flags are **not execution
-of Hermes’s streaming driver**. Tool schema inclusion comes from the executed builder. Continuation
+then add `stream: false` for the JSON subset, or source-derived
+`stream: true`/`stream_options.include_usage` for streaming fixtures. The separate
+`decision-application-stream.test.ts` now sends the original `default-stream` capture through the
+actual handler: that case explicitly selects High, while the separate `default-medium` case
+executes the original default-Medium method. These flags are **not execution
+of Hermes’s streaming driver**, SDK serialization or a complete installed Hermes client. Tool schema inclusion comes from the executed builder. Continuation
 history is synthetic, already sanitized input to that builder; tool execution and full history
 sanitation do not run.
 
@@ -70,8 +73,9 @@ each Medium and High. Explicit effort stays a hard constraint, leaving two same-
 for the mock free `jev-1.13-free` selector. Distinct fake execution accounts prove exact account,
 model and effort selection. No effort is silently omitted to make a decision possible.
 
-Unsupported omitted-cap, streaming, tools and tool-continuation inputs are rejected before either
-mock stage. Refusal, unauthenticated requests and pre-cancellation do not execute a model.
+Unsupported omitted-cap, tools and tool-continuation inputs are rejected before either
+mock stage. Text streaming is covered separately by the application streaming tests with
+synthetic official-protocol SSE and demand-driven response consumption. Refusal, unauthenticated requests and pre-cancellation do not execute a model.
 Unknown decision/execution costs remain null; mocked known zero remains zero. These are synthetic
 receipts, not vendor prices or account-entitlement evidence.
 

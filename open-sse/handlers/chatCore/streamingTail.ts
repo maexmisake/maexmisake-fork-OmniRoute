@@ -60,10 +60,12 @@ import { recordCost } from "@/domain/costRules";
 import { extractFacts } from "@/lib/memory/extraction";
 import { calculateCost } from "@/lib/usage/costCalculator";
 import { appendRequestLog, trackPendingRequest } from "@/lib/usageDb";
+import { finalizePendingRequestById } from "@/lib/usage/usageHistory";
 import { isFeatureFlagEnabled } from "@/shared/utils/featureFlags.ts";
 import { isEmptyStreamSiblingRecoveryEnabled } from "../../services/streamRecovery.ts";
 import { getProviderCredentials } from "@/sse/services/auth";
 import { resolveCredentialGate } from "@/lib/streamingCredentialTransform";
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deps bag mirrors the barrel closure
 type Loose = any;
@@ -71,6 +73,8 @@ type Loose = any;
 export type StreamingTailDeps = Record<string, Loose>;
 
 export async function runStreamingTail(deps: StreamingTailDeps) {
+  // Cancel/finalization can run after the caller has left its async scope.
+  const boundedAttempt = currentApplicationAttempt();
   const {
     agentGoalPolicy,
     apiKeyInfo,
@@ -187,30 +191,38 @@ export async function runStreamingTail(deps: StreamingTailDeps) {
     // #16438 opt-in: briefly probe Claude/Codex streams for usable output after the first
     // lifecycle event so an empty turn can be retried on a sibling connection.
     contentProbeMs:
-      (provider === "claude" || provider === "codex") && isEmptyStreamSiblingRecoveryEnabled()
+      !boundedAttempt &&
+      (provider === "claude" || provider === "codex") &&
+      isEmptyStreamSiblingRecoveryEnabled()
         ? 1000
         : undefined,
   });
   // A stall is an upstream issue, not an account fault — the executor loop
   // already ended at headers, so this bounded retry is the only recovery left.
-  const fallback = await maybeFallbackAfterReadiness({
-    streamReadiness,
-    clientAborted: streamController.signal.aborted,
-    failedConnectionId: getCurrentConnectionId(),
-    failedBody: providerResponse,
-    currentModel,
-    streamReadinessPolicy,
-    provider,
-    model,
-    log,
-    reqLogger,
-    providerUrl,
-    providerHeaders,
-    finalBody,
-    translatedBody,
-    executeProviderRequest,
-    providerRequestCapture,
-  });
+  const fallback = boundedAttempt
+    ? {
+        readiness: streamReadiness,
+        providerResponse,
+        finalBody,
+      }
+    : await maybeFallbackAfterReadiness({
+        streamReadiness,
+        clientAborted: streamController.signal.aborted,
+        failedConnectionId: getCurrentConnectionId(),
+        failedBody: providerResponse,
+        currentModel,
+        streamReadinessPolicy,
+        provider,
+        model,
+        log,
+        reqLogger,
+        providerUrl,
+        providerHeaders,
+        finalBody,
+        translatedBody,
+        executeProviderRequest,
+        providerRequestCapture,
+      });
   streamReadiness = fallback.readiness;
   providerResponse = fallback.providerResponse;
   finalBody = fallback.finalBody;
@@ -236,7 +248,7 @@ export async function runStreamingTail(deps: StreamingTailDeps) {
       claudeCacheMeta: claudePromptCacheLogMeta,
       cacheSource: "upstream",
     });
-    persistFailureUsage(failureResponse.status, streamReadiness.code);
+    if (!boundedAttempt) persistFailureUsage(failureResponse.status, streamReadiness.code);
     // Do NOT call onStreamFailure — a stream stall is an upstream issue,
     // not an account/quota failure. Marking the account unavailable here
     // would lock out legitimate accounts when the upstream hangs.
@@ -271,7 +283,7 @@ export async function runStreamingTail(deps: StreamingTailDeps) {
   // Known TTFT cost when armed: a small valid turn under the cap is fully
   // buffered before the first client byte (flag off by default, so the
   // streaming path is untouched unless opted in).
-  if (stream && providerResponse.ok && providerResponse.body) {
+  if (!boundedAttempt && stream && providerResponse.ok && providerResponse.body) {
     let flushEmptyRetryArmed = false;
     try {
       flushEmptyRetryArmed = isFeatureFlagEnabled("FLUSH_EMPTY_RETRY_ENABLED");
@@ -375,6 +387,20 @@ export async function runStreamingTail(deps: StreamingTailDeps) {
     if (normalizedStreamStatus !== 200) {
       if (streamFailureCompletionRecorded) return;
       streamFailureCompletionRecorded = true;
+    }
+    if (boundedAttempt) {
+      boundedAttempt.stream?.noteClientOutcome(normalizedStreamStatus);
+      // The physical journal owns billing/usage. Keep pending-request cleanup,
+      // without relying on ambient scope or firing ordinary ancillary hooks.
+      try {
+        finalizePendingRequestById(pendingRequestId, {
+          status: normalizedStreamStatus,
+          errorCode: streamErrorCode,
+        });
+      } catch {
+        // Exact-id cleanup must never close another request or affect dispatch.
+      }
+      return;
     }
     const cacheUsageLogMeta = buildCacheUsageLogMeta(streamUsage);
     const streamConnectionId = getCurrentConnectionId();
@@ -620,8 +646,8 @@ export async function runStreamingTail(deps: StreamingTailDeps) {
     isFailureCompletionRecorded: () => streamFailureCompletionRecorded,
     isStreamCompletionRecorded: () => streamCompletionRecorded,
     onStreamComplete,
-    persistFailureUsage,
-    onStreamFailure,
+    persistFailureUsage: boundedAttempt ? () => {} : persistFailureUsage,
+    onStreamFailure: boundedAttempt ? undefined : onStreamFailure,
     hasEmittedOutput: () => streamEmittedOutput(transformStream),
     readPartialUsage: () => readStreamPartialUsage(transformStream),
   });
@@ -763,22 +789,25 @@ export async function runStreamingTail(deps: StreamingTailDeps) {
     // that same patience for their first REAL content, not just their first
     // lifecycle frame. See pipeWithDisconnect's own doc comment.
     contentStallTimeoutMs: streamReadinessPolicy.timeoutMs,
+    ...(boundedAttempt ? { highWaterMark: 0 } : {}),
   });
   const clientFacingStream = wrapReadableStreamWithFinalize(finalStream, releaseTurnExecution);
 
   // ── Gamification event (fire-and-forget) ──
-  await emitRequestGamificationEvent({ apiKeyId: apiKeyInfo?.id, model, provider });
+  if (!boundedAttempt)
+    await emitRequestGamificationEvent({ apiKeyId: apiKeyInfo?.id, model, provider });
 
   // ── Plugin onResponse hook (fire-and-forget) ──
-  await runPluginOnResponseHook({
-    requestId: traceId,
-    body,
-    model,
-    provider,
-    apiKeyInfo,
-    headers: clientRawRequest?.headers,
-    response: { status: 200, streamed: true },
-  });
+  if (!boundedAttempt)
+    await runPluginOnResponseHook({
+      requestId: traceId,
+      body,
+      model,
+      provider,
+      apiKeyInfo,
+      headers: clientRawRequest?.headers,
+      response: { status: 200, streamed: true },
+    });
 
   const response = inheritEmptyTurnPolicy(
     providerResponse,

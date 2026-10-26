@@ -63,6 +63,7 @@ import { resolveProviderId } from "@/shared/constants/providers";
 import { buildContinuationLogHooks } from "./recoveryTraceLogging.ts";
 import { formatStreamRecoveryRetryWarning } from "./streamErrorResult.ts";
 import { injectSystemPromptPostTranslation } from "../../services/systemPrompt.ts";
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 
 export type ChatCoreExecutorResult = {
   response: Response;
@@ -154,6 +155,7 @@ export async function executeProviderRequest(
   modelToCall: string = deps.effectiveModel,
   allowDedup: boolean = false
 ): Promise<ChatCoreExecutorResult> {
+  const boundedAttempt = currentApplicationAttempt();
   const {
     agentGoalPolicy,
     assertManagedLeaseFence,
@@ -236,7 +238,13 @@ export async function executeProviderRequest(
       const rawResult: ChatCoreExecutorResult = await (async () => {
         let attempts = 0;
         const isModelScopeForRequest = isModelScope();
-        const maxAttempts = isModelScopeForRequest ? 3 : provider === "codex" ? 3 : 1;
+        const maxAttempts = boundedAttempt
+          ? 1
+          : isModelScopeForRequest
+            ? 3
+            : provider === "codex"
+              ? 3
+              : 1;
 
         while (attempts < maxAttempts) {
           trace("pre_executor", { attempt: attempts });
@@ -493,7 +501,7 @@ export async function executeProviderRequest(
               let continueMidStreamEnabled = false;
               let throughputWatchdog =
                 resolveResilienceSettings(null).streamRecovery.throughputWatchdog;
-              if (okStatus) {
+              if (okStatus && !boundedAttempt) {
                 try {
                   // Reuse the request-consolidated settings read (see line ~2076) — no
                   // second DB/cache hit. Default OFF when the setting is absent.
@@ -523,7 +531,7 @@ export async function executeProviderRequest(
               }
 
               let clientBody: ReadableStream<Uint8Array>;
-              if (streamRecoveryEnabled || throughputWatchdog.enabled) {
+              if (!boundedAttempt && (streamRecoveryEnabled || throughputWatchdog.enabled)) {
                 // Run the SAME upstream (same account/creds) with a given body and return
                 // its 2xx stream, or null. Used both by the early-retry re-open (same body)
                 // and the mid-stream continuation (assistant-prefilled body).

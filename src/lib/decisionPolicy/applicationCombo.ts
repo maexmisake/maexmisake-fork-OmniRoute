@@ -1,3 +1,4 @@
+import { createApplicationStream } from "./applicationStream";
 import { assertNativeConnectionUnleased } from "./exclusiveLease";
 import { prepareNativeStage, type NativeStage } from "./applicationSelection";
 import { getExecutor } from "../../../open-sse/executors/index.ts";
@@ -140,7 +141,9 @@ function validTextFacts(raw: unknown) {
 function matchesOpenAiWireContract(
   wire: Record<string, unknown> | null,
   candidate: Candidate,
-  outputLimit: number
+  outputLimit: number,
+  streaming: boolean,
+  streamOptions: unknown
 ): boolean {
   if (!wire) return false;
   // Preserve every actual effort/output carrier for the same strict alias check.
@@ -150,7 +153,9 @@ function matchesOpenAiWireContract(
   return (
     normalized !== null &&
     normalized.reasoning_effort === candidate.effort.value &&
-    normalized.max_completion_tokens === outputLimit
+    normalized.max_completion_tokens === outputLimit &&
+    normalized.stream === streaming &&
+    JSON.stringify(normalized.stream_options) === JSON.stringify(streamOptions)
   );
 }
 
@@ -278,7 +283,9 @@ async function buildAttempt(
   signal: AbortSignal,
   outputLimit: number,
   trace: Array<{ phase: string; id?: string; reason: string }>,
-  native?: NativeStage
+  native?: NativeStage,
+  streaming = false,
+  streamOptions?: unknown
 ): Promise<ApplicationAttempt> {
   const connectionId = plan.config.connections[candidate.id];
   assertNativeConnectionUnleased(connectionId);
@@ -370,7 +377,15 @@ async function buildAttempt(
   if (native) native.handover(identity);
   else reserveDecisionAttempt(identity);
   reserved = true;
+  const stream = streaming
+    ? createApplicationStream(
+        identity,
+        signal,
+        streamOptions as { include_usage?: boolean } | undefined
+      )
+    : undefined;
   return {
+    stream,
     ...identity,
     signal,
     release: () => releaseDecisionAttempt(identity),
@@ -402,8 +417,9 @@ async function buildAttempt(
           headers.has("api-key") ||
           details.url !== endpoint.href ||
           wire?.model !== candidate.model ||
-          (!contract.claude && !matchesOpenAiWireContract(wire, candidate, outputLimit)) ||
-          wire?.stream === true ||
+          (!contract.claude &&
+            !matchesOpenAiWireContract(wire, candidate, outputLimit, streaming, streamOptions)) ||
+          wire?.stream !== streaming ||
           (!contract.claude &&
             Object.keys(wire ?? {}).some(
               (key) =>
@@ -411,6 +427,7 @@ async function buildAttempt(
                   "model",
                   "messages",
                   "stream",
+                  "stream_options",
                   "reasoning_effort",
                   "reasoning",
                   "max_tokens",
@@ -421,7 +438,7 @@ async function buildAttempt(
         )
           throw new Error("decision_identity_changed");
         const messages = contract.claude
-          ? claudeWireFacts(wire, candidate.effort.value!, outputLimit)
+          ? claudeWireFacts(wire, candidate.effort.value!, outputLimit, streaming)
           : wire.messages;
         const finalFacts = validTextFacts({
           model: plan.name,
@@ -448,7 +465,13 @@ async function buildAttempt(
         }
       },
     },
-    observe: (send) => observeResponse(identity, signal, send),
+    observe: async (send) => {
+      if (!stream) return observeResponse(identity, signal, send);
+      const response = await send;
+      return response.ok
+        ? stream.observe(response)
+        : observeResponse(identity, signal, Promise.resolve(response));
+    },
   };
 }
 async function reportedClaudeClientUsage(
@@ -460,7 +483,7 @@ async function reportedClaudeClientUsage(
     void response.body?.cancel().catch(() => {});
     return automaticRejection("pipeline_rejected");
   }
-  if (attempt.provider !== "claude" || !response.ok) return response;
+  if (attempt.stream?.active || attempt.provider !== "claude" || !response.ok) return response;
   const body = await response.json();
   const input = receipt.input_tokens as number | null,
     output = receipt.output_tokens as number | null;
@@ -551,6 +574,25 @@ function annotateNoDecision(
   }
   return response;
 }
+function selectedRequest(body: Record<string, unknown>, candidate: Candidate) {
+  return { ...body, stream: body.stream === true, reasoning_effort: candidate.effort.value };
+}
+function completedResponse(
+  response: Response,
+  attempt: ApplicationAttempt,
+  candidate: Candidate,
+  mode: ApplicationSelectionMode,
+  native?: NativeStage
+): Response {
+  if (!attempt.stream?.active) finishDecisionApplication(attempt.id, response.status);
+  const result = new Response(response.body, {
+    status: response.status,
+    headers: response.headers,
+  });
+  result.headers.set("x-omniroute-decision-attempt", attempt.id);
+  result.headers.set("x-omniroute-decision-candidate", candidate.id);
+  return native ? native.annotate(result) : annotateNoDecision(result, mode, attempt);
+}
 export async function executeAutomaticCombo(
   plan: AutomaticPlan,
   body: Record<string, unknown>,
@@ -566,6 +608,7 @@ export async function executeAutomaticCombo(
   signal = AbortSignal.any([signal, AbortSignal.timeout(plan.config.policy.timeoutMs)]);
   let attempt: ApplicationAttempt | undefined;
   let native: NativeStage | undefined;
+  let streamHandedOff = false;
   // A configured selector is not an observed selection before eligibility succeeds.
   let mode: ApplicationSelectionMode = "no-route";
   try {
@@ -594,11 +637,13 @@ export async function executeAutomaticCombo(
       signal,
       extracted.body.max_completion_tokens,
       trace,
-      native
+      native,
+      extracted.body.stream === true,
+      extracted.body.stream_options
     );
     let response = await withApplicationAttempt(attempt, () =>
       dispatch(
-        { ...extracted.body, stream: false, reasoning_effort: candidate.effort.value },
+        selectedRequest(extracted.body, candidate),
         `${candidate.provider}/${candidate.model}`,
         attempt!.connectionId
       )
@@ -611,21 +656,19 @@ export async function executeAutomaticCombo(
       );
     response = await reportedClaudeClientUsage(response, attempt);
     signal.throwIfAborted();
-    finishDecisionApplication(attempt.id, response.status);
-    const result = new Response(response.body, {
-      status: response.status,
-      headers: response.headers,
-    });
-    result.headers.set("x-omniroute-decision-attempt", attempt.id);
-    result.headers.set("x-omniroute-decision-candidate", candidate.id);
-    return native ? native.annotate(result) : annotateNoDecision(result, mode, attempt);
+    const annotated = completedResponse(response, attempt, candidate, mode, native);
+    if (attempt.stream?.active && response.ok) {
+      streamHandedOff = true;
+      return attempt.stream.wrap(annotated);
+    }
+    return annotated;
   } catch (error) {
     const status = failureStatus(signal, callerSignal, native);
     native?.finishFailure(status);
     const response = rejectedAttempt(attempt, error, status);
     return native ? native.annotate(response) : annotateNoDecision(response, mode, attempt);
   } finally {
-    releaseAttempt(attempt);
+    if (!streamHandedOff) releaseAttempt(attempt);
   }
 }
 export function assertAutomaticModel(model: string): void {

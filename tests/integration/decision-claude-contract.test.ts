@@ -32,8 +32,10 @@ const {
 } = await import("../../open-sse/services/claudeCodeCompatible.ts");
 const { DefaultExecutor } = await import("../../open-sse/executors/default.ts");
 const { supportsClaudeMaxEffort } = await import("../../open-sse/config/providerModels.ts");
-const { currentApplicationAttempt } =
+const { currentApplicationAttempt, withApplicationAttempt, isBoundedClaudeMaxEffort } =
   await import("../../open-sse/services/decisionPolicy/applicationContext.ts");
+type ApplicationAttempt =
+  import("../../open-sse/services/decisionPolicy/applicationContext.ts").ApplicationAttempt;
 const documentedExpansionPairs = [
   ["claude-opus-5-5", "xhigh"],
   ["claude-opus-5-5", "max"],
@@ -456,9 +458,112 @@ for (const [model, effort] of documentedExpansionPairs) {
     assert.equal(row.reasoning_tokens, null);
   });
 }
+test("bounded Sonnet max preserves literal max without widening ordinary tier rules", async () => {
+  await configure("claude-sonnet-5-5", "max");
+  const count = sent.length;
+  const response = await POST(request(key.key, undefined, { reasoning_effort: "max" }));
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(sent.length, count + 1);
+  const observation = sent.at(-1)!;
+  const wire = observation.body as Record<string, unknown>;
+  assert.equal(wire.model, "claude-sonnet-5-5");
+  assert.deepEqual(wire.output_config, { effort: "max" });
+  assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
+  assert.equal(Object.hasOwn(wire.thinking as object, "budget_tokens"), false);
+  for (const field of ["temperature", "top_p", "top_k"])
+    assert.equal(Object.hasOwn(wire, field), false);
+  assert.equal(wire.max_tokens, 4096);
+  assert.equal(wire.stream, false);
+  assert.equal(observation.bearerCorrect, true);
+  assert.equal(observation.secondaryKey, null);
+  const row = readDecisionAttempts(key.id).at(-1)!;
+  assert.equal(row.model, "claude-sonnet-5-5");
+  assert.equal(row.effort, "max");
+  assert.equal(row.connection_id, connectionId);
+  assert.equal(row.cost_usd, null);
+});
+function effortFixture(
+  overrides: Partial<Pick<ApplicationAttempt, "provider" | "model" | "effort">>
+): ApplicationAttempt {
+  const blocked = (): never => {
+    throw new Error("synthetic effort fixture cannot dispatch");
+  };
+  return {
+    id: "synthetic-effort-only",
+    keyId: "synthetic-key",
+    provider: "claude",
+    model: "claude-sonnet-5-5",
+    connectionId: "synthetic-connection",
+    effort: "max",
+    signal: new AbortController().signal,
+    dispatch: { beforeFetch: blocked, reject: blocked },
+    assertIdle: blocked,
+    assertFresh: blocked,
+    fence: blocked,
+    observe: async () => blocked(),
+    ...overrides,
+  };
+}
+test("literal max exception requires exact trusted provider/model/effort and requested carrier", () => {
+  initTranslators();
+  for (const model of ["claude-sonnet-5-5", "claude-haiku-5-5"]) {
+    for (const mismatch of ["none", "provider", "model", "effort", "request"] as const) {
+      const context = effortFixture({
+        provider: mismatch === "provider" ? "anthropic" : "claude",
+        model: mismatch === "model" ? "claude-opus-5-5" : model,
+        effort: mismatch === "effort" ? "high" : "max",
+      });
+      const effort = mismatch === "request" ? "high" : "max";
+      const result = withApplicationAttempt(context, () => {
+        const raw = {
+          model,
+          reasoning_effort: effort,
+          max_tokens: 4096,
+          messages: [{ role: "user", content: "synthetic" }],
+        };
+        assert.equal(isBoundedClaudeMaxEffort("claude", model, effort), mismatch === "none");
+        const wire = translateRequest("openai", "claude", model, raw, false, null, "claude");
+        return sanitizeReasoningEffortForProvider(wire, "claude", model) as Record<string, unknown>;
+      });
+      assert.equal(
+        (result.output_config as Record<string, unknown>).effort,
+        mismatch === "none" ? "max" : "high",
+        `${model}/${mismatch}`
+      );
+    }
+  }
+});
+for (const effort of ["medium", "high", "xhigh", "max"]) {
+  test(`bounded documented Haiku preserves exact wire: ${effort}`, async () => {
+    await configure("claude-haiku-5-5", effort);
+    const count = sent.length;
+    const response = await POST(request(key.key, undefined, { reasoning_effort: effort }));
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(sent.length, count + 1);
+    const observation = sent.at(-1)!;
+    const wire = observation.body as Record<string, unknown>;
+    assert.equal(wire.model, "claude-haiku-5-5");
+    assert.deepEqual(wire.output_config, { effort });
+    assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
+    assert.equal(Object.hasOwn(wire.thinking as object, "budget_tokens"), false);
+    for (const field of ["temperature", "top_p", "top_k"])
+      assert.equal(Object.hasOwn(wire, field), false);
+    assert.equal(wire.max_tokens, 4096);
+    assert.equal(wire.stream, false);
+    assert.equal(observation.bearerCorrect, true);
+    assert.equal(observation.secondaryKey, null);
+    const row = readDecisionAttempts(key.id).at(-1)!;
+    assert.equal(row.provider, "claude");
+    assert.equal(row.model, "claude-haiku-5-5");
+    assert.equal(row.effort, effort);
+    assert.equal(row.connection_id, connectionId);
+    assert.equal(row.cost_usd, null);
+    assert.equal(row.reasoning_tokens, null);
+  });
+}
 for (const [model, effort] of [
-  ["claude-sonnet-5-5", "max"],
-  ["claude-haiku-5-5", "medium"],
+  ["claude-sonnet-5-5", "low"],
+  ["claude-haiku-5-5", "low"],
   ["claude-opus-5-5", "unknown"],
   ["claude-unknown", "high"],
 ]) {
@@ -836,6 +941,51 @@ test("partial Claude receipt survives reopen and late disclosure settles idempot
     0.005
   );
 });
+for (const [model, effort] of [
+  ["claude-sonnet-5-5", "max"],
+  ["claude-haiku-5-5", "max"],
+  ["claude-haiku-5-5", "xhigh"],
+]) {
+  for (const change of [
+    "top-effort",
+    "nested-effort",
+    "adaptive-budget",
+    "output-effort",
+    "secondary-cap",
+    "sampling",
+    "input-alias-conflict",
+  ]) {
+    test(`new scoped ${model}/${effort} rejects ${change} before physical dispatch`, async () => {
+      await configure(model, effort);
+      const original = DefaultExecutor.prototype.transformRequest;
+      DefaultExecutor.prototype.transformRequest = function (...args) {
+        const wire = original.apply(this, args) as Record<string, unknown>;
+        if (this.provider !== "claude") return wire;
+        if (change === "top-effort") wire.reasoning_effort = "high";
+        if (change === "nested-effort") wire.reasoning = { effort: "high" };
+        if (change === "adaptive-budget") wire.thinking = { type: "adaptive", budget_tokens: 1024 };
+        if (change === "output-effort") wire.output_config = { effort: "high" };
+        if (change === "secondary-cap") wire.max_completion_tokens = 8192;
+        if (change === "sampling") wire.temperature = 1;
+        return wire;
+      };
+      const count = sent.length;
+      try {
+        const response = await POST(
+          request(key.key, undefined, {
+            reasoning_effort: effort,
+            ...(change === "input-alias-conflict" ? { max_tokens: 8192 } : {}),
+          })
+        );
+        await response.text();
+        assert.equal(response.status, 409);
+        assert.equal(sent.length, count);
+      } finally {
+        DefaultExecutor.prototype.transformRequest = original;
+      }
+    });
+  }
+}
 test("ordinary Sonnet 5.5 max retains the stable OAuth high clamp outside bounded routing", async () => {
   ordinaryControl = true;
   const count = sent.length;
@@ -849,4 +999,21 @@ test("ordinary Sonnet 5.5 max retains the stable OAuth high clamp outside bounde
   assert.equal((wire.output_config as Record<string, unknown>).effort, "high");
   assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
   assert.equal(wire.temperature, 1, "ordinary finalizer retains its existing sampling default");
+});
+test("ordinary Haiku 5.5 max retains the stable OAuth high clamp outside bounded routing", async () => {
+  ordinaryControl = true;
+  const count = sent.length;
+  const response = await POST(
+    request(key.key, undefined, {
+      model: "claude/claude-haiku-5-5",
+      reasoning_effort: "max",
+    })
+  );
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(sent.length, count + 1);
+  const wire = sent.at(-1)!.body as Record<string, unknown>;
+  assert.equal(wire.model, "claude-haiku-5-5");
+  assert.deepEqual(wire.output_config, { effort: "high" });
+  assert.equal((wire.thinking as Record<string, unknown>).type, "adaptive");
+  assert.equal(wire.temperature, 1);
 });

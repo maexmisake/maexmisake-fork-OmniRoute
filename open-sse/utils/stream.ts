@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
 import { translateResponse, initState } from "../translator/index.ts";
 import { FORMATS } from "../translator/formats.ts";
 import { appendRequestLog } from "@/lib/usageDb";
@@ -88,10 +89,7 @@ import {
   hasUnsupportedReasoningSignal,
 } from "./reasoningFields.ts";
 import { applyThinkTag, flushThink, initThinkState } from "./thinkTagParser.ts";
-import {
-  caseInsensitiveToolNameLookup,
-  restoreOpenAIToolNames,
-} from "../translator/helpers/toolCallHelper.ts";
+import { restoreOpenAIToolNames } from "../translator/helpers/toolCallHelper.ts";
 import { restoreClaudeToolName } from "../services/claudeCodeToolRemapper.ts";
 import { normalizeFinalOpenAIStreamChunk } from "./openAIStreamChunk.ts";
 import { collectClaudeDelta } from "./streamClaudeDelta.ts";
@@ -768,6 +766,8 @@ const STREAM_MODE = {
  * @param {function} options.onComplete - Callback when stream finishes: ({ status, usage }) => void
  */
 export function createSSEStream(options: StreamOptions = {}) {
+  // Deferred stream callbacks may run after the request AsyncLocalStorage scope.
+  const boundedAttempt = currentApplicationAttempt();
   const {
     mode = STREAM_MODE.TRANSLATE,
     targetFormat,
@@ -795,6 +795,21 @@ export function createSSEStream(options: StreamOptions = {}) {
     streamBufferBytes = DEFAULT_STREAM_BUFFER_BYTES,
     pendingRequestId = null,
   } = options;
+  const stripBoundedUsage = (payload: Record<string, unknown>): boolean => {
+    if (!boundedAttempt || !payload || typeof payload !== "object") return false;
+    let changed = false;
+    for (const record of [payload, payload.message, payload.response]) {
+      if (record && typeof record === "object" && Object.hasOwn(record, "usage")) {
+        delete (record as Record<string, unknown>).usage;
+        changed = true;
+      }
+    }
+    return changed;
+  };
+  const sanitizeClientUsage = (payload: Record<string, unknown>): boolean =>
+    boundedAttempt
+      ? stripBoundedUsage(payload)
+      : sanitizeUsagePayloadForRequest(payload as UsageLike, body, clientResponseFormat);
   // Request-body-size metric (for monitoring payload size distribution & correlation with TTFT).
   // The size is JSON-serialised byte count; stored as a performance mark detail so monitoring
   // tools can query performance.getEntriesByType("mark") filtered by name.
@@ -841,7 +856,10 @@ export function createSSEStream(options: StreamOptions = {}) {
       ? clientResponseFormat === FORMATS.CLAUDE
       : sourceFormat === FORMATS.CLAUDE) === true;
   // Forward a pre-encoded SSE chunk: TTFT/ITL marks + opt-in coalescing (sseOutputSink.ts).
-  const outputSink = createSSEOutputSink(timing, { claudeClient: clientExpectsClaudeStream });
+  const outputSink = createSSEOutputSink(timing, {
+    claudeClient: clientExpectsClaudeStream,
+    ...(boundedAttempt ? { onTransformError: () => clearIdleTimer() } : {}),
+  });
   const forward = outputSink.forward;
 
   // Antigravity/cloudcode streams terminate naturally on their last
@@ -1210,6 +1228,7 @@ export function createSSEStream(options: StreamOptions = {}) {
       itemSanitized = sanitizeStreamingChunk(itemSanitized) as Record<string, unknown>;
     }
 
+    stripBoundedUsage(itemSanitized);
     if (!hasValuableContent(itemSanitized, sourceFormat)) {
       return;
     }
@@ -1217,6 +1236,7 @@ export function createSSEStream(options: StreamOptions = {}) {
     const isFinishChunk =
       itemSanitized.type === "message_delta" || itemSanitized.choices?.[0]?.finish_reason;
     if (
+      !boundedAttempt &&
       state?.finishReason &&
       isFinishChunk &&
       !hasValidUsage(itemSanitized.usage as UsageLike) &&
@@ -1226,7 +1246,7 @@ export function createSSEStream(options: StreamOptions = {}) {
       itemSanitized.usage = timing.withTps(filterUsageForFormat(estimated, sourceFormat));
       state.usage = estimated;
       if (hasValidUsage(estimated)) translateForwardedUsage = true; // finish chunk carries it
-    } else if (state?.finishReason && isFinishChunk && state.usage) {
+    } else if (!boundedAttempt && state?.finishReason && isFinishChunk && state.usage) {
       const buffered = addBufferToUsage(state.usage);
       itemSanitized.usage = timing.withTps(
         carryCacheCreationMarker(itemSanitized.usage, filterUsageForFormat(buffered, sourceFormat))
@@ -1253,6 +1273,22 @@ export function createSSEStream(options: StreamOptions = {}) {
     forward(controller, encoder.encode(output));
   };
 
+  const emitReportedClientUsage = (
+    controller: TransformStreamDefaultController,
+    id: unknown
+  ): UsageLike | null => {
+    if (boundedAttempt?.stream?.includeUsage !== true) return null;
+    const reported = boundedAttempt?.stream?.reportedClientUsage();
+    if (!reported) return null;
+    // Exact reported zero is valid. Do not run ordinary estimation/buffering helpers.
+    const chunk = buildUsageOnlyChunk(id, model, reported);
+    const output = `data: ${JSON.stringify(chunk)}\n\n`;
+    reqLogger?.appendConvertedChunk?.(output);
+    clientPayloadCollector.push(chunk);
+    forward(controller, encoder.encode(output));
+    return reported;
+  };
+
   const emitFinalSseMetadata = async (
     controller: TransformStreamDefaultController,
     finalUsage: UsageTokenRecord | Record<string, unknown> | null | undefined
@@ -1260,7 +1296,7 @@ export function createSSEStream(options: StreamOptions = {}) {
     // Skip SSE metadata comment lines when OMNIROUTE_SSE_COMMENTS is disabled
     // (e.g., "off", "false", "0", "no"). Strict OpenAI-compatible clients that
     // JSON.parse every SSE line will crash on `: x-omniroute-*` comment lines.
-    if (!sseCommentsEnabled()) return;
+    if (boundedAttempt || !sseCommentsEnabled()) return;
 
     const costUsd = finalUsage
       ? await calculateCost(provider, model, normalizeTokenUsage(finalUsage))
@@ -1433,12 +1469,13 @@ export function createSSEStream(options: StreamOptions = {}) {
               if (!failureHandled) {
                 clearPendingRequestFromStream();
               }
-              appendRequestLog({
-                model,
-                provider,
-                connectionId,
-                status: `FAILED ${HTTP_STATUS.GATEWAY_TIMEOUT}`,
-              }).catch(() => {});
+              if (!boundedAttempt)
+                appendRequestLog({
+                  model,
+                  provider,
+                  connectionId,
+                  status: `FAILED ${HTTP_STATUS.GATEWAY_TIMEOUT}`,
+                }).catch(() => {});
               const timeoutError = new Error(timeoutMsg);
               timeoutError.name = "StreamIdleTimeoutError";
               controller.error(markPendingRequestCleared(timeoutError));
@@ -1618,7 +1655,7 @@ export function createSSEStream(options: StreamOptions = {}) {
                     parsed.type.startsWith("content_block") ||
                     parsed.type === "ping" ||
                     parsed.type === "error");
-                if (sanitizeUsagePayloadForRequest(parsed, body, clientResponseFormat)) {
+                if (sanitizeClientUsage(parsed)) {
                   output = `data: ${JSON.stringify(parsed)}\n\n`;
                   injectedUsage = true;
                 }
@@ -1998,6 +2035,7 @@ export function createSSEStream(options: StreamOptions = {}) {
                         Object.keys(parsed.choices[0].delta).length === 0 &&
                         !parsed.choices[0]?.finish_reason))
                   ) {
+                    if (boundedAttempt) continue;
                     const emptyChoicesUsage = extractUsage(parsed) ?? parsed.usage;
                     if (hasValidUsage(emptyChoicesUsage) && !passthroughForwardedUsageSummary) {
                       usage = resolveTrailingUsageSummary(
@@ -2259,7 +2297,12 @@ export function createSSEStream(options: StreamOptions = {}) {
                   // and made the real trailing block get dropped in favor of the estimate
                   // (billing regression pinned by tests/unit/stream-utils.test.ts). The
                   // estimate is now emitted in flush(), only when the upstream stayed silent.
-                  if (isFinishChunk && hasValidUsage(usage) && !passthroughForwardedUsage) {
+                  if (
+                    !boundedAttempt &&
+                    isFinishChunk &&
+                    hasValidUsage(usage) &&
+                    !passthroughForwardedUsage
+                  ) {
                     const buffered = addBufferToUsage(usage);
                     parsed.usage = timing.withTps(
                       carryCacheCreationMarker(
@@ -2604,7 +2647,7 @@ export function createSSEStream(options: StreamOptions = {}) {
               pushProviderPayload: (payload: unknown) => providerPayloadCollector.push(payload),
               pushClientPayload: (payload: unknown) => clientPayloadCollector.push(payload),
               sanitizeUsagePayload: (payload: unknown) =>
-                sanitizeUsagePayloadForRequest(payload as UsageLike, body, clientResponseFormat),
+                sanitizeClientUsage(payload as Record<string, unknown>),
               setPassthroughResponsesId: (value: string) => {
                 passthroughResponsesId = value;
               },
@@ -2678,7 +2721,7 @@ export function createSSEStream(options: StreamOptions = {}) {
                     );
                   output = `data: ${JSON.stringify(bufferedPayload)}\n\n`;
                 }
-                if (sanitizeUsagePayloadForRequest(bufferedPayload, body, clientResponseFormat))
+                if (sanitizeClientUsage(bufferedPayload))
                   output = `data: ${JSON.stringify(bufferedPayload)}\n\n`;
                 if (
                   shouldInjectClaudeEmptyResponseBeforeCurrentEvent(
@@ -2798,13 +2841,13 @@ export function createSSEStream(options: StreamOptions = {}) {
             }
 
             // Estimate usage if provider didn't return valid usage
-            if (!hasValidUsage(usage) && totalContentLength > 0) {
+            if (!boundedAttempt && !hasValidUsage(usage) && totalContentLength > 0) {
               usage = estimateUsage(body, totalContentLength, sourceFormat || FORMATS.OPENAI);
             }
 
-            if (hasValidUsage(usage)) {
+            if (!boundedAttempt && hasValidUsage(usage)) {
               logUsage(provider, usage, model, connectionId, apiKeyInfo);
-            } else {
+            } else if (!boundedAttempt) {
               appendRequestLog({
                 model,
                 provider,
@@ -2836,7 +2879,12 @@ export function createSSEStream(options: StreamOptions = {}) {
               // [DONE], so metered clients still see token counts. When the
               // upstream DID send usage (trailing or in-band), it was forwarded
               // already and passthroughForwardedUsage guards this off.
-              if (shouldEmitDoneTerminator && !passthroughForwardedUsage && hasValidUsage(usage)) {
+              if (
+                !boundedAttempt &&
+                shouldEmitDoneTerminator &&
+                !passthroughForwardedUsage &&
+                hasValidUsage(usage)
+              ) {
                 const usageOnlyChunk = buildUsageOnlyChunk(
                   passthroughLastChatId ?? passthroughResponsesId,
                   model,
@@ -2848,6 +2896,11 @@ export function createSSEStream(options: StreamOptions = {}) {
                 clientPayloadCollector.push(usageOnlyChunk);
                 passthroughForwardedUsage = true;
               }
+              if (boundedAttempt)
+                usage = emitReportedClientUsage(
+                  controller,
+                  passthroughLastChatId ?? passthroughResponsesId
+                );
               await emitFinalSseMetadata(controller, usage);
               doneSent = true;
               if (shouldEmitDoneTerminator) {
@@ -3182,7 +3235,7 @@ export function createSSEStream(options: StreamOptions = {}) {
            */
 
           // Estimate usage if provider didn't return valid usage (for translate mode)
-          if (!hasValidUsage(state?.usage) && totalContentLength > 0) {
+          if (!boundedAttempt && !hasValidUsage(state?.usage) && totalContentLength > 0) {
             state.usage = estimateUsage(body, totalContentLength, sourceFormat);
           }
 
@@ -3190,7 +3243,7 @@ export function createSSEStream(options: StreamOptions = {}) {
           if (!doneSent) {
             // Upstream stayed silent on usage: send the estimate as the canonical
             // trailing usage-only chunk before [DONE], like the passthrough flush.
-            if (!translateForwardedUsage && hasValidUsage(state?.usage)) {
+            if (!boundedAttempt && !translateForwardedUsage && hasValidUsage(state?.usage)) {
               const usageOnlyChunk = buildUsageOnlyChunk(
                 (state as unknown as Record<string, unknown>)?.chatId,
                 model,
@@ -3201,6 +3254,11 @@ export function createSSEStream(options: StreamOptions = {}) {
               forward(controller, encoder.encode(usageOutput));
               clientPayloadCollector.push(usageOnlyChunk);
             }
+            if (boundedAttempt)
+              state.usage = emitReportedClientUsage(
+                controller,
+                (state as unknown as Record<string, unknown>)?.chatId
+              );
             await emitFinalSseMetadata(controller, state?.usage as Record<string, unknown> | null);
             doneSent = true;
             if (shouldEmitDoneTerminator) {
@@ -3211,9 +3269,9 @@ export function createSSEStream(options: StreamOptions = {}) {
             }
           }
 
-          if (hasValidUsage(state?.usage)) {
+          if (!boundedAttempt && hasValidUsage(state?.usage)) {
             logUsage(state.provider || targetFormat, state.usage, model, connectionId, apiKeyInfo);
-          } else {
+          } else if (!boundedAttempt) {
             appendRequestLog({
               model,
               provider,
@@ -3341,7 +3399,8 @@ export function createSSEStream(options: StreamOptions = {}) {
     }),
     ...createByteLengthQueueStrategies(streamBufferBytes)
   );
-  trackStreamPartialUsage(sseStream, body, () => [state?.usage ?? usage, totalContentLength]);
+  if (!boundedAttempt)
+    trackStreamPartialUsage(sseStream, body, () => [state?.usage ?? usage, totalContentLength]);
   return registerStreamTiming(sseStream, timing);
 }
 

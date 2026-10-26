@@ -1,5 +1,6 @@
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
+import { isBoundedClaudeMaxEffort } from "../../services/decisionPolicy/applicationContext.ts";
 // CLAUDE_SYSTEM_PROMPT import removed — no longer injected unconditionally (#1966/#2130)
 import { supportsClaudeMaxEffort, supportsXHighEffort } from "../../config/providerModels.ts";
 import { adjustMaxTokens } from "../helpers/maxTokensHelper.ts";
@@ -234,7 +235,9 @@ export function openaiToClaudeRequest(
     // Clients like OpenCode send reasoning_effort via @ai-sdk/openai-compatible
     const requestedEffort = String(body.reasoning_effort).toLowerCase();
     const normalizedEffort =
-      requestedEffort === "max" && !supportsClaudeMaxEffort(model)
+      requestedEffort === "max" &&
+      !isBoundedClaudeMaxEffort(routedProvider, model, requestedEffort) &&
+      !supportsClaudeMaxEffort(model)
         ? "high"
         : requestedEffort === "xhigh" && !supportsXHighEffort("claude", model)
           ? "high"

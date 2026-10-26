@@ -1,6 +1,7 @@
 // Provider-aware reasoning_effort sanitation (xhigh/max normalization + reject strip).
 // Extracted verbatim from base.ts. Deps are config/services only (no host import → no cycle).
 import { PROVIDER_CLAUDE } from "../../services/systemTransforms.ts";
+import { isBoundedClaudeMaxEffort } from "../../services/decisionPolicy/applicationContext.ts";
 import { isClaudeCodeCompatible } from "../../services/provider.ts";
 import {
   supportsClaudeMaxEffort,
@@ -672,7 +673,11 @@ export function sanitizeReasoningEffortForProvider(
     .map((tier) => ({ tier, rank: REASONING_EFFORT_ORDER.indexOf(tier) }))
     .filter((x) => x.rank >= 0)
     .sort((a, b) => a.rank - b.rank);
-  if (declaredRanked.length > 0 && !declaredEfforts!.includes(effortStr)) {
+  if (
+    declaredRanked.length > 0 &&
+    !declaredEfforts!.includes(effortStr) &&
+    !isBoundedClaudeMaxEffort(provider, modelStr, effortStr)
+  ) {
     const requestedRank = REASONING_EFFORT_ORDER.indexOf(effortStr);
     const nearest =
       declaredRanked.find((x) => x.rank >= requestedRank) ??
@@ -685,7 +690,9 @@ export function sanitizeReasoningEffortForProvider(
   }
 
   const supportsXHigh = supportsXHighEffort(provider, modelStr);
-  const supportsMax = supportsMaxEffortForProvider(provider, modelStr);
+  const supportsMax =
+    isBoundedClaudeMaxEffort(provider, modelStr, effortStr) ||
+    supportsMaxEffortForProvider(provider, modelStr);
 
   // ── xhigh handling ──────────────────────────────────────────────────────
   // xhigh is OmniRoute-internal. Map it to the best effort the model accepts.

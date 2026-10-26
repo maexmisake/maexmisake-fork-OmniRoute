@@ -398,13 +398,7 @@ for (const [sourceName, chosen] of [
     });
   });
 }
-for (const sourceName of [
-  "omitted-cap",
-  "stream-tools",
-  "default-stream",
-  "nonstream-tools",
-  "tool-continuation",
-]) {
+for (const sourceName of ["omitted-cap", "stream-tools", "nonstream-tools", "tool-continuation"]) {
   test(`actual POST rejects ${sourceName} with zero decision/execution calls`, async () => {
     const source = capture(sourceName);
     const d = decisionCalls,

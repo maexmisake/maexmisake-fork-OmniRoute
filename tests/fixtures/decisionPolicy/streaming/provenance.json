@@ -1,0 +1,38 @@
+{
+  "fixtureKind": "Official-protocol synthetic SSE, not captured provider responses or live interoperability",
+  "primarySources": [
+    "https://platform.claude.com/docs/en/build-with-claude/streaming",
+    "https://platform.openai.com/docs/api-reference/chat/create#chat_create-stream_options"
+  ],
+  "installedOfficialSource": [
+    {
+      "path": "node_modules/@anthropic-ai/sdk/package.json",
+      "sha256": "4cf0e65afe827c1f86b36b4494dbee3e24e4bd4f5f0da123ecc0031d0bc381e8"
+    },
+    {
+      "path": "node_modules/@anthropic-ai/sdk/src/resources/messages/messages.ts",
+      "sha256": "63edc66ad2d37fb39d3bddf455a7efa1cd1f04dff6aa9b937c98ab80073d895a"
+    },
+    {
+      "path": "node_modules/@anthropic-ai/sdk/src/core/streaming.ts",
+      "sha256": "e18caf8720d062b82181d8b8b4aa038498897b59e6571741028250423540c894"
+    },
+    {
+      "path": "node_modules/openai/package.json",
+      "sha256": "258e9d126808505c1975c9c5106933bf1f7af916248339f7203165a3c2f95227"
+    },
+    {
+      "path": "node_modules/openai/src/resources/chat/completions/completions.ts",
+      "sha256": "69390e3960e58610a05bf095aec76acc1cac440a1257a43771af5ef4a3e62616"
+    },
+    {
+      "path": "node_modules/openai/src/core/streaming.ts",
+      "sha256": "433e507cfbd070c75ba56f03b24ad028b8f7c008e08c201ad14be19fd04251d1"
+    }
+  ],
+  "versions": {
+    "@anthropic-ai/sdk": "0.122.0",
+    "openai": "6.46.0"
+  },
+  "scope": "Text/thinking blocks only, one exact model and one choice, explicit output cap; tool calls, server-side fallback and unknown event families are rejected. Original SDK packages are not modified. Tests exercise original application translation pipeline, not provider service."
+}

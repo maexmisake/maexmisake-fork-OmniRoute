@@ -919,6 +919,8 @@ export function pipeWithDisconnect(
   let upstreamTapController: TransformStreamDefaultController<Uint8Array> | null = null;
   let stallFired = false;
   let activeFired = false;
+  let terminal = false;
+  let rejectUpstream = false;
 
   // Per-chunk timer by default; one interval with SSE_STALL_WATCHDOG=interval.
   const stallWatchdog = createStallWatchdog(stallEnabled ? stallTimeoutMs : 0, () =>
@@ -934,11 +936,11 @@ export function pipeWithDisconnect(
     clearActive();
   };
   const triggerWatchdog = (kind: "stall" | "active") => {
-    if (stallFired || activeFired) return;
+    if (terminal || stallFired || activeFired) return;
     const message = kind === "active" ? "stream active timeout" : "stream stall timeout";
     if (kind === "active") activeFired = true;
     else stallFired = true;
-    clearWatchdogs();
+    stopWatchdogs(true);
     const error = new Error(message);
     try {
       streamController.handleError?.(error);
@@ -956,9 +958,11 @@ export function pipeWithDisconnect(
       console.debug(`[STREAM-HANDLER] ${kind} watchdog abort failed:`, e);
     }
   };
-  const armStall = stallWatchdog.arm;
+  const armStall = () => {
+    if (!terminal) stallWatchdog.arm();
+  };
   const armActive = () => {
-    if (!activeEnabled) return;
+    if (terminal || !activeEnabled) return;
     clearActive();
     activeTimer = setTimeout(() => triggerWatchdog("active"), activeTimeoutMs);
   };
@@ -1067,11 +1071,20 @@ export function pipeWithDisconnect(
       contentStallTimer = null;
     }
   };
+  // Successful completion may still drain late usage; errors/abort reject queued frames.
+  function stopWatchdogs(rejectQueuedFrames = false) {
+    terminal = true;
+    rejectUpstream ||= rejectQueuedFrames;
+    clearWatchdogs();
+    clearContentStall();
+  }
   const armContentStall = () => {
-    if (contentStallTimeoutMs <= 0 || contentStallFired) return;
+    if (terminal || contentStallTimeoutMs <= 0 || contentStallFired) return;
     contentStallTimer = setTimeout(() => {
+      if (terminal) return;
       contentStallTimer = null;
       contentStallFired = true;
+      stopWatchdogs(true);
       const stallSummary = formatStallSummary();
       const stallError = new Error(
         `stream content stall: no model output within ${contentStallTimeoutMs}ms (${stallSummary})`
@@ -1101,13 +1114,11 @@ export function pipeWithDisconnect(
   const wrappedController: StreamController = {
     ...streamController,
     handleComplete: () => {
-      clearWatchdogs();
-      clearContentStall();
+      stopWatchdogs();
       streamController.handleComplete();
     },
     handleError: (e: unknown) => {
-      clearWatchdogs();
-      clearContentStall();
+      stopWatchdogs(true);
       // A watchdog already fired its own handleError — the inner pull()
       // catch sees the same error propagated through the pipeline; suppress
       // the duplicate to keep onError callbacks single-fire.
@@ -1115,13 +1126,11 @@ export function pipeWithDisconnect(
       streamController.handleError(e);
     },
     handleDisconnect: (reason?: string) => {
-      clearWatchdogs();
-      clearContentStall();
+      stopWatchdogs(true);
       streamController.handleDisconnect(reason);
     },
     abort: () => {
-      clearWatchdogs();
-      clearContentStall();
+      stopWatchdogs(true);
       streamController.abort();
     },
   };
@@ -1143,6 +1152,7 @@ export function pipeWithDisconnect(
       armContentStall();
     },
     transform(chunk, controller) {
+      if (rejectUpstream) return;
       armStall();
       if (contentStallTimeoutMs > 0 && !upstreamContentWatcher.sawContent()) {
         // Second pass over the already-decoded text, not a second decode:
@@ -1162,8 +1172,7 @@ export function pipeWithDisconnect(
       controller.enqueue(chunk);
     },
     flush() {
-      clearWatchdogs();
-      clearContentStall();
+      stopWatchdogs();
     },
   });
 

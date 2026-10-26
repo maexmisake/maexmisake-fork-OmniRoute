@@ -1,3 +1,4 @@
+import { currentApplicationAttempt } from "../services/decisionPolicy/applicationContext.ts";
 import { createHash } from "node:crypto";
 import { BaseExecutor, type ExecuteInput } from "./base.ts";
 import { mapNvidiaGlm52ReasoningParams } from "./base/reasoningEffort.ts";
@@ -948,6 +949,9 @@ export class DefaultExecutor extends BaseExecutor {
             delete withoutStreamOptions.stream_options;
             withDefaults = withoutStreamOptions;
           }
+        } else if (currentApplicationAttempt()) {
+          // The bounded application final fence verifies these exact client controls.
+          // Ordinary requests retain the existing usage-injection policy below.
         } else if (!credentials?.providerSpecificData?.disableStreamOptions) {
           withDefaults = {
             ...withDefaults,

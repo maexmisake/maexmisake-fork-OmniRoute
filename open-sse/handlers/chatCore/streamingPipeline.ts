@@ -83,6 +83,8 @@ export function assembleStreamingPipeline(
      * request's pre-handoff readiness gate, so slow-first-content reasoning
      * models keep the same generous budget in both phases. */
     contentStallTimeoutMs?: number;
+    /** Internal queue sizing; omitted by ordinary callers to preserve their default. */
+    highWaterMark?: number;
   },
   deps: StreamingPipelineDeps = DEFAULT_DEPS
 ) {
@@ -98,7 +100,10 @@ export function assembleStreamingPipeline(
     args.providerResponse,
     args.transformStream,
     args.streamController,
-    { contentStallTimeoutMs: args.contentStallTimeoutMs }
+    {
+      contentStallTimeoutMs: args.contentStallTimeoutMs,
+      ...(args.highWaterMark !== undefined ? { highWaterMark: args.highWaterMark } : {}),
+    }
   );
   if (typeof args.createPiiTransform === "function") {
     piiStream = piiStream.pipeThrough((args.createPiiTransform as () => TransformStream)());

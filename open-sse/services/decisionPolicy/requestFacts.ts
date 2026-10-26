@@ -44,7 +44,8 @@ const requestBody = z
       )
       .max(64)
       .optional(),
-    stream: z.literal(false).optional(),
+    stream: z.boolean().optional(),
+    stream_options: z.object({ include_usage: z.boolean() }).strict().optional(),
     reasoning_effort: effort.optional(),
     max_completion_tokens: z.number().int().positive().max(1000000),
   })
@@ -58,6 +59,8 @@ const textAliases = requestBody
     reasoning: z.object({ effort }).strict().optional(),
   })
   .superRefine((body, context) => {
+    if (body.stream_options !== undefined && body.stream !== true)
+      context.addIssue({ code: "custom", message: "Stream options require streaming" });
     if (body.max_tokens === undefined && body.max_completion_tokens === undefined)
       context.addIssue({ code: "custom", message: "Explicit output reservation required" });
     if (

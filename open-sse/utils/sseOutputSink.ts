@@ -65,7 +65,7 @@ export type SSEOutputSink = {
 
 export function createSSEOutputSink(
   timing: SinkTiming,
-  options: { claudeClient: boolean }
+  options: { claudeClient: boolean; onTransformError?: () => void }
 ): SSEOutputSink {
   const frameWindowMs = readFrameCoalesceMs();
   const deltaWindows = readDeltaCoalesceWindows();
@@ -161,13 +161,27 @@ export function createSSEOutputSink(
   };
 
   const wrap = <T extends Transformer<Uint8Array, Uint8Array>>(transformer: T): T => {
-    if (!deltaStage && frameWindowMs <= 0) return transformer;
+    if (!deltaStage && frameWindowMs <= 0 && !options.onTransformError) return transformer;
+    const originalTransform = transformer.transform;
     const originalFlush = transformer.flush;
     const originalCancel = (
       transformer as T & { cancel?: (reason?: unknown) => void | PromiseLike<void> }
     ).cancel;
     return {
       ...transformer,
+      ...(options.onTransformError
+        ? {
+            async transform(chunk: Uint8Array, controller: OutputController) {
+              try {
+                await originalTransform?.call(transformer, chunk, controller);
+              } catch (error) {
+                dispose();
+                options.onTransformError?.();
+                throw error;
+              }
+            },
+          }
+        : {}),
       async flush(controller: OutputController) {
         try {
           await originalFlush?.call(transformer, controller);

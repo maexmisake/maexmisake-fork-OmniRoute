@@ -458,9 +458,10 @@ export default function ProfileFields(props: Props) {
       <p className="text-sm text-text-muted">
         Declare exact provider/model/effort profiles and their evidence. No capabilities, rankings,
         live availability or account entitlement are inferred. OpenAI uses an explicit
-        operator-supplied model ID. This bounded path supports claude-opus-5-5 at
-        medium/high/xhigh/max and claude-sonnet-5-5 at medium/high/xhigh. Live account access
-        remains unverified. Image/tool/continuation requests are unsupported.
+        operator-supplied model ID. This bounded path supports claude-opus-5-5, claude-sonnet-5-5
+        and claude-haiku-5-5 at medium/high/xhigh/max. All twelve pairs have synthetic JSON tests;
+        streaming tests cover representative pairs. Live account access remains unverified.
+        Image/tool/continuation requests are unsupported.
       </p>
       {!editable && (
         <p role="alert" className="mt-3">

@@ -1,18 +1,25 @@
+---
+title: "Bounded Native Router Capabilities"
+version: 3.8.52
+lastUpdated: 2026-10-26
+---
+
 # Bounded native-router capabilities
 
-Evidence date: October 26, 2026. Support here means an exact request contract exercised through the application handler with synthetic providers. It does not prove account access, live OAuth interoperability, billed cost or model-selection quality. Saving a profile never runs a provider request.
+Evidence date: October 26, 2026. Admitted means the runtime allows the explicitly configured contract. All twelve Claude pairs have exact JSON application-handler tests with synthetic providers. SSE tests cover representative Opus/Sonnet Medium/High pairs and an explicit OpenAI fixture, not the complete model/effort/transport cross-product. It does not prove account access, live OAuth interoperability, billed cost or model-selection quality. Saving a profile never runs a provider request.
 
 ## Execution contracts
 
-| Provider | Canonical model                  | Admitted efforts                                        | Authentication and output                                                                                     |
-| -------- | -------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `claude` | `claude-opus-5-5`                | medium, high, xhigh, max                                | Existing pinned, ready OAuth connection; adaptive thinking; explicit unchanged output cap; non-streaming JSON |
-| `claude` | `claude-sonnet-5-5`              | medium, high, xhigh                                     | Same guarded OAuth/JSON contract; exact effort and model                                                      |
-| `openai` | Explicit operator-supplied model | Only the profile's explicitly declared supported effort | Existing API-key lane; exact identity and bounded JSON contract; no inferred catalog availability             |
+| Provider | Canonical model                  | Admitted efforts                                        | Authentication and output                                                                                   |
+| -------- | -------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `claude` | `claude-opus-5-5`                | medium, high, xhigh, max                                | Existing pinned, ready OAuth connection; adaptive thinking; explicit unchanged output cap; JSON or text SSE |
+| `claude` | `claude-sonnet-5-5`              | medium, high, xhigh, max                                | Same guarded OAuth contract; exact effort and model                                                         |
+| `claude` | `claude-haiku-5-5`               | medium, high, xhigh, max                                | Same guarded OAuth contract; exact effort and model                                                         |
+| `openai` | Explicit operator-supplied model | Only the profile's explicitly declared supported effort | Existing API-key lane; exact identity and bounded JSON/text SSE contract; no inferred catalog availability  |
 
-The seven Claude pairs are explicitly scoped. The Claude lane does not admit other models, low effort, or Sonnet max. Official documentation now supports Sonnet max, but the preserved ordinary source still clamps it to high. This lane cannot represent that as exact max. No global model registry or ordinary effort defaults were changed to add the seven pairs.
+The twelve Claude pairs are explicitly scoped. The Claude lane does not admit other models or low effort. Exact trusted application context preserves documented Sonnet/Haiku max through two legacy clamps; final dispatch still requires the selected literal effort. Ordinary requests retain their existing clamps and effort lists. No global model registry or ordinary effort defaults were changed.
 
-Primary public contracts: [Opus 5.5](https://platform.claude.com/docs/en/models/opus-5-5/overview), [Sonnet 5.5](https://platform.claude.com/docs/en/models/sonnet-5-5/overview), [effort and output accounting](https://platform.claude.com/docs/en/build-with-claude/effort), and the separate [Claude Code model configuration](https://code.claude.com/docs/en/model-config). These mutable documents were checked on the evidence date. API-key authentication and subscription OAuth are distinct; documentation does not establish a particular account's entitlement or third-party OAuth compatibility.
+Primary public contracts: [Opus 5.5](https://platform.claude.com/docs/en/models/opus-5-5/overview), [Sonnet 5.5](https://platform.claude.com/docs/en/models/sonnet-5-5/overview), [Haiku 5.5](https://platform.claude.com/docs/en/models/haiku-5-5/overview), [effort and output accounting](https://platform.claude.com/docs/en/build-with-claude/effort), and the separate [Claude Code model configuration](https://code.claude.com/docs/en/model-config). These mutable documents were checked on the evidence date. API-key authentication and subscription OAuth are distinct; documentation does not establish a particular account's entitlement or third-party OAuth compatibility.
 
 The bounded Claude lane sends no sampling controls. Its trusted request scope prevents the legacy formatter from synthesizing temperature 1; it does not delete supplied sampling fields. Explicit or late-injected temperature/top_p/top_k remain visible and are rejected at the final fence. Ordinary requests retain their prior sampling normalization. No client-visible bypass flag was introduced.
 
@@ -32,6 +39,14 @@ The fixture uses original request-builder fragments from [Hermes commit 749cb638
 
 An explicit fixture projection turns the captured SDK kwargs into JSON for the actual application handler. The Python OpenAI SDK is absent and was not installed. This proves request assembly plus the declared projection and application behavior, not SDK HTTP serialization, headers/retries, the full client driver or an installed Hermes version. Stream flags and sanitized-message collaborators supplied by the fixture are labeled as substitutions.
 
-The custom profile's original default-Medium method executes in the fixture. Its Medium directive remains hard: a synthetic free Jev decision can choose Opus or Sonnet at Medium and then one exact execution. A configured output cap is required. Usual source-derived streaming/tools/continuation requests and omitted caps remain rejected with zero dispatches. The full Hermes agent is not yet compatible by default.
+The custom profile's original default-Medium method executes in the fixture. Its Medium directive remains hard: a synthetic free Jev decision can choose Opus or Sonnet at Medium and then one exact execution. A configured output cap is required. The source-derived default-stream body now has an actual-handler positive fixture. Tools/continuation requests and omitted caps remain rejected with zero dispatches. Stream flags are still fixture-supplied from the pinned driver contract, not execution of its complete streaming loop. The full Hermes agent is not yet compatible by default.
 
-The overall decision-plus-execution deadline remains 30 seconds. Automatic OAuth refresh, streaming/tool continuation, broader execution contracts, optional-feature coexistence, recovery/evaluation UX and quality validation remain unfinished. No raw message excerpt was newly sent to a decision provider; live content-aware classification retains its separate privacy decision.
+The overall decision-plus-execution deadline remains 30 seconds. Automatic OAuth refresh, tool continuation, broader execution contracts, optional-feature coexistence, recovery/evaluation UX and quality validation remain unfinished. No raw message excerpt was newly sent to a decision provider; live content-aware classification retains its separate privacy decision.
+
+## Text streaming boundary
+
+The same opt-in application handler now accepts text SSE with exact provider/model/effort and an explicit output cap. Raw provider frames are inspected before ordinary translation; a bounded pull-through wrapper preserves backpressure and independently observes client completion/cancellation. Provider terminal evidence and downstream synthesized completion are kept separate. Decision calls remain non-streaming. See [streaming behavior and tests](NATIVE_ROUTER_STREAMING.md).
+
+The historical pool remains 23 choices. Twelve Claude pairs have synthetic JSON dispatch coverage; representative SSE coverage is separate. The nine source-documented Codex pairs are not admitted: the current subscription executor strips output-limit fields, leaving the hard output-reservation contract unresolved. The two `agy` pairs still lack verified exact wire/effort/cap contracts; `agy` and `antigravity` are not silently equated. No API-key model substitutes or changed historical rankings were introduced.
+
+Hermes pins OpenAI Python SDK 2.54.0 for its Python>=3.14 environment. This executor has Python3.12; the SDK itself supports it, but an isolated exact hash-locked installation stopped at registry DNS failure before any package installed. SDK serialization/parsing remains unrun. No alternative network route, dependency upgrade or build-security bypass was attempted.

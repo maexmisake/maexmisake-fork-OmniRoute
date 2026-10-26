@@ -404,6 +404,8 @@ export async function runGuardedDecisionRequest(
     return rejected("context_unknown");
   }
   if (!extracted.ok) return rejected(extracted.reason);
+  if (extracted.body.stream === true)
+    return rejected("streaming_unsupported_in_standalone_fixture");
   if (extracted.body.model !== options.routeModel) return rejected("route_model_mismatch");
   try {
     assertStrictDirectEgress();

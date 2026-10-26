@@ -446,6 +446,11 @@ for (const [model, effort] of [
   ["claude-sonnet-5-5", "medium"],
   ["claude-sonnet-5-5", "high"],
   ["claude-sonnet-5-5", "xhigh"],
+  ["claude-sonnet-5-5", "max"],
+  ["claude-haiku-5-5", "medium"],
+  ["claude-haiku-5-5", "high"],
+  ["claude-haiku-5-5", "xhigh"],
+  ["claude-haiku-5-5", "max"],
 ]) {
   for (const sole of [false, true]) {
     test(`expanded free native ${model}/${effort} honors ${sole ? "sole eligible" : "selected offered pair"}`, async () => {
@@ -1639,7 +1644,10 @@ for (const [label, aliases] of [
   ["token overflow", { max_completion_tokens: undefined, max_tokens: Number.MAX_SAFE_INTEGER + 1 }],
   ["bounded token ceiling", { max_completion_tokens: 1000001 }],
   ["invalid nested effort", { reasoning: { effort: "turbo" } }],
-  ["stream remains unsupported", { stream: true }],
+  [
+    "unknown stream options remain unsupported",
+    { stream: true, stream_options: { include_usage: true, privateUnknown: true } },
+  ],
   ["temperature remains unsupported", { temperature: 0.7 }],
   [
     "tools remain unsupported",
