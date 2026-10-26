@@ -58,7 +58,12 @@ import {
   claudeReportedUsage,
   type ApplicationProvider,
 } from "./applicationProvider";
-import { applicationAgyWireFacts, supportsApplicationAgyRequest } from "./applicationGemini";
+import {
+  applicationAgyWireFacts,
+  supportsApplicationAgyRequest,
+  isApplicationAgyPair,
+} from "./applicationGemini";
+import { supportsGeminiToolRequest } from "./geminiToolWire";
 import { assertBoundedAgyCredentials } from "../../../open-sse/executors/antigravity/bounded.ts";
 
 function rejectedAttempt(
@@ -383,7 +388,8 @@ function finalApplicationWire(
       headers,
       contract.credentials,
       originalBody,
-      outputLimit
+      outputLimit,
+      toolHooks?.beforeFetch
     );
     return { messages, output: outputLimit, messageCount: messages.length };
   }
@@ -752,6 +758,11 @@ function completedResponse(
   return native ? native.annotate(result) : annotateNoDecision(result, mode, attempt);
 }
 type SelectionState = { mode: ApplicationSelectionMode; native?: NativeStage };
+function supportedToolCandidate(candidate: Candidate, body: ChatPolicyBody): boolean {
+  if (candidate.provider === "claude")
+    return isBoundedClaudePair(candidate.model, candidate.effort.value ?? "");
+  return isApplicationAgyPair(candidate) && supportsGeminiToolRequest(body);
+}
 async function assertExecutionContract(
   plan: AutomaticPlan,
   candidate: Candidate,
@@ -759,18 +770,15 @@ async function assertExecutionContract(
   body: ChatPolicyBody
 ) {
   if (!isApplicationEffortSupported(candidate)) throw new Error("unsupported");
-  if (
-    requiresTools &&
-    (candidate.provider !== "claude" ||
-      !isBoundedClaudePair(candidate.model, candidate.effort.value ?? ""))
-  )
-    throw new Error("unsupported");
+  if (requiresTools && !supportedToolCandidate(candidate, body)) throw new Error("unsupported");
   const row = await getProviderConnectionById(plan.config.connections[candidate.id]);
   if (!row || row.provider !== candidate.provider || row.isActive !== true)
     throw new Error("unsupported");
   const contract = resolveApplicationProvider(candidate, row);
-  if (contract.executionContract && !supportsApplicationAgyRequest(body))
-    throw new Error("unsupported");
+  const supportedAgy = requiresTools
+    ? supportsGeminiToolRequest(body)
+    : supportsApplicationAgyRequest(body);
+  if (contract.executionContract && !supportedAgy) throw new Error("unsupported");
 }
 async function supportedExecutionCandidates(
   plan: AutomaticPlan,

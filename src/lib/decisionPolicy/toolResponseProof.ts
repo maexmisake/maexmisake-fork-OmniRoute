@@ -449,7 +449,7 @@ export class ClientToolSSEFramer {
 
 /** Only descriptor agreement; callers separately authenticate and persist any authority. */
 export function crossCheckToolCalls(
-  raw: RawToolResponseProof,
+  raw: Pick<RawToolResponseProof, "calls">,
   client: ClientToolResponseProof,
   restoreName: (wireName: string) => string
 ): void {

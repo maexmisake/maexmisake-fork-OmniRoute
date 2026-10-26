@@ -7,6 +7,7 @@ import {
 } from "../../../open-sse/services/decisionPolicy/toolContract.ts";
 import type { ChatPolicyBody } from "../../../open-sse/services/decisionPolicy/requestFacts.ts";
 import type { AutomaticPlan } from "./applicationCombo";
+import { ApplicationGeminiTools } from "./applicationGeminiTools";
 import type { AttemptIdentity } from "../db/decisionAttempts";
 import { finishDecisionApplicationWithMetadata } from "../db/decisionAttempts";
 import {
@@ -154,6 +155,7 @@ export class ApplicationTools {
   private proof?: ToolContinuationRequest;
   private blocks = new Map<string, ClaudeSignedThinkingBlock[]>();
   private replay: Record<string, string> = {};
+  private gemini?: ApplicationGeminiTools;
   constructor(
     private plan: AutomaticPlan,
     private keyId: string,
@@ -164,15 +166,27 @@ export class ApplicationTools {
       this.proof = proofRequest(plan, keyId, request);
       this.continuation = prepareToolContinuation(this.proof);
       if (this.continuation.replayOrigins.length !== request.history.length) fail();
+      if (this.continuation.binding.provider === "agy") {
+        this.gemini = new ApplicationGeminiTools(
+          plan,
+          keyId,
+          request,
+          this.continuation,
+          this.proof
+        );
+        return;
+      }
       this.blocks = replayBlocks(this.continuation);
       for (const [id, blocks] of this.blocks) this.replay[id] = canonicalToolJSON(blocks);
     }
   }
   claim(identity: AttemptIdentity): void {
+    if (this.gemini) return this.gemini.claim(identity);
     if (!this.proof) return fail();
     claimToolContinuation(this.proof, identity, this.replay);
   }
   assertFresh(identity: AttemptIdentity): void {
+    if (this.gemini) return this.gemini.assertFresh(identity);
     if (this.proof) assertToolContinuationClaim(this.proof, identity, this.replay);
   }
   private thinkingAt(index: number): ClaudeSignedThinkingBlock[] {
@@ -196,6 +210,11 @@ export class ApplicationTools {
     return this.thinkingAt(originalIndex);
   }
   attach(identity: AttemptIdentity, authority: string): ApplicationToolHooks {
+    if (identity.provider === "agy") {
+      this.gemini ??= new ApplicationGeminiTools(this.plan, this.keyId, this.request);
+      return this.gemini.attach(identity, authority);
+    }
+    if (this.gemini) return fail();
     if (identity.provider !== "claude") return fail();
     const raw = new RawClaudeToolCollector({
       allowToolUse: this.request.body.tool_choice !== "none",

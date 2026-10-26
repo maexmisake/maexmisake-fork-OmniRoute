@@ -1,4 +1,5 @@
 import { register } from "../registry.ts";
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 import { FORMATS } from "../formats.ts";
 import { ANTIGRAVITY_DEFAULT_SYSTEM } from "../../config/constants.ts";
 import {
@@ -968,6 +969,14 @@ function getAntigravityClaudeOutputTokens(body: Record<string, unknown>): number
 
 // OpenAI -> Antigravity (Sandbox Cloud Code with wrapper)
 export function openaiToAntigravityRequest(model, body, stream, credentials = null) {
+  const automatic = currentApplicationAttempt();
+  if (automatic?.executionContract === "agy-gemini-high-v1" && automatic.tools) {
+    // Formatting can run inside the fenced translation phase. Authorization
+    // and lease freshness are checked after formatting at final physical send.
+    automatic.signal.throwIfAborted();
+    if (!automatic.tools.geminiRequest) throw new Error("decision_gemini_tool_contract_missing");
+    return automatic.tools.geminiRequest(model, body, stream, credentials);
+  }
   const isClaude = model.toLowerCase().includes("claude");
   // All modern Gemini models (2.5+, 3.x, pro-agent, etc.) use thinking by default
   // and require thought_signature for multi-turn tool calls.

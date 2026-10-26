@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { opaqueTokenFingerprint } from "../../../open-sse/utils/opaqueTokenFingerprint.ts";
+import {
+  assertGeminiReplayIdentity,
+  parseGeminiToolReplay,
+} from "../decisionPolicy/geminiToolReplay";
 import { getDbInstance } from "./core";
 import {
   assertUncappedDecision,
@@ -312,7 +316,12 @@ function checkedThinking(value: string): void {
   )
     fail("thinking_shape");
 }
-function validateIssue(proof: IssueProof): void {
+function checkedReplay(value: string, identity: AttemptIdentity): void {
+  if (identity.provider !== "agy") return checkedThinking(value);
+  assertGeminiReplayIdentity(identity);
+  parseGeminiToolReplay(value);
+}
+function validateIssue(origin: AttemptIdentity, proof: IssueProof): void {
   validateHistory([proof]);
   if (
     typeof proof.expectedPolicy !== "string" ||
@@ -320,7 +329,8 @@ function validateIssue(proof: IssueProof): void {
     Buffer.byteLength(proof.expectedAuthority) > 1048576
   )
     fail("authority");
-  if (proof.thinkingBlocksJSON !== undefined) checkedThinking(proof.thinkingBlocksJSON);
+  if (origin.provider === "agy" && proof.thinkingBlocksJSON === undefined) fail("replay_missing");
+  if (proof.thinkingBlocksJSON !== undefined) checkedReplay(proof.thinkingBlocksJSON, origin);
 }
 function cleanupExpired(keyId: string, comboId: string, now: number): void {
   // Retain lineage while either the source or its claimed descendant can mint again.
@@ -394,14 +404,14 @@ function issueInTransaction(
       .run(previous.id);
 }
 export function issueToolContinuation(origin: AttemptIdentity, proof: IssueProof): string {
-  validateIssue(proof);
+  validateIssue(origin, proof);
   const id = randomUUID(),
     now = Date.now();
   getDbInstance().immediate(() => issueInTransaction(origin, proof, id, now));
   return id;
 }
 export function commitToolContinuation(origin: AttemptIdentity, proof: IssueProof): string {
-  validateIssue(proof);
+  validateIssue(origin, proof);
   const id = randomUUID(),
     now = Date.now();
   finishDecisionApplicationWithMetadata(origin, () => issueInTransaction(origin, proof, id, now));
@@ -420,7 +430,7 @@ function replayChecked(chain: Row[], replay: Readonly<Record<string, string>>): 
     if (bytes > TOOL_CONTINUATION_LIMITS.canonicalBytes) fail("replay_too_large");
     const { identity } = originOf(row);
     if (row.thinking_mac !== mac(identity.leaseOwner!, "thinking", value)) fail("replay_mismatch");
-    checkedThinking(value);
+    checkedReplay(value, identity);
   }
 }
 function reclaimExpired(turn: Row): void {

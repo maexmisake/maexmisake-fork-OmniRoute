@@ -33,7 +33,7 @@ const safetyRatings = z
   .array(z.object({ blocked: z.boolean().optional() }).passthrough())
   .max(64)
   .optional();
-const partSchema = z
+const textPartSchema = z
   .object({
     text: z.string().optional(),
     thought: z.boolean().optional(),
@@ -41,6 +41,18 @@ const partSchema = z
   })
   .strict()
   .refine((part) => part.text !== undefined || part.thoughtSignature !== undefined);
+const functionCallPartSchema = z
+  .object({
+    functionCall: z.record(z.string(), z.unknown()),
+    thought: z.boolean().optional(),
+    thoughtSignature: z.string().min(1).optional(),
+  })
+  .strict();
+const partSchema = z.union([textPartSchema, functionCallPartSchema]);
+export type GeminiFrameOptions = {
+  /** Private complete-call validator. Absent keeps the original text-only contract. */
+  validateFunctionCallPart?: (part: Record<string, unknown>) => unknown;
+};
 const candidateSchema = z
   .object({
     index: z.literal(0).optional(),
@@ -109,6 +121,16 @@ function invalid(): never {
 function limited(): never {
   throw new Error("decision_gemini_response_limit");
 }
+function validateFunctionCalls(
+  parts: Array<z.infer<typeof partSchema>>,
+  validate: GeminiFrameOptions["validateFunctionCallPart"]
+): void {
+  for (const part of parts) {
+    if (!("functionCall" in part)) continue;
+    if (!validate) invalid();
+    validate(structuredClone(part));
+  }
+}
 function assertUsage(usage: Usage): void {
   const input = usage.promptTokenCount,
     cached = usage.cachedContentTokenCount;
@@ -169,9 +191,14 @@ export class BoundedGeminiFrames {
   private blocked = false;
   private version: string | null = null;
   private usage: Usage = {};
-  constructor(private expectedModel: string) {
+  private validateFunctionCallPart: GeminiFrameOptions["validateFunctionCallPart"];
+  constructor(
+    private expectedModel: string,
+    options: GeminiFrameOptions = {}
+  ) {
     if (typeof expectedModel !== "string" || !expectedModel || expectedModel.length > 200)
       invalid();
+    this.validateFunctionCallPart = options.validateFunctionCallPart;
   }
   get refused(): boolean {
     return this.blocked;
@@ -225,6 +252,7 @@ export class BoundedGeminiFrames {
     this.finished = true;
   }
   private candidate(candidate: z.infer<typeof candidateSchema>): void {
+    validateFunctionCalls(candidate.content?.parts ?? [], this.validateFunctionCallPart);
     this.hasCandidate = true;
     this.parts += candidate.content?.parts?.length ?? 0;
     if (this.parts > GEMINI_PROOF_LIMITS.parts) limited();

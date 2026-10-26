@@ -130,16 +130,17 @@ export function applicationAgyWireFacts(
   headers: Headers,
   credentials: ProviderCredentials,
   original: ChatPolicyBody,
-  outputLimit: number
+  outputLimit: number,
+  validateTools?: (wire: Json) => unknown
 ) {
   const request = record(wire.request);
+  const keys = ["contents", "systemInstruction", "generationConfig"];
+  if (validateTools) keys.push("tools", "toolConfig");
   if (
     Object.keys(wire).some((key) => !["model", "project", "request"].includes(key)) ||
     wire.model !== BOUNDED_AGY_MODEL ||
     wire.project !== credentials.projectId ||
-    Object.keys(request).some(
-      (key) => !["contents", "systemInstruction", "generationConfig"].includes(key)
-    ) ||
+    Object.keys(request).some((key) => !keys.includes(key)) ||
     headers.get("user-agent") !== BOUNDED_AGY_USER_AGENT ||
     headers.get("content-type") !== "application/json" ||
     headers.get("accept") !== "text/event-stream" ||
@@ -149,7 +150,7 @@ export function applicationAgyWireFacts(
   )
     return reject();
   if (
-    !same(request.contents, expectedContents(original)) ||
+    (!validateTools && !same(request.contents, expectedContents(original))) ||
     !same(request.systemInstruction, {
       role: "system",
       parts: [{ text: ANTIGRAVITY_DEFAULT_SYSTEM }],
@@ -162,5 +163,6 @@ export function applicationAgyWireFacts(
     })
   )
     return reject();
+  validateTools?.(wire);
   return original.messages;
 }

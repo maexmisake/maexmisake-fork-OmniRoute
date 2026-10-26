@@ -12,8 +12,7 @@ quality. Ordinary routing defaults and the historical 23-choice pool remain unch
 
 ## Request and selection
 
-The twelve original Claude model/effort choices support this tool contract. The thirteenth admitted text choice, AGY Gemini High, is text SSE only and cannot enter tools or continuation. The tool path uses the existing `bounded-v1` application path, Chat Completions text SSE,
-an explicit output cap and an explicitly configured Claude model/effort profile with tools enabled.
+The current local implementation admits thirteen original tool choices: twelve Claude model/effort pairs and the exact AGY Gemini High complete-call subset. The tool path uses the existing `bounded-v1` application path, Chat Completions SSE, an explicit output cap and an explicitly configured supported model/effort profile with tools enabled. The [Gemini guide](NATIVE_ROUTER_GEMINI_TOOLS.md) describes its stricter controls, exact native replay and active-user-cycle limit. The focused handler run passed **32/32** and the installed-SDK run passed **18/18** (earlier fifteen plus three AGY cases, with original-schema assertions). The selected regression passed **1,658/1,658 across 79 files**, and focused independent application/SDK acceptance passed. The whole repository suite remains unrun.
 Tool selection supports `auto` and `none`, with bounded declared function schemas and optional
 `parallel_tool_calls`. Other tool controls, images, nonstreaming tools and unproven execution
 transports reject safely. The separate OpenAI text lane is not silently enabled for tools.
@@ -62,17 +61,23 @@ execution, timed secure erasure or indefinite continuation after a slow/disconne
 
 ## Deliberate support limits
 
-This first slice requires a complete signed-thinking tool group before issuing continuation
-authority. A tool group without required signed replay is unsupported, rather than supplied with an
-invented signature. The supported native ordering is signed-thinking blocks, then text, then tool
-calls. Backwards transitions reject instead of silently changing ordering. Integer tool arguments
+The preceding twelve-Claude slice requires a complete signed-thinking tool group before issuing continuation authority. A tool group without required signed replay is unsupported, rather than supplied with an
+invented signature. Its Claude ordering is signed-thinking blocks, then text, then tool calls. Backwards transitions reject instead of silently changing ordering. Gemini instead preserves every original ordered native Part and its model Content boundary, including permitted interleaving and signature placement; it never transfers a signature to another Part. Integer tool arguments
 outside JavaScript's safe range reject rather than changing their meaning for a Python client.
 
-Pinned Hermes source constructors and request builders execute with explicit synthetic collaborators. A later actual OpenAI SDK 2.54.0/HTTPX 0.28.1 fixture on standalone Python 3.12 independently passes **15/15**, including SDK tool-call assembly, original result constructors and a second SDK request through the actual handler with the same account/model/effort and no second decision. Synthetic results are supplied; no tool runs. It does not execute the complete installed Hermes agent, whose pinned runtime requires Python 3.14.
+Pinned Hermes source constructors and request builders execute with explicit synthetic collaborators. A later actual OpenAI SDK 2.54.0/HTTPX 0.28.1 fixture on standalone Python 3.12 independently passed **15/15** at the preceding checkpoint, including SDK tool-call assembly, original result constructors and a second SDK request through the actual handler with the same account/model/effort and no second decision. Synthetic results are supplied; no tool runs. It does not execute the complete installed Hermes agent, whose pinned runtime requires Python 3.14.
 
 The ordinary Hermes custom path turns unset effort into explicit Medium; that remains a hard constraint. The new optional [effort-delegation extension](HERMES_EFFORT_DELEGATION.md), independently checked **22/22**, preserves explicit effort/Off and ordinary defaults while allowing intentional unset-default omission for one approved relay/combo. Its dedicated profile and two pinned guards are mandatory and remain uninstalled. SDK fixtures demonstrate omitted effort stays absent across both tool requests; the trusted continuation still pins the original selected pair. Off is not delegation and rejects when that pair cannot honor it.
 
-The nine Codex OAuth choices and AGY Opus High remain excluded for the precise [execution-contract gaps](NATIVE_ROUTER_CAPABILITIES.md). Gemini High has a guarded text-only SSE contract, not tool support. Automatic OAuth refresh, broader optional-feature coexistence, compatible production build/browser checks and live free-Zen validation remain separate work. No real prompt excerpt was newly sent to a decision provider, no security setting was weakened and no live configuration changed.
+The nine Codex OAuth choices and AGY Opus High remain excluded for the precise [execution-contract gaps](NATIVE_ROUTER_CAPABILITIES.md). Gemini High now has the separate [complete-call tool contract](NATIVE_ROUTER_GEMINI_TOOLS.md), not a generic Gemini tool compatibility claim. The current installed-SDK run passed **18/18** (earlier fifteen plus three AGY cases) with strengthened original-schema assertions, natural exit 0 in 41.153 seconds. Focused independent application/SDK acceptance and the selected 79-file regression passed; the whole repository suite remains unrun. Automatic OAuth refresh, broader optional-feature coexistence, compatible production build/browser checks and live free-Zen validation remain separate work. No real prompt excerpt was newly sent to a decision provider, no security setting was weakened and no live configuration changed.
+
+## Current Gemini-specific limits
+
+Only complete explicit-native-ID function calls are supported. The original source/account/model/High/project and active occurrence are rechecked; each continuation receives fresh admission and an unchanged per-request cap. Signed replay is private process memory: restart, eviction or missing original Parts rejects rather than using another account, a global tool-ID cache, a copied signature or sentinel. No cryptographic signature validity is inferred from nonempty opaque bytes.
+
+Only groups in the active last-user cycle are admitted. A completed old cycle followed by a newer user, including one with a new active cycle, is excluded before the decision request. Public current-turn signature guidance does not establish an older-history waiver for this private AGY endpoint. Active authenticated multistep groups remain occurrence-bound.
+
+Gemini rejects partialArgs/willContinue, both strict flag values, parallel_tool_calls:false, named/required tool choice, media and nonzero toolUsePromptTokenCount. No-call completed refusals can return HTTP200 with content_filter while the journal records application422; no tool pin is issued. Provider transport failure remains distinct. An initial selector may choose a different explicitly eligible pair; a failed AGY attempt never enables a retry or hidden execution fallback.
 
 ## Offline acceptance and limits
 
@@ -87,3 +92,5 @@ the actual stable baseline; complexity remains within unchanged limits. The firs
 one stale connection-read inventory count, which was independently classified, corrected and
 retested before the full selected rerun passed. Deferred timeout/call-log teardown warnings remain
 in raw evidence. These checks establish neither production readiness nor full Hermes compatibility.
+
+The current Gemini follow-up's selected regression passed **1,658/1,658 across 79 files**, natural exit 0 in 350.905 seconds, without skips/cancellations or changed test/production hashes. Separate Vitest passed **590/590**, natural exit 0 in 26.545 seconds. Independent acceptance covered the original 29 handler cases, the added 3 handler cases and the new 3 SDK cases. Current core/lint pass; strict core retains the identical 18 release-baseline diagnostics. Complexity stays within the unchanged 3,218 cyclomatic and 1,437 cognitive ceilings. These current results do not rewrite the preceding twelve-Claude checkpoint or establish full-suite/build/live/quality acceptance.

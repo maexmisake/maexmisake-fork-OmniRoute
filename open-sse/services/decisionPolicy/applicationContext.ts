@@ -2,6 +2,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { StrictValidationDispatch } from "../../executors/base/validationDispatch.ts";
 
 export type ApplicationToolHooks = {
+  /** Exact private native request hook; runs before legacy signature/cache translation. */
+  geminiRequest?: (
+    model: string,
+    body: Record<string, unknown>,
+    stream: boolean,
+    credentials: Record<string, unknown> | null
+  ) => Record<string, unknown>;
+  /** Private native projection; never reads or writes the ordinary signature cache. */
+  geminiResponse?: (chunk: unknown) => Record<string, unknown>[];
   beforeFetch: (wire: Record<string, unknown>) => unknown;
   restoreThinking: (
     message: unknown,

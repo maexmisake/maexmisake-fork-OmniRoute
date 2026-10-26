@@ -111,10 +111,12 @@ export function boundedAgyProjection(
     reject();
   const request = structuredClone(record(envelope.request));
   delete request.sessionId;
+  const nativeTools = !!boundedAgyContext(model, credentials)?.tools?.geminiRequest;
+  const allowed = ["contents", "systemInstruction", "generationConfig", "safetySettings"];
+  if (nativeTools) allowed.push("tools", "toolConfig");
   for (const key of Object.keys(request)) {
     if (request[key] === undefined) delete request[key];
-    else if (!["contents", "systemInstruction", "generationConfig", "safetySettings"].includes(key))
-      reject();
+    else if (!allowed.includes(key)) reject();
   }
   assertGeneration(request);
   return { model, project: projectId(credentials), request };

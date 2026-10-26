@@ -13,6 +13,10 @@ import { readToolContinuations } from "../../src/lib/db/decisionContinuations.ts
 import { resetDbInstance } from "../../src/lib/db/core.ts";
 import { updateSettings } from "../../src/lib/db/settings.ts";
 import { clearClaudeThinkingStore } from "../../open-sse/services/claudeThinkingStore.ts";
+import {
+  BOUNDED_AGY_MODEL,
+  BOUNDED_AGY_STREAM_URL,
+} from "../../open-sse/executors/antigravity/bounded.ts";
 
 const PYTHON = process.env.OMNIROUTE_HERMES_SDK_PYTHON;
 const AVAILABLE = !!PYTHON;
@@ -23,8 +27,11 @@ const originalFetch = globalThis.fetch;
 const encoder = new TextEncoder();
 let POST: (request: Request) => Promise<Response>;
 let key: Awaited<ReturnType<typeof createApiKey>>;
-let comboId: string, selectorId: string, sonnetId: string, opusId: string;
+let comboId: string, selectorId: string, sonnetId: string, opusId: string, agyId: string;
 let delegated = false;
+let agy = false,
+  agyParallel = false,
+  agyRefuse = false;
 let effort = "high",
   decisions = 0,
   executions = 0;
@@ -108,6 +115,58 @@ function config() {
       },
     },
   };
+}
+async function configureAgy(parallel: boolean) {
+  agy = true;
+  agyParallel = parallel;
+  const value = config();
+  value.decisionPolicy.connections = { "agy-high": agyId, "sonnet-high": sonnetId };
+  value.decisionPolicy.policy.candidates = [
+    { ...candidate("sonnet", "high"), id: "agy-high", provider: "agy", model: BOUNDED_AGY_MODEL },
+    candidate("sonnet", "high"),
+  ];
+  const ids = ["agy-high", "sonnet-high"];
+  value.decisionPolicy.policy.taskOrder = {
+    explanation: ids,
+    reasoning: ids,
+    tools: ids,
+    continuation: ids,
+  };
+  await updateCombo(comboId, { config: value });
+}
+function agyParts(): Array<Record<string, unknown>> {
+  return [
+    {
+      functionCall: {
+        id: "fixture-call-one",
+        name: "synthetic_tool",
+        args: { item: "synthetic lamp" },
+      },
+      thoughtSignature: "synthetic-sdk-agy-opaque-signature",
+    },
+    ...(agyParallel
+      ? [
+          {
+            functionCall: {
+              id: "fixture-call-two",
+              name: "synthetic_tool",
+              args: { item: "synthetic switch" },
+            },
+          },
+        ]
+      : []),
+  ];
+}
+function agyResponse() {
+  const parts = agyRefuse
+    ? [{ text: "Synthetic safety refusal" }]
+    : executions === 1
+      ? agyParts()
+      : [{ text: "Synthetic SDK OK" }];
+  return new Response(
+    `data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts }, finishReason: agyRefuse ? "SAFETY" : "STOP" }], usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, thoughtsTokenCount: 1, totalTokenCount: 6 } } })}\n\n`,
+    { headers: { "content-type": "text/event-stream" } }
+  );
 }
 function event(type: string, data: Record<string, unknown> = {}) {
   return encoder.encode(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -208,7 +267,10 @@ before(async () => {
   await import("../../open-sse/utils/proxyFetch.ts");
   globalThis.fetch = async (input, init = {}) => {
     const url = input instanceof Request ? input.url : String(input);
-    if (init.method !== "POST" || ![SELECTOR, EXECUTOR].includes(url)) {
+    if (
+      init.method !== "POST" ||
+      ![SELECTOR, EXECUTOR, ...(agy ? [BOUNDED_AGY_STREAM_URL] : [])].includes(url)
+    ) {
       unexpected++;
       throw new Error("Closed SDK provider fixture rejected route");
     }
@@ -220,9 +282,11 @@ before(async () => {
       const ids = Object.keys(body.questions.route.criteria);
       assert.deepEqual(
         ids.sort(),
-        (delegated
-          ? ["opus-medium", "sonnet-medium", "opus-high", "sonnet-high"]
-          : [`opus-${effort}`, `sonnet-${effort}`]
+        (agy
+          ? ["agy-high", "sonnet-high"]
+          : delegated
+            ? ["opus-medium", "sonnet-medium", "opus-high", "sonnet-high"]
+            : [`opus-${effort}`, `sonnet-${effort}`]
         ).sort()
       );
       const text = JSON.stringify(body);
@@ -233,9 +297,12 @@ before(async () => {
         answers: {
           route: {
             type: "choice",
-            choice: `sonnet-${effort}`,
+            choice: agy ? "agy-high" : `sonnet-${effort}`,
             probabilities: Object.fromEntries(
-              ids.map((id) => [id, id === `sonnet-${effort}` ? 0.8 : (1 - 0.8) / (ids.length - 1)])
+              ids.map((id) => [
+                id,
+                id === (agy ? "agy-high" : `sonnet-${effort}`) ? 0.8 : (1 - 0.8) / (ids.length - 1),
+              ])
             ),
             confidence: (0.8 - 1 / ids.length) / (1 - 1 / ids.length),
           },
@@ -245,6 +312,19 @@ before(async () => {
     }
     executions++;
     wires.push(body);
+    if (url === BOUNDED_AGY_STREAM_URL) {
+      assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-agy-oauth");
+      assert.equal(headers.get("user-agent"), "OmniRoute-Antigravity/1.0");
+      assert.equal(body.model, BOUNDED_AGY_MODEL);
+      assert.equal(body.project, "synthetic-sdk-agy-project");
+      assert.equal(body.request.generationConfig.maxOutputTokens, 64);
+      assert.equal(body.request.generationConfig.thinkingConfig.thinkingLevel, "high");
+      const declaration = body.request.tools[0].functionDeclarations[0];
+      assert.equal(declaration.name, "synthetic_tool");
+      assert.deepEqual(declaration.parametersJsonSchema, { type: "object", properties: {} });
+      assert.equal(Object.hasOwn(declaration.parametersJsonSchema, "additionalProperties"), false);
+      return agyResponse();
+    }
     assert.equal(headers.get("authorization"), "Bearer synthetic-sdk-sonnet-oauth");
     assert.equal(body.model, "claude-sonnet-5-5");
     assert.equal(body.output_config.effort, effort);
@@ -280,6 +360,20 @@ before(async () => {
       })
     ).id
   );
+  agyId = String(
+    (
+      await createProviderConnection({
+        provider: "agy",
+        authType: "oauth",
+        name: "synthetic-sdk-agy",
+        accessToken: "synthetic-sdk-agy-oauth",
+        expiresAt: new Date(Date.now() + 86400000).toISOString(),
+        isActive: true,
+        testStatus: "active",
+        providerSpecificData: { projectId: "synthetic-sdk-agy-project" },
+      })
+    ).id
+  );
   comboId = String(
     (
       await createCombo({
@@ -312,6 +406,9 @@ beforeEach(async () => {
     else sonnetId = String(row.id);
   }
   await updateCombo(comboId, { config: config() });
+  agy = false;
+  agyParallel = false;
+  agyRefuse = false;
   effort = "high";
   delegated = false;
   decisions = 0;
@@ -684,3 +781,97 @@ for (const caseName of ["explicit-off", "recovery-off"])
     assert.equal(decisions, 0);
     assert.equal(executions, 0);
   });
+
+// Opaque signatures exercise structural replay only, not provider cryptography.
+for (const count of [1, 2])
+  test(
+    `installed SDK completes ${count} native AGY calls through original Hermes result constructors`,
+    options,
+    async () => {
+      await configureAgy(count === 2);
+      const { result, requests, observations } = await sdk(source("stream-tools"), "tool-loop");
+      assert.equal(
+        result.ok,
+        true,
+        JSON.stringify({
+          error: result.errorClass,
+          status: result.status,
+          observations,
+          decisions,
+          executions,
+        })
+      );
+      assert.equal(requests.length, 2);
+      assert.equal(decisions, 1);
+      assert.equal(executions, 2);
+      for (const request of requests) assert.equal(request.reasoning_effort, "high");
+      const summaries = result.summaries as Array<Record<string, unknown>>;
+      assert.equal(summaries[0].callCount, count);
+      assert.equal(summaries[1].content, "Synthetic SDK OK");
+      const native = wires[1].request as {
+        contents: Array<{ parts: Array<Record<string, unknown>> }>;
+      };
+      const parts = native.contents.flatMap((row) => row.parts);
+      assert.deepEqual(
+        parts.filter((part) => part.functionCall),
+        agyParts()
+      );
+      assert.deepEqual(
+        parts.filter((part) => part.functionResponse),
+        agyParts().map((part) => {
+          const call = part.functionCall as { id: string; name: string };
+          return {
+            functionResponse: {
+              id: call.id,
+              name: call.name,
+              response: { output: "Synthetic result" },
+            },
+          };
+        })
+      );
+      assert.ok(
+        parts.findIndex((part) => part.functionResponse) >
+          parts.findLastIndex((part) => part.functionCall)
+      );
+      assert.ok(!JSON.stringify(wires[1]).includes("skip_thought_signature_validator"));
+      assert.equal(readToolContinuations(key.id, comboId)[0].state, "consumed");
+      const rows = readDecisionAttempts(key.id);
+      assert.equal(rows.filter((row) => row.lane === "decision").length, 1);
+      assert.equal(rows.find((row) => row.lane === "decision")?.cost_usd, 0);
+      const executionRows = rows.filter((row) => row.lane === "execution");
+      assert.equal(executionRows.length, 2);
+      for (const row of executionRows) {
+        assert.equal(row.connection_id, agyId);
+        assert.equal(row.provider, "agy");
+        assert.equal(row.model, BOUNDED_AGY_MODEL);
+        assert.equal(row.effort, "high");
+        assert.equal(row.application_status, 200);
+        assert.equal(row.cost_usd, null);
+      }
+      assert.equal(result.fullHermesExecuted, false);
+    }
+  );
+test(
+  "installed SDK receives native AGY no-call refusal without continuation or retry",
+  options,
+  async () => {
+    await configureAgy(true);
+    agyRefuse = true;
+    const { result, requests, observations } = await sdk(source("stream-tools"), "stream");
+    assert.equal(result.ok, false);
+    assert.equal(result.errorClass, "ContentFilterFinishReasonError");
+    assert.equal(result.status, null);
+    assert.equal(observations[0].status, 200);
+    assert.equal(requests.length, 1);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.equal(readToolContinuations(key.id, comboId).length, 0);
+    const row = readDecisionAttempts(key.id).find((item) => item.lane === "execution")!;
+    assert.equal(row.http_status, 200);
+    assert.equal(row.application_status, 422);
+    assert.equal(row.input_tokens, 2);
+    assert.equal(row.output_tokens, 4);
+    assert.equal(row.reasoning_tokens, 1);
+    assert.equal(row.cost_usd, null);
+  }
+);

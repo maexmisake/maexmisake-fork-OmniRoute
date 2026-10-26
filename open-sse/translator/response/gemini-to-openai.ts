@@ -309,6 +309,14 @@ function isBoundedAgyTextOnly(): boolean {
 // Convert Gemini response chunk to OpenAI format
 export function geminiToOpenAIResponse(chunk, state) {
   if (!chunk) return null;
+  const automatic = currentApplicationAttempt();
+  if (automatic?.executionContract === "agy-gemini-high-v1" && automatic.tools) {
+    // Raw usage may already be settled; projection must not reopen its lease.
+    // Tool authority is independently rechecked by the atomic publication step.
+    automatic.signal.throwIfAborted();
+    if (!automatic.tools.geminiResponse) throw new Error("decision_gemini_tool_contract_missing");
+    return automatic.tools.geminiResponse(chunk);
+  }
 
   // Handle Antigravity wrapper
   const response = chunk.response || chunk;

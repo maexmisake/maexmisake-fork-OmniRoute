@@ -8,6 +8,7 @@ import {
 } from "../db/decisionAttempts";
 import { claudeReportedUsage } from "./applicationProvider";
 import { BoundedGeminiFrames } from "./geminiResponseProof";
+import { validateGeminiFunctionCallPart } from "./geminiToolResponseProof";
 
 function concatFrames(chunks: Uint8Array[], bytes: number): Uint8Array {
   const result = new Uint8Array(bytes);
@@ -66,7 +67,12 @@ class ProviderFrames {
     private identity: AttemptIdentity,
     private tools?: ApplicationToolHooks
   ) {
-    if (identity.provider === "agy") this.gemini = new BoundedGeminiFrames(identity.model);
+    if (identity.provider === "agy")
+      this.gemini = new BoundedGeminiFrames(identity.model, {
+        ...(tools?.geminiResponse
+          ? { validateFunctionCallPart: validateGeminiFunctionCallPart }
+          : {}),
+      });
   }
   accept(text: string): void {
     this.buffer += text;
@@ -89,7 +95,9 @@ class ProviderFrames {
     if (!data) return;
     if (this.stopped) throw new Error("decision_stream_after_terminal");
     if (this.gemini) {
-      this.gemini.accept(object(JSON.parse(data)));
+      const parsed = object(JSON.parse(data));
+      this.gemini.accept(parsed);
+      this.observeRaw(parsed);
       this.refused = this.gemini.refused;
     } else if (this.identity.provider === "claude") {
       const parsed = object(JSON.parse(data));
