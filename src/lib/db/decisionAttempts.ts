@@ -4,6 +4,8 @@ import { getKeyQuotaStatus, incrementKeyQuotaCounter } from "./keyQuota";
 import { getTokenLimitsForRequest } from "./tokenLimits";
 import { recordLedgerEntry } from "./costLedger";
 import { saveCostEntry } from "./domainState";
+import type { CompletedExecutionRejection } from "../../../open-sse/services/decisionPolicy/retryPolicy.ts";
+import { executionRetryScopeAllows } from "../../../open-sse/services/decisionPolicy/retryPolicy.ts";
 
 export type AttemptIdentity = {
   id: string;
@@ -602,6 +604,10 @@ function assertSelectedParent(child: AttemptIdentity): void {
   if (!child.parentAttemptId || child.lane !== "execution")
     throw new Error("decision_parent_invalid");
   const parent = readDecisionAttemptReceipt(child.parentAttemptId);
+  if (parent.lane === "execution") {
+    assertRetryParent(child, parent);
+    return;
+  }
   const expected = [
     child.keyId,
     child.comboId,
@@ -631,14 +637,107 @@ function assertSelectedParent(child: AttemptIdentity): void {
   if (JSON.stringify(expected) !== JSON.stringify(actual))
     throw new Error("decision_parent_invalid");
 }
+function assertRetryParent(child: AttemptIdentity, parent: Row): void {
+  if (
+    parent.api_key_id !== child.keyId ||
+    parent.combo_id !== child.comboId ||
+    parent.request_id !== child.requestId ||
+    parent.requested_model !== (child.requestedModel ?? null) ||
+    parent.state !== "completed" ||
+    Number(parent.http_status) < 400 ||
+    parent.application_status !== parent.http_status ||
+    ![
+      "retry:account-quota",
+      "retry:account-rate-limit",
+      "retry:model-unavailable",
+      "retry:provider-unavailable",
+    ].includes(String(parent.decision_outcome)) ||
+    parent.selected_binding !== selectedBinding(child)
+  )
+    throw new Error("decision_retry_parent_invalid");
+}
+/** Owner-only, one-child transition after a verified complete rejection. Unknown billing
+ * stays on the previous receipt. The physical-attempt ceiling spans the whole request. */
+export function handoverExecutionRetry(
+  parent: AttemptIdentity,
+  child: AttemptIdentity,
+  maxAttempts: number,
+  failure: CompletedExecutionRejection
+): void {
+  assertSharedDecisionStorage();
+  getDbInstance().immediate(() => {
+    const row = assertCompletedExecutionRejection(parent, failure);
+    const validScope =
+      executionRetryScopeAllows(failure.scope, parent, child) &&
+      ((["account-quota", "account-rate-limit"].includes(failure.scope) &&
+        failure.status === 429) ||
+        (failure.scope === "model-unavailable" && failure.status === 404) ||
+        (failure.scope === "provider-unavailable" && [502, 503, 504].includes(failure.status)));
+    if (
+      !validScope ||
+      row.lane !== "execution" ||
+      row.state !== "completed" ||
+      row.http_status !== failure.status ||
+      row.application_status !== failure.status ||
+      row.selected_binding != null ||
+      row.decision_outcome != null ||
+      child.parentAttemptId !== parent.id ||
+      child.requestId !== (parent.requestId ?? parent.id) ||
+      child.keyId !== parent.keyId ||
+      child.comboId !== parent.comboId ||
+      child.requestedModel !== parent.requestedModel ||
+      child.lane !== "execution" ||
+      !Number.isInteger(maxAttempts) ||
+      maxAttempts < 2 ||
+      maxAttempts > 5 ||
+      !Number.isFinite(failure.retryAt) ||
+      failure.retryAt > Date.now()
+    )
+      throw new Error("decision_retry_handover_invalid");
+    const db = getDbInstance();
+    const attempts = db
+      .prepare(
+        "SELECT candidate_id FROM decision_application_attempts WHERE request_id=? AND lane='execution'"
+      )
+      .all(child.requestId) as Row[];
+    if (
+      attempts.length >= maxAttempts ||
+      attempts.some((item) => item.candidate_id === child.candidateId)
+    )
+      throw new Error("decision_retry_exhausted");
+    db.prepare(
+      "UPDATE decision_application_attempts SET decision_outcome=?,selected_binding=? WHERE id=?"
+    ).run(`retry:${failure.scope}`, selectedBinding(child), parent.id);
+    reserveInTransaction(child);
+  });
+}
+/** Private owner proof for a completed rejection; neither an HTTP header nor a row ID suffices. */
+export function assertCompletedExecutionRejection(
+  identity: AttemptIdentity,
+  failure: CompletedExecutionRejection
+): Row {
+  assertSharedDecisionStorage();
+  const row = readDecisionAttemptReceipt(identity.id);
+  assertIdentityRow(identity, row);
+  assertLeaseOwner(identity, row);
+  if (
+    row.lane !== "execution" ||
+    row.state !== "completed" ||
+    row.http_status !== failure.status ||
+    row.application_status !== failure.status ||
+    failure.status < 400
+  )
+    throw new Error("decision_retry_source_invalid");
+  return row;
+}
 function countedLogicalRequest(keyId: string, ownerId?: string): boolean {
   if (!ownerId) return false;
   const db = getDbInstance();
-  const row = db
+  let row = db
     .prepare("SELECT * FROM decision_application_attempts WHERE id=? AND api_key_id=?")
     .get(ownerId, keyId) as Row | undefined;
   if (!row) return false;
-  if (row.parent_attempt_id) {
+  for (let depth = 0; depth < 6 && row.parent_attempt_id; depth++) {
     try {
       assertSelectedParent({
         id: String(row.id),
@@ -654,13 +753,18 @@ function countedLogicalRequest(keyId: string, ownerId?: string): boolean {
         parentAttemptId: String(row.parent_attempt_id),
         requestedModel: typeof row.requested_model === "string" ? row.requested_model : undefined,
       });
-      return true;
+      row = db
+        .prepare("SELECT * FROM decision_application_attempts WHERE id=? AND api_key_id=?")
+        .get(row.parent_attempt_id, keyId) as Row | undefined;
+      if (!row) return false;
     } catch {
       return false;
     }
   }
   return (
-    row.logical_counted === 1 && ["started", "completed", "unknown"].includes(String(row.state))
+    !row.parent_attempt_id &&
+    row.logical_counted === 1 &&
+    ["started", "completed", "unknown"].includes(String(row.state))
   );
 }
 /** One transaction keeps the logical key slot occupied while ownership moves to execution. */

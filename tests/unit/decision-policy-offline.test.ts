@@ -116,23 +116,12 @@ test("unknown profile/effort/capabilities never become inferred model knowledge"
   }
 });
 
-test("invalid config, duplicate variants/IDs and stale task references fail before dependencies", async () => {
+test("invalid config, duplicate IDs and stale task references fail before dependencies", async () => {
   let reads = 0;
   for (const bad of [
     { ...config, version: 2 },
     { ...config, candidates: [{ ...config.candidates[0], id: "__proto__" }], taskOrder: {} },
     { ...config, candidates: [...config.candidates, config.candidates[0]] },
-    {
-      ...config,
-      candidates: [
-        ...config.candidates,
-        {
-          ...config.candidates[0],
-          id: "duplicate_variant",
-          effort: { ...config.candidates[0].effort, mode: "fixed" },
-        },
-      ],
-    },
     { ...config, taskOrder: { explanation: ["missing"] } },
     { ...config, timeoutMs: 0 },
     { ...config, maxExecutionAttempts: 100 },

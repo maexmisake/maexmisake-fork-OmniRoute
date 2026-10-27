@@ -49,13 +49,10 @@ export const policySchema = z
   .strict()
   .superRefine((value, ctx) => {
     const ids = new Set(value.candidates.map((candidate) => candidate.id));
-    const variants = new Set(
-      value.candidates.map((candidate) =>
-        JSON.stringify([candidate.provider, candidate.model, candidate.effort.value])
-      )
-    );
-    if (ids.size !== value.candidates.length || variants.size !== value.candidates.length)
-      ctx.addIssue({ code: "custom", message: "Duplicate candidate ID or model-effort variant" });
+    // Exact application bindings additionally include the configured connection.
+    // Separate IDs may intentionally represent one model/effort on different accounts.
+    if (ids.size !== value.candidates.length)
+      ctx.addIssue({ code: "custom", message: "Duplicate candidate ID" });
     for (const order of Object.values(value.taskOrder)) {
       if (new Set(order).size !== order.length || order.some((id) => !ids.has(id)))
         ctx.addIssue({ code: "custom", message: "Invalid task preference order" });

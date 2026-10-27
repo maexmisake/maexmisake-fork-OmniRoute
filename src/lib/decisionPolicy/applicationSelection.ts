@@ -51,7 +51,9 @@ import {
   readLogicalDecisionCost,
   type AttemptIdentity,
   type AttemptUsage,
+  assertCompletedExecutionRejection,
 } from "../db/decisionAttempts";
+import type { CompletedExecutionRejection } from "../../../open-sse/services/decisionPolicy/retryPolicy.ts";
 import {
   assertApplicationEgress,
   resolveApplicationProvider,
@@ -67,8 +69,19 @@ export type NativeStage = {
   handover: (child: AttemptIdentity) => void;
   finishFailure: (status: number) => void;
   timedOut: () => boolean;
+  acknowledgeRejection: (previous: AttemptIdentity, failure: CompletedExecutionRejection) => void;
   annotate: (response: Response) => Response;
 };
+function stampWithoutRuntimeKeyHealth(stamp: string): string {
+  const parts = JSON.parse(stamp);
+  const connection = parts[1];
+  if (connection?.provider_specific_data) {
+    const metadata = JSON.parse(connection.provider_specific_data);
+    delete metadata.apiKeyHealth;
+    connection.provider_specific_data = JSON.stringify(metadata);
+  }
+  return JSON.stringify(parts);
+}
 function validNativeHeaders(headers: HeadersInit | undefined, authorization: string): boolean {
   return hasExactSystemOneHeaders(headers, authorization);
 }
@@ -206,9 +219,14 @@ export async function prepareNativeStage(
     })),
   ];
   const stamps = stamped.map((item) => decisionAuthorityStamp(item, plan.sourcePolicy));
+  const settledHealthUpdates = new Set<string>();
   const unchanged = () =>
     stamped.forEach((item, index) => {
-      if (decisionAuthorityStamp(item, plan.sourcePolicy) !== stamps[index])
+      const current = decisionAuthorityStamp(item, plan.sourcePolicy);
+      const normalize = settledHealthUpdates.has(item.connectionId)
+        ? stampWithoutRuntimeKeyHealth
+        : (value: string) => value;
+      if (normalize(current) !== normalize(stamps[index]))
         throw new Error("decision_authority_changed");
     });
   const key = await getApiKeyById(keyId);
@@ -434,6 +452,29 @@ export async function prepareNativeStage(
       decisionSignal.throwIfAborted();
       handoverNativeDecision(identity, child, usage);
       handedOver = true;
+    },
+    acknowledgeRejection: (previous, failure) => {
+      assertCompletedExecutionRejection(previous, failure);
+      const candidate = plan.config.policy.candidates.find(
+        (item) => item.id === previous.candidateId
+      );
+      if (
+        !handedOver ||
+        previous.requestId !== identity.id ||
+        previous.keyId !== keyId ||
+        previous.comboId !== plan.comboId ||
+        !candidate ||
+        previous.provider !== candidate.provider ||
+        previous.model !== candidate.model ||
+        previous.effort !== candidate.effort.value ||
+        previous.connectionId !== plan.config.connections[candidate.id] ||
+        previous.connectionId === selection.connectionId
+      )
+        throw new Error("decision_retry_source_invalid");
+      // Only this server-written health field may evolve after a proven rejection.
+      // New attempts still snapshot their entire current authority before dispatch.
+      settledHealthUpdates.add(previous.connectionId);
+      assertFresh();
     },
     finishFailure: (status) => {
       if (handedOver) return;

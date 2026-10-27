@@ -76,8 +76,34 @@ quota remains unknown. This preflight performs no provider probe or credential r
 Automatic execution keeps the normal breaker and model-cooldown gates even though
 its selected connection is pinned. A provider becoming unavailable after Choice
 cannot turn that pin into an override. The application lane still permits one
-physical execution; an operator-configured retry chain after dispatch is a remaining
-integration gap. Unknown completion does not authorize an execution replay here.
+physical execution by default. An operator can explicitly enable a directed failover
+chain in **Configured execution failover**, with two to five total execution attempts.
+Each transition names existing profile IDs and allowed failure scopes in
+`retry.transitions`. There is no second native decision and no ambient fallback.
+
+Supported scopes are `account-quota`, `account-rate-limit`, `model-unavailable` and
+`provider-unavailable`. Account scopes require a different configured connection;
+model scope requires a different model or provider; provider scope requires a
+different provider. Exact model/effort profiles may have distinct IDs for separate
+accounts, but duplicate bindings to the same connection reject. Operators must bind
+account alternatives to the intended separate quota scopes; different connection IDs
+alone do not establish independent upstream account quotas.
+
+[`retryPolicy.ts`](../../open-sse/services/decisionPolicy/retryPolicy.ts) accepts only
+closed, completed rejection shapes and known provider-specific error types. A bare
+status, ambiguous scope, refusal, access denial, partial/generated output or unknown
+transport completion never grants retry permission. This is not a claim that every
+provider error format is classified. Unknown cost stays on the rejected attempt's
+receipt and keeps total spending unknown. `Retry-After` and one shared deadline apply;
+eligibility and full dispatch authority are checked again after waiting.
+
+[`decisionAttempts.ts`](../../src/lib/db/decisionAttempts.ts) atomically authorizes
+one retry child per completed rejection. Every physical attempt has its own receipt,
+while logical RPM is counted once. Trusted tool continuations retain their exact
+origin and cannot enter this retry chain. A verified rejected execution may update
+its old native-selection snapshot's operational `apiKeyHealth`; credentials, policy,
+key permissions and destination remain fenced. Every new execution snapshots its
+entire current authority again, including current health metadata.
 
 [`decisionPolicyMetrics.ts`](../../scripts/router-eval/decisionPolicyMetrics.ts)
 computes offline metrics from a result artifact and a separate label artifact.

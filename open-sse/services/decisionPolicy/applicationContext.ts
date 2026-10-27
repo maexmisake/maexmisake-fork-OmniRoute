@@ -40,6 +40,8 @@ export type ApplicationAttempt = {
   lane?: "decision" | "execution";
   requestId?: string;
   parentAttemptId?: string;
+  /** Trusted observation of a complete upstream rejection, never accepted from headers. */
+  rejection?: () => import("./retryPolicy.ts").CompletedExecutionRejection | null;
   signal: AbortSignal;
   /** Private prepared-provider contract; never accepted from request data. */
   executionContract?:

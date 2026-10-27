@@ -7,6 +7,11 @@ import { createApplicationStream } from "./applicationStream";
 import { assertNativeConnectionUnleased } from "./exclusiveLease";
 import { prepareNativeStage, type NativeStage } from "./applicationSelection";
 import { createApplicationHealthReader } from "./applicationAvailability";
+import { runApplicationAttempts, type RetryReservation } from "./applicationRetry";
+import {
+  completedExecutionRejection,
+  type CompletedExecutionRejection,
+} from "../../../open-sse/services/decisionPolicy/retryPolicy.ts";
 import { getExecutor } from "../../../open-sse/executors/index.ts";
 import { createValidationDispatchFence } from "../modelValidation/dispatchFence";
 import { createValidationPluginFence } from "../modelValidation/pluginFence";
@@ -49,6 +54,7 @@ import {
   type AttemptIdentity,
   readDecisionAttemptReceipt,
   readLogicalDecisionCost,
+  handoverExecutionRetry,
 } from "../db/decisionAttempts";
 import { boundedDecisionEnabled } from "../../../open-sse/services/decisionPolicy/applicationGate.ts";
 import {
@@ -282,7 +288,8 @@ async function observeResponse(
   identity: AttemptIdentity,
   signal: AbortSignal,
   send: Promise<Response>,
-  sensitiveValues: readonly string[]
+  sensitiveValues: readonly string[],
+  reject: (failure: CompletedExecutionRejection | null) => void
 ): Promise<Response> {
   let response: Response;
   try {
@@ -340,7 +347,18 @@ async function observeResponse(
   }
   signal.throwIfAborted();
   assertNativeResponse(identity, response, data);
-  if (!response.ok) return projectExecutionFailure(response, data, text, sensitiveValues);
+  if (!response.ok) {
+    reject(
+      completedExecutionRejection(
+        response.status,
+        data,
+        response.headers.get("retry-after"),
+        Date.now(),
+        identity.provider
+      )
+    );
+    return projectExecutionFailure(response, data, text, sensitiveValues);
+  }
   return response;
 }
 function nativeResponseIsJson(provider: string, response: Response): boolean {
@@ -403,9 +421,11 @@ function reportedApplicationUsage(provider: string, data: Record<string, unknown
 function reserveApplicationAttempt(
   identity: AttemptIdentity,
   native?: NativeStage,
-  tools?: ApplicationTools
+  tools?: ApplicationTools,
+  retry?: RetryReservation
 ): void {
-  if (tools?.continuation) tools.claim(identity);
+  if (retry) handoverExecutionRetry(retry.previous, identity, retry.maxAttempts, retry.failure);
+  else if (tools?.continuation) tools.claim(identity);
   else if (native) native.handover(identity);
   else reserveDecisionAttempt(identity);
 }
@@ -529,8 +549,9 @@ async function buildAttempt(
   native?: NativeStage,
   streaming = false,
   streamOptions?: unknown,
-  toolsSession?: ApplicationTools
-): Promise<ApplicationAttempt> {
+  toolsSession?: ApplicationTools,
+  retry?: RetryReservation
+): Promise<ApplicationAttempt & AttemptIdentity> {
   const connectionId = plan.config.connections[candidate.id];
   assertNativeConnectionUnleased(connectionId);
   const connection = await getProviderConnectionById(connectionId);
@@ -565,19 +586,25 @@ async function buildAttempt(
     effort: candidate.effort.value,
     ...(nativeOutputPlan(plan) ? { outputPolicy: "provider-native" as const } : {}),
     trace,
-    ...(native
+    ...(retry
       ? {
           lane: "execution" as const,
-          requestId: native.identity.id,
-          parentAttemptId: native.identity.id,
+          requestId: retry.previous.requestId ?? retry.previous.id,
+          parentAttemptId: retry.previous.id,
         }
-      : {}),
+      : native
+        ? {
+            lane: "execution" as const,
+            requestId: native.identity.id,
+            parentAttemptId: native.identity.id,
+          }
+        : {}),
   };
   assertUncappedDecision(
     keyId,
     candidate.provider,
     candidate.model,
-    native?.identity.id,
+    retry?.previous.id ?? native?.identity.id,
     plan.name
   );
   const stamp = authorityStamp(identity, plan.sourcePolicy);
@@ -598,7 +625,7 @@ async function buildAttempt(
         keyId,
         candidate.provider,
         candidate.model,
-        native?.identity.id,
+        retry?.previous.id ?? native?.identity.id,
         plan.name
       );
       if (authorityStamp(identity, plan.sourcePolicy) !== stamp)
@@ -628,7 +655,7 @@ async function buildAttempt(
     allowNativeAgyOpus: contract.executionContract === "agy-opus-fixed-native-output-v1",
     allowNativeCodex: contract.executionContract === "codex-native-output-v1",
   });
-  reserveApplicationAttempt(identity, native, toolsSession);
+  reserveApplicationAttempt(identity, native, toolsSession, retry);
   reserved = true;
   const toolHooks = attachTools(toolsSession, identity, stamp);
   const stream = streaming
@@ -639,7 +666,12 @@ async function buildAttempt(
         toolHooks
       )
     : undefined;
+  let rejection: CompletedExecutionRejection | null = null;
+  const recordRejection = (value: CompletedExecutionRejection | null) => {
+    rejection = value;
+  };
   return {
+    rejection: () => rejection,
     stream,
     tools: toolHooks,
     ...(contract.executionContract ? { executionContract: contract.executionContract } : {}),
@@ -715,11 +747,17 @@ async function buildAttempt(
       },
     },
     observe: async (send) => {
-      if (!stream) return observeResponse(identity, signal, send, sensitiveValues);
+      if (!stream) return observeResponse(identity, signal, send, sensitiveValues, recordRejection);
       const response = await send;
       return response.ok
         ? stream.observe(response)
-        : observeResponse(identity, signal, Promise.resolve(response), sensitiveValues);
+        : observeResponse(
+            identity,
+            signal,
+            Promise.resolve(response),
+            sensitiveValues,
+            recordRejection
+          );
     },
   };
 }
@@ -812,7 +850,7 @@ function annotateNoDecision(
   response.headers.set("x-omniroute-decision-status", "no-decision");
   if (attempt) {
     try {
-      const cost = readLogicalDecisionCost(attempt.id);
+      const cost = readLogicalDecisionCost(attempt.requestId ?? attempt.id);
       response.headers.set("x-omniroute-routing-cost", JSON.stringify(cost));
       response.headers.set(
         "x-omniroute-routing-cost-status",
@@ -990,8 +1028,9 @@ export async function executeAutomaticCombo(
   ) => Promise<Response>
 ): Promise<Response> {
   const callerSignal = signal;
+  const deadlineAt = Date.now() + plan.config.policy.timeoutMs;
   signal = AbortSignal.any([signal, AbortSignal.timeout(plan.config.policy.timeoutMs)]);
-  let attempt: ApplicationAttempt | undefined;
+  let attempt: (ApplicationAttempt & AttemptIdentity) | undefined;
   const state: SelectionState = { mode: "no-route" };
   let streamHandedOff = false;
   // A configured selector is not an observed selection before eligibility succeeds.
@@ -1019,35 +1058,69 @@ export async function executeAutomaticCombo(
     );
     if (await getComboByName(`${candidate.provider}/${candidate.model}`))
       throw new Error("decision_no_route");
-    attempt = await buildAttempt(
+    const result = await runApplicationAttempts({
       plan,
-      candidate,
-      keyId,
+      initial: candidate,
       signal,
-      extracted.body.max_completion_tokens,
+      deadlineAt,
+      continuation: !!tools?.continuation,
       trace,
-      extracted.body,
-      state.native,
-      extracted.body.stream === true,
-      extracted.body.stream_options,
-      tools
-    );
-    let response = await withApplicationAttempt(attempt, () =>
-      dispatch(
-        selectedRequest(extracted.body, candidate),
-        `${candidate.provider}/${candidate.model}`,
-        attempt!.connectionId
-      )
-    );
-    if (signal.aborted)
-      response = rejectedAttempt(
-        attempt,
-        new Error("decision_deadline"),
-        callerSignal.aborted ? 499 : 504
-      );
-    response = await reportedClaudeClientUsage(response, attempt);
+      capture: (value) => {
+        attempt = value;
+      },
+      acknowledge: (previous, failure) => state.native?.acknowledgeRejection(previous, failure),
+      eligible: async () =>
+        supportedExecutionCandidates(
+          plan,
+          eligibleCandidates(
+            plan.config.policy,
+            extracted.facts,
+            await candidateSnapshot(plan, keyId),
+            trace
+          ),
+          trace,
+          !!tools,
+          extracted.body
+        ),
+      build: (next, retry) =>
+        buildAttempt(
+          plan,
+          next,
+          keyId,
+          signal,
+          extracted.body.max_completion_tokens,
+          trace,
+          extracted.body,
+          state.native,
+          extracted.body.stream === true,
+          extracted.body.stream_options,
+          retry ? prepareTools(plan, keyId) : tools,
+          retry
+        ),
+      dispatch: async (next, owned) =>
+        reportedClaudeClientUsage(
+          await withApplicationAttempt(owned, () =>
+            dispatch(
+              selectedRequest(extracted.body, next),
+              `${next.provider}/${next.model}`,
+              owned.connectionId
+            )
+          ),
+          owned
+        ),
+    });
+    attempt = result.attempt;
+    const response = result.response;
     signal.throwIfAborted();
-    const annotated = completedResponse(response, attempt, candidate, state.mode, state.native);
+    const annotated = completedResponse(
+      response,
+      attempt,
+      result.candidate,
+      state.mode,
+      state.native
+    );
+    if (result.attempts > 1)
+      annotated.headers.set("x-omniroute-execution-attempts", String(result.attempts));
     if (nativeOutputPlan(plan)) {
       annotated.headers.set("x-omniroute-output-policy", "provider-native");
       annotated.headers.set("x-omniroute-output-limit-enforced", "false");

@@ -3,6 +3,10 @@
 import { z } from "zod";
 import { policySchema } from "../../../open-sse/services/decisionPolicy/contract.ts";
 import {
+  applicationRetrySchema,
+  validApplicationRetry,
+} from "../../../open-sse/services/decisionPolicy/retryPolicy.ts";
+import {
   decisionTaskContextSchema,
   guidanceDisclosureSchema,
 } from "../../../open-sse/services/decisionPolicy/taskContext.ts";
@@ -50,6 +54,7 @@ export const boundedDecisionConfigurationSchema = z
       .strict()
       .optional(),
     policy: policySchema,
+    retry: applicationRetrySchema.optional(),
     selection: z
       .union([z.object({ mode: z.literal("deterministic") }).strict(), nativeSelectionSchema])
       .optional(),
@@ -61,7 +66,17 @@ export const boundedDecisionConfigurationSchema = z
       (value.applicationMode === "provider-native-output-v1"
         ? value.nativeOutput !== undefined
         : value.nativeOutput === undefined) &&
-      value.policy.maxExecutionAttempts === 1 &&
+      new Set(
+        value.policy.candidates.map((candidate) =>
+          JSON.stringify([
+            candidate.provider,
+            candidate.model,
+            candidate.effort.value,
+            value.connections[candidate.id],
+          ])
+        )
+      ).size === value.policy.candidates.length &&
+      validApplicationRetry(value.policy, value.retry, value.connections) &&
       (value.selection?.mode === "native"
         ? value.policy.maxDecisionAttempts === 1 &&
           value.policy.decisionFailure === "stop" &&

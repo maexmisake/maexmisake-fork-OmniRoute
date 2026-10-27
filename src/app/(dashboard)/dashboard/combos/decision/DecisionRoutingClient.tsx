@@ -22,6 +22,7 @@ import ProfileFields from "./ProfileFields";
 import DecisionAttemptsPanel from "./DecisionAttemptsPanel";
 import OutputPolicyFields from "./OutputPolicyFields";
 import DecisionContextFields from "./DecisionContextFields";
+import RetryPolicyFields from "./RetryPolicyFields";
 
 function NativeFields({
   draft,
@@ -290,12 +291,13 @@ export default function DecisionRoutingClient() {
               </Select>
             </div>
             <p className="mt-3 text-sm text-text-muted">
-              At most one native decision and one exact execution. Decision errors, refusal and
-              cancellation stop routing; there is no hidden chat, account or provider fallback.
+              At most one native decision. Execution uses one exact target unless scoped failover is
+              explicitly configured. Decision errors, refusal and cancellation stop routing.
               Enabling requires an authenticated client and compatible application settings.
             </p>
           </Card>
           <OutputPolicyFields draft={draft} disabled={disabled} update={editor.updateDraft} />
+          <RetryPolicyFields draft={draft} disabled={disabled} update={editor.updateDraft} />
           {draft.mode === "native" && (
             <NativeFields
               draft={draft}

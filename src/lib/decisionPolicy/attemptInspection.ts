@@ -13,6 +13,7 @@ const phase = z.enum([
   "difficulty",
   "preference",
   "decision_context",
+  "retry",
 ]);
 const REASONS = [
   "eligible",
@@ -50,6 +51,10 @@ const REASONS = [
   "difficulty_scoped_order",
   "task_context_shared",
   "task_context_local_summary",
+  "configured_account_quota",
+  "configured_account_rate_limit",
+  "configured_model_unavailable",
+  "configured_provider_unavailable",
 ] as const;
 const reason = z.enum(REASONS);
 const outcome = z
@@ -64,6 +69,10 @@ const outcome = z
     "cancelled",
     "timeout",
     "selection_unavailable",
+    "retry:account-quota",
+    "retry:account-rate-limit",
+    "retry:model-unavailable",
+    "retry:provider-unavailable",
   ])
   .nullable();
 const trace = z

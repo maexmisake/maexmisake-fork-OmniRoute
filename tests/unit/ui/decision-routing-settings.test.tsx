@@ -206,6 +206,38 @@ afterEach(() => {
 });
 
 describe("decision routing settings", () => {
+  it("preserves opt-in scoped retry configuration across editing and save/reload", async () => {
+    const savedPolicy = policy();
+    savedPolicy.retry = { transitions: [{ from: "light", to: "deep", scopes: ["account-quota"] }] };
+    savedPolicy.policy.maxExecutionAttempts = 2;
+    savedPolicy.connections.deep = "execute-backup";
+    const data = options();
+    data.connections.push({
+      ...data.connections.find((row) => row.id === "execute")!,
+      id: "execute-backup",
+    });
+    const api = server(record(savedPolicy), data);
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    expect(
+      (screen.getByLabelText("Enable configured execution failover") as HTMLInputElement).checked
+    ).toBe(true);
+    expect((screen.getByLabelText("Maximum execution attempts") as HTMLInputElement).value).toBe(
+      "2"
+    );
+    fireEvent.change(screen.getByLabelText("Overall request timeout (ms)"), {
+      target: { value: "29000" },
+    });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(api.calls.some((row) => row.init.method === "PUT")).toBe(true));
+    const saved = api.calls.filter((row) => row.init.method === "PUT").at(-1)!.body!
+      .policy as DecisionPolicyEditorValue;
+    expect(saved.retry).toEqual(savedPolicy.retry);
+    expect(saved.policy.maxExecutionAttempts).toBe(2);
+    expect(
+      (screen.getByLabelText("Enable configured execution failover") as HTMLInputElement).checked
+    ).toBe(true);
+  });
   it("keeps guidance local until destination acknowledgement and clears consent on edits or destination changes", async () => {
     const api = server();
     render(<DecisionRoutingClient />);

@@ -44,6 +44,9 @@ export type Draft = {
   guidanceAcknowledged: boolean;
   timeout: string;
   unknownQuota: "reject" | "allow";
+  retryEnabled: boolean;
+  maxExecutionAttempts: string;
+  retryTransitions: string;
   candidates: string;
   taskOrder: string;
   connections: Record<string, string>;
@@ -79,6 +82,9 @@ export function draftFromPolicy(policy: DecisionPolicyEditorValue | null): Draft
     guidanceAcknowledged: !!native && guidanceDisclosureMatches(native, native.guidanceDisclosure),
     timeout: String(policy?.policy.timeoutMs ?? 30000),
     unknownQuota: policy?.policy.unknownQuota ?? "reject",
+    retryEnabled: !!policy?.retry,
+    maxExecutionAttempts: String(policy?.policy.maxExecutionAttempts ?? 1),
+    retryTransitions: JSON.stringify(policy?.retry?.transitions ?? [], null, 2),
     candidates: JSON.stringify(policy?.policy.candidates ?? [], null, 2),
     taskOrder: JSON.stringify(policy?.policy.taskOrder ?? {}, null, 2),
     connections: { ...(policy?.connections ?? {}) },
@@ -228,6 +234,7 @@ function parseDraft(draft: Draft, options: EditorOptions) {
       : {}),
     selection,
     connections: draft.connections,
+    ...(draft.retryEnabled ? { retry: { transitions: parseJson(draft.retryTransitions) } } : {}),
     policy: {
       version: 1,
       candidates,
@@ -235,7 +242,7 @@ function parseDraft(draft: Draft, options: EditorOptions) {
       unknownQuota: draft.unknownQuota,
       decisionFailure: "stop",
       maxDecisionAttempts: draft.mode === "native" ? 1 : 0,
-      maxExecutionAttempts: 1,
+      maxExecutionAttempts: draft.retryEnabled ? Number(draft.maxExecutionAttempts) : 1,
       timeoutMs: Number(draft.timeout),
     },
   });
