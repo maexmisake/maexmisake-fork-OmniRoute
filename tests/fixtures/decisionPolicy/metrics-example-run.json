@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "suiteSha256": "826d10ad80a8807cc9c9d79272dae59fae0541d9740a389704c21ca4e819a8ba",
+  "policySha256": "bbd4c74c1fc10b86472ddbbf33f4ef869ed952f0bb26e0d232a64b68036e68d2",
+  "declaredSplit": "postdesign-synthetic",
+  "source": "externally-supplied-unverified",
+  "candidateIds": [
+    "agy_claude-opus-4-6-thinking",
+    "cc_claude-haiku-5-5-medium",
+    "cx_gpt-6-luna-max",
+    "cc_claude-haiku-5-5-high",
+    "cx_gpt-5_6-sol-medium",
+    "cx_gpt-6-sol-medium",
+    "cc_claude-sonnet-5-5-medium",
+    "agy_gemini-3_8-flash-high",
+    "cc_claude-haiku-5-5-xhigh",
+    "cx_gpt-5_6-sol-high",
+    "cx_gpt-6-sol-high",
+    "cc_claude-haiku-5-5-max",
+    "cx_gpt-5_6-sol-xhigh",
+    "cx_gpt-6-sol-xhigh",
+    "cc_claude-sonnet-5-5-high",
+    "cx_gpt-5_6-sol-max",
+    "cx_gpt-6-sol-max",
+    "cc_claude-opus-5-5-medium",
+    "cc_claude-sonnet-5-5-xhigh",
+    "cc_claude-opus-5-5-high",
+    "cc_claude-opus-5-5-xhigh",
+    "cc_claude-sonnet-5-5-max",
+    "cc_claude-opus-5-5-max"
+  ],
+  "records": [
+    {
+      "caseId": 1,
+      "inputSha256": "92c127de892f49c26766880d9d47e30dd0804504fc20b4ba41cd09e4d213657a",
+      "responseSha256": null,
+      "candidateId": null,
+      "outcome": "unrun",
+      "route": "unrun",
+      "predictedSuccess": null,
+      "decisionLatencyMs": null,
+      "decisionCostUsd": null,
+      "executionCostUsd": null,
+      "decisionAttempts": 0,
+      "executionAttempts": 0,
+      "sessionId": null,
+      "turn": null
+    }
+  ],
+  "forecastTarget": "task-success"
+}

@@ -64,6 +64,29 @@ Fixture success does not establish a full Hermes agent run.
 
 ## Evidence boundaries
 
+[`decisionPolicyMetrics.ts`](../../scripts/router-eval/decisionPolicyMetrics.ts)
+computes offline metrics from a result artifact and a separate label artifact.
+Both carry the suite hash; case, input and response hashes must match. These hashes
+do not authenticate externally supplied results or establish a held-out split.
+Task grades may describe completed responses or negative settled execution failures;
+unknown and unrun outcomes stay ungraded. Coverage is reported against the whole cohort.
+
+Calibration requires an explicit forecast of **task success**, not native Choice
+confidence. The report includes Brier score, ten-bin expected calibration error,
+misroute/fallback denominators, reported decision latency percentiles, separate
+decision/execution costs and adjacent-turn session churn. Missing cost is unknown;
+unrun cases cannot invent attempts or bills. Churn does not prove cache reuse.
+The report never supplies counterfactual savings or a promotion decision.
+
+This example performs no inference and reports one explicitly unrun synthetic case:
+
+```bash
+node --import tsx/esm scripts/router-eval/decisionPolicyMetrics.ts tests/fixtures/decisionPolicy/metrics-example-run.json tests/fixtures/decisionPolicy/metrics-example-labels.json
+```
+
+The example retains the original candidate IDs, supplies no quality labels and
+cannot establish selection accuracy, measured savings or independent quality.
+
 Offline handler and component tests verify consent, bounds, identities and wire
 contracts. They do not establish routing accuracy, savings, live entitlement,
 every client protocol or full-agent compatibility. Decision spending, execution
