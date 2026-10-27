@@ -97,6 +97,7 @@ let comboId: string;
 const connections: Record<string, string> = {};
 let chosen: Candidate = codex[0];
 let decisions = 0;
+let lastDecisionState = "";
 let executions = 0;
 let unexpected = 0;
 let upstreamStatus = 200;
@@ -282,6 +283,7 @@ before(async () => {
     const headers = new Headers(init.headers);
     if (url === DECISION_URL) {
       decisions++;
+      lastDecisionState = body.state;
       assert.equal(headers.get("authorization"), `Bearer ${ACCESS.selector}`);
       assert.equal(body.model, "jev-1.13-free");
       offered = Object.keys(body.questions.route.criteria);
@@ -436,6 +438,7 @@ beforeEach(async () => {
   clearAllModelLockouts();
   key = await createApiKey("synthetic-native-output-client", "synthetic");
   decisions = executions = unexpected = 0;
+  lastDecisionState = "";
   upstreamStatus = decisionStatus = 200;
   responseMode = "valid";
   decisionMode = "valid";
@@ -649,6 +652,74 @@ async function expectSuccess(target: Candidate, order?: string[]) {
   assert.equal(execution.reasoning_tokens, target.provider === "claude" ? null : 2);
   assert.equal(execution.cost_usd, target.provider === "claude" ? 0 : null);
 }
+
+for (const consent of [null, "task-text", "Task-Text", "task-text, task-text"]) {
+  test(`native-output task context requires exact client consent=${consent}`, async () => {
+    await configure(codex[0], {
+      selection: {
+        mode: "native",
+        provider: "opencode-zen",
+        model: "jev-1.13-free",
+        connectionId: connections.selector,
+        timeoutMs: 1000,
+        decisionContext: {
+          mode: "task-text",
+          acknowledgeExternalTransmission: true,
+          maxChars: 1024,
+        },
+      },
+    });
+    const original = request({
+      messages: [
+        { role: "system", content: "SYNTHETIC_SYSTEM_NEVER_DISCLOSE" },
+        { role: "user", content: `Explain a synthetic lamp. ${SECRET_MARKER}` },
+      ],
+    });
+    const headers = new Headers(original.headers);
+    if (consent !== null) headers.set("x-omniroute-decision-context", consent);
+    const response = await POST(
+      new Request(original.url, { method: "POST", headers, body: await original.text() })
+    );
+    await consume(response);
+    assert.equal(response.status, 200);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.deepEqual(
+      JSON.parse(lastDecisionState).taskContext,
+      consent === "task-text"
+        ? { version: "latest-user-v1", text: `Explain a synthetic lamp. ${SECRET_MARKER}` }
+        : undefined
+    );
+    assert.ok(!lastDecisionState.includes("SYNTHETIC_SYSTEM_NEVER_DISCLOSE"));
+  });
+}
+
+test("oversized consented task stops before any physical native decision or execution", async () => {
+  await configure(codex[0], {
+    selection: {
+      mode: "native",
+      provider: "opencode-zen",
+      model: "jev-1.13-free",
+      connectionId: connections.selector,
+      timeoutMs: 1000,
+      decisionContext: {
+        mode: "task-text",
+        acknowledgeExternalTransmission: true,
+        maxChars: 10,
+      },
+    },
+  });
+  const original = request();
+  const headers = new Headers(original.headers);
+  headers.set("x-omniroute-decision-context", "task-text");
+  const response = await POST(
+    new Request(original.url, { method: "POST", headers, body: await original.text() })
+  );
+  assert.equal(response.status, 409);
+  await consume(response);
+  assert.equal(decisions, 0);
+  assert.equal(executions, 0);
+});
 
 for (const candidate of [...codex, opus])
   test(`actual handler native output executes original ${candidate.id} once without a wire cap`, async () => {

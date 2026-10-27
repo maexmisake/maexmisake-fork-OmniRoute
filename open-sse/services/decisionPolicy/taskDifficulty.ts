@@ -1,5 +1,5 @@
 /** Local lexical/structural heuristic, not a learned score or correctness prediction.
- * Text is examined only in this process. Nothing supplied by the caller is returned. */
+ * Assessments expose fixed metadata only. The instruction helper is for local extraction. */
 export const TASK_DIFFICULTY_LEVELS = [
   "easy",
   "moderate",
@@ -187,7 +187,7 @@ function routingDirective(sentence: string): boolean {
     )
   );
 }
-function requestText(text: string, signals: Signals): string | null {
+function requestText(text: string, signals: Signals, omitRoutingDirectives = true): string | null {
   const chunks = text.split("```");
   if (chunks.length % 2 === 0) return null;
   const prose: string[] = [];
@@ -206,7 +206,7 @@ function requestText(text: string, signals: Signals): string | null {
   return unquoted
     .split(/(?<=[.!?;])\s+|\n/)
     .filter((sentence) => {
-      if (!routingDirective(sentence)) return true;
+      if (!omitRoutingDirectives || !routingDirective(sentence)) return true;
       signals.routingDirectiveIgnored = true;
       return false;
     })
@@ -291,6 +291,13 @@ function classify(signals: Signals, text: string): TaskDifficultyAssessment {
   if (isAtomicTask(signals, text)) return assessment("easy", signals, "atomic_task");
   return assessment("moderate", signals, "bounded_multistep_task");
 }
+/** Local-only task prose; quoted payloads are not the user's instructions.
+ * Intent retains ordinary questions about routing/models; difficulty separately filters directives. */
+export function taskInstructionText(text: unknown): string | null {
+  if (typeof text !== "string" || text.length > MAX_DIFFICULTY_TEXT_CHARS) return null;
+  return requestText(text, emptySignals(), false);
+}
+
 export function assessTaskDifficulty(text: unknown): TaskDifficultyAssessment {
   const signals = emptySignals();
   if (typeof text !== "string") return assessment("unknown", signals, "input_unavailable");

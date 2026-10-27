@@ -206,6 +206,54 @@ afterEach(() => {
 });
 
 describe("decision routing settings", () => {
+  it("requires disclosure consent, saves/reloads task context, and clears acknowledgement on provider changes", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    expect((screen.getByLabelText("Decision task context") as HTMLSelectElement).value).toBe(
+      "local-summary"
+    );
+    fireEvent.change(screen.getByLabelText("Decision task context"), {
+      target: { value: "task-text" },
+    });
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.click(
+      screen.getByLabelText(
+        "I acknowledge that consented task text is sent to the decision provider"
+      )
+    );
+    fireEvent.change(screen.getByLabelText("Maximum shared task characters"), {
+      target: { value: "1024" },
+    });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(api.calls.some((row) => row.init.method === "PUT")).toBe(true));
+    const saved = api.calls.find((row) => row.init.method === "PUT")!.body!
+      .policy as DecisionPolicyEditorValue;
+    expect(saved.selection?.mode).toBe("native");
+    if (saved.selection?.mode !== "native") throw new Error("Expected native fixture");
+    expect(saved.selection.decisionContext).toEqual({
+      mode: "task-text",
+      acknowledgeExternalTransmission: true,
+      maxChars: 1024,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reload saved settings" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("Maximum shared task characters") as HTMLInputElement).value
+      ).toBe("1024")
+    );
+    fireEvent.change(screen.getByLabelText("Decision provider and exact model"), {
+      target: { value: JSON.stringify(["opencode-zen", "jev-1.13"]) },
+    });
+    expect(
+      (
+        screen.getByLabelText(
+          "I acknowledge that consented task text is sent to the decision provider"
+        ) as HTMLInputElement
+      ).checked
+    ).toBe(false);
+    expect(saveButton().disabled).toBe(true);
+  });
   it("retains all 23 exact original profile choices and fixed efforts when native output is explicitly saved", async () => {
     type Profile = DecisionPolicyEditorValue["policy"]["candidates"][number];
     const profiles: Profile[] = [];

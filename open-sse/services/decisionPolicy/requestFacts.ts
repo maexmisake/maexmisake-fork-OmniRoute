@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PolicyRequest } from "./contract.ts";
-import { assessTaskDifficulty } from "./taskDifficulty.ts";
+import { assessTaskDifficulty, taskInstructionText } from "./taskDifficulty.ts";
+import { decisionTaskContextSchema } from "./taskContext.ts";
 
 const effort = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const message = z
@@ -148,7 +149,12 @@ export type FactResult =
   | { ok: true; body: ChatPolicyBody; facts: PolicyRequest }
   | {
       ok: false;
-      reason: "unsupported_or_unbounded_request" | "context_unknown" | "continuation_unknown";
+      reason:
+        | "unsupported_or_unbounded_request"
+        | "context_unknown"
+        | "continuation_unknown"
+        | "decision_context_bound_exceeded"
+        | "decision_context_policy_invalid";
     };
 
 type JsonScan = { children: unknown[]; chars: number };
@@ -312,13 +318,15 @@ function classifyTask(
   return task;
 }
 
-/** Only task labels/counts enter state/traces. No raw message, image URL, tool schema or secret. */
+/** Local-only by default. Raw latest-user task text requires both explicit consent gates. */
 export function extractRequestFacts(
   raw: unknown,
   options: {
     measureContext: ContextMeasure;
     continuationCandidateId?: string | null;
     nativeOutput?: ProviderNativeOutput;
+    decisionContext?: unknown;
+    clientTaskContextConsent?: boolean;
   }
 ): FactResult {
   const body = normalizeDecisionTextRequest(raw, options.nativeOutput);
@@ -329,16 +337,33 @@ export function extractRequestFacts(
   const continuation = body.messages.at(-1)?.role === "tool";
   if (continuation && !options.continuationCandidateId)
     return { ok: false, reason: "continuation_unknown" };
+  const disclosure = decisionTaskContextSchema.safeParse(
+    options.decisionContext ?? { mode: "local-summary" }
+  );
+  if (!disclosure.success) return { ok: false, reason: "decision_context_policy_invalid" };
+  const disclose =
+    disclosure.data.mode === "task-text" &&
+    options.clientTaskContextConsent === true &&
+    !continuation;
+  if (
+    disclose &&
+    disclosure.data.mode === "task-text" &&
+    contents.text.length > disclosure.data.maxChars
+  )
+    return { ok: false, reason: "decision_context_bound_exceeded" };
   const inputTokens = options.measureContext(structuredClone(body));
   if (!Number.isSafeInteger(inputTokens) || inputTokens === null || inputTokens < 0)
     return { ok: false, reason: "context_unknown" };
   const tools = !!body.tools?.length || continuation;
   const assessment = assessTaskDifficulty(contents.text);
-  const reasoning = /\b(prove|derive|reason|debug|complex|algorithm|invariant)\b/i.test(
-    contents.text
-  );
+  const instructions = taskInstructionText(contents.text) ?? "";
+  const reasoning =
+    /\b(prove|derive|reason|debug|complex|algorithm|invariant)\b/i.test(instructions) ||
+    /(?:^|[.!?\n]\s*|\b(?:please|and|then)\s+)(?:solve|calculate|compute|deduce|plan)\b/i.test(
+      instructions.trim()
+    );
   const task = classifyTask(
-    contents.text,
+    instructions,
     inputTokens,
     tools,
     contents.images,
@@ -368,6 +393,7 @@ export function extractRequestFacts(
         continuation,
         inputTokens,
         reservedOutputTokens: options.nativeOutput ? null : body.max_completion_tokens,
+        ...(disclose ? { taskContext: { version: "latest-user-v1", text: contents.text } } : {}),
         ...(options.nativeOutput
           ? {
               contextOutputTokens: options.nativeOutput.contextOutputTokens,

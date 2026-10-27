@@ -6,6 +6,15 @@ import {
   isForbiddenCustomHeaderName,
 } from "../../src/shared/constants/upstreamHeaders.ts";
 
+test("task-context consent is a router control and cannot be configured as an upstream extra header", () => {
+  assert.deepEqual(
+    sanitizeUpstreamHeadersMap({ "X-OmniRoute-Decision-Context": "task-text", "X-Custom": "kept" }),
+    { "X-Custom": "kept" }
+  );
+  assert.equal(isForbiddenUpstreamHeaderName("x-omniroute-decision-context"), true);
+  assert.equal(isForbiddenCustomHeaderName("x-omniroute-decision-context"), true);
+});
+
 test("sanitizeUpstreamHeadersMap: drops hop-by-hop / Host names", () => {
   const out = sanitizeUpstreamHeadersMap({
     Host: "evil",

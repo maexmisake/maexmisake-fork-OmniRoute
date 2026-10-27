@@ -6,7 +6,14 @@ const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullab
 const money = z.number().finite().nonnegative().nullable();
 const status = z.number().int().min(100).max(599).nullable();
 const state = z.enum(["reserved", "started", "completed", "unknown", "cancelled"]);
-const phase = z.enum(["eligibility", "selection", "output_policy", "difficulty", "preference"]);
+const phase = z.enum([
+  "eligibility",
+  "selection",
+  "output_policy",
+  "difficulty",
+  "preference",
+  "decision_context",
+]);
 const REASONS = [
   "eligible",
   "effort_unproven",
@@ -37,6 +44,8 @@ const REASONS = [
   "local_difficulty_critical",
   "local_difficulty_unknown",
   "difficulty_scoped_order",
+  "task_context_shared",
+  "task_context_local_summary",
 ] as const;
 const reason = z.enum(REASONS);
 const outcome = z

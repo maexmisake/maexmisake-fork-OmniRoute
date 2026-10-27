@@ -9,6 +9,7 @@ import {
   automaticRejection,
 } from "@/lib/decisionPolicy/applicationCombo";
 import { decisionPolicyModelRejection } from "./chat/decisionPolicyGate";
+import { DECISION_TASK_CONTEXT_HEADER } from "@omniroute/open-sse/services/decisionPolicy/taskContext.ts";
 import { hasQoderCallerTools } from "@omniroute/open-sse/services/qoderCapabilities";
 import { getRequestedModelEndpointMismatch } from "@/lib/providerModels/modelEndpointGuard";
 import { randomUUID } from "crypto";
@@ -821,7 +822,8 @@ async function handleChatImplementation(
     modelStr,
     body,
     apiKeyInfo?.id,
-    boundedClientInput
+    boundedClientInput,
+    request.headers.get(DECISION_TASK_CONTEXT_HEADER) === "task-text"
   );
   if (automaticPlan instanceof Response) return automaticPlan;
   // Only this validated, bounded lane needs an owned working copy before hooks.

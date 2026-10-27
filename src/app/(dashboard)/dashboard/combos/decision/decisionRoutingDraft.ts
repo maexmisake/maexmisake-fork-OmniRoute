@@ -37,6 +37,9 @@ export type Draft = {
   selectorConnection: string;
   decisionTimeout: string;
   maxCandidates: string;
+  decisionContextMode: "local-summary" | "task-text";
+  decisionContextAcknowledged: boolean;
+  decisionContextMaxChars: string;
   timeout: string;
   unknownQuota: "reject" | "allow";
   candidates: string;
@@ -64,6 +67,13 @@ export function draftFromPolicy(policy: DecisionPolicyEditorValue | null): Draft
     selectorConnection: native?.connectionId ?? "",
     decisionTimeout: String(native?.timeoutMs ?? 8000),
     maxCandidates: String(native?.maxCandidates ?? 32),
+    decisionContextMode: native?.decisionContext?.mode ?? "local-summary",
+    decisionContextAcknowledged:
+      native?.decisionContext?.mode === "task-text" &&
+      native.decisionContext.acknowledgeExternalTransmission === true,
+    decisionContextMaxChars: String(
+      native?.decisionContext?.mode === "task-text" ? native.decisionContext.maxChars : 2048
+    ),
     timeout: String(policy?.policy.timeoutMs ?? 30000),
     unknownQuota: policy?.policy.unknownQuota ?? "reject",
     candidates: JSON.stringify(policy?.policy.candidates ?? [], null, 2),
@@ -181,6 +191,15 @@ function parseDraft(draft: Draft, options: EditorOptions) {
           connectionId: draft.selectorConnection,
           timeoutMs: Number(draft.decisionTimeout),
           maxCandidates: Number(draft.maxCandidates),
+          ...(draft.decisionContextMode === "task-text"
+            ? {
+                decisionContext: {
+                  mode: "task-text",
+                  acknowledgeExternalTransmission: draft.decisionContextAcknowledged,
+                  maxChars: Number(draft.decisionContextMaxChars),
+                },
+              }
+            : {}),
         }
       : { mode: "deterministic" };
   return decisionPolicyEditorSchema.safeParse({
@@ -239,6 +258,15 @@ function enabledIssues(policy: DecisionPolicyEditorValue, draft: Draft, options:
 
 export function validateDraft(draft: Draft, options: EditorOptions) {
   const outputIssues = nativeOutputIssues(draft);
+  if (draft.mode === "native" && draft.decisionContextMode === "task-text") {
+    if (!draft.decisionContextAcknowledged)
+      outputIssues.push(
+        "Acknowledge external task-text sharing before saving this decision policy."
+      );
+    const maximum = Number(draft.decisionContextMaxChars);
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 2048)
+      outputIssues.push("Set a shared task bound from 1 to 2,048 characters.");
+  }
   if (outputIssues.length)
     return { policy: null, candidates: [] as Candidate[], issues: outputIssues };
   const parsed = parseDraft(draft, options);

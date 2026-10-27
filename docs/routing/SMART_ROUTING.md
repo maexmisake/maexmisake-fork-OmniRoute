@@ -1,0 +1,69 @@
+---
+title: "Smart Routing Task Context and Client Intent"
+version: 3.8.52
+lastUpdated: 2026-10-27
+---
+
+# Smart routing task context and client intent
+
+The smart-routing branch keeps the original model/effort profiles and separates
+hard eligibility from optional native selection. Its local intent and difficulty
+heuristics are not measured model quality or calibrated success probabilities.
+
+## Task privacy
+
+The default native selector receives task labels, bounded structural counts and
+capability/effort metadata. It does not receive task text. A selector cannot assess
+task details it has not received; a successful Choice response alone does not prove
+good routing.
+
+An operator can choose **Latest user task with client consent** in the decision
+routing editor, acknowledge external transmission and set a bound from 1 to 2,048
+UTF-16 code units. The stored `selection.decisionContext` is validated by
+[`configuration.ts`](../../src/shared/decisionPolicy/configuration.ts) and
+[`taskContext.ts`](../../open-sse/services/decisionPolicy/taskContext.ts).
+Changing the selected decision binding or connection clears the editor acknowledgement.
+
+That operator setting alone does not disclose text. A client must additionally send
+`x-omniroute-decision-context: task-text` on the particular request. Without both
+gates, the selector receives the local summary. The header is an internal routing
+control and is forbidden as a configured upstream header.
+
+With both gates, only the exact latest user task is added to decision state.
+System, developer, assistant, tool and previous user content are excluded from
+that context. Oversized tasks reject before a physical decision call; no truncated
+excerpt is substituted. This disclosure does not apply to the separately selected
+execution provider, which receives the authorized execution conversation.
+Authenticated tool continuations retain their selected identity and do not disclose
+the prior user task for another decision. The receipt inspector exposes fixed
+context reason codes, not the text.
+
+## Client intent
+
+[`requestFacts.ts`](../../open-sse/services/decisionPolicy/requestFacts.ts) separates
+task intent from difficulty. Quoted text, block quotes and fenced payloads do not
+replace the surrounding instruction. Informational questions about models remain
+informational. Explicit effort remains an eligibility constraint; a local heuristic
+does not erase it or translate one provider's effort ladder into another's.
+
+The optional, uninstalled
+[Hermes effort-delegation fixture](../../scripts/ad-hoc/hermes-effort-delegation/README.md)
+demonstrates unset-effort delegation separately from explicit Medium/High and
+reasoning-off. It requires its documented exact source pin and guard patch.
+Fixture success does not establish a full Hermes agent run.
+
+## Evidence boundaries
+
+Offline handler and component tests verify consent, bounds, identities and wire
+contracts. They do not establish routing accuracy, savings, live entitlement,
+every client protocol or full-agent compatibility. Decision spending, execution
+spending and unknown costs remain separate. Historical checkpoint evidence is
+recorded in [the native-router report](NATIVE_ROUTER_COMPLETION.md); a new source
+tree requires its own build and browser acceptance.
+
+The architecture review consulted
+[hermes-jev-routing at 06a53646587c](https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/06a53646587c33174a0fbfbb3713eca90bbb8586/public/hermes-jev-routing)
+by Apostol Apostolov (MIT). This work copies no plugin source and installs or runs
+no plugin. Its same-provider middleware and supported Desktop configuration boundary
+are reference patterns; the personal edition's private-internal rebinding is not
+used here.

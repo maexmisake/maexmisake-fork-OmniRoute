@@ -2,6 +2,7 @@
  * No database, transport, credential or provider-discovery imports belong here. */
 import { z } from "zod";
 import { policySchema } from "../../../open-sse/services/decisionPolicy/contract.ts";
+import { decisionTaskContextSchema } from "../../../open-sse/services/decisionPolicy/taskContext.ts";
 
 const nativeSelectionOptions = z
   .object({
@@ -9,6 +10,7 @@ const nativeSelectionOptions = z
     connectionId: z.string().min(1),
     timeoutMs: z.number().int().min(1).max(10000),
     maxCandidates: z.number().int().min(2).max(255).default(32),
+    decisionContext: decisionTaskContextSchema.optional(),
   })
   .strict();
 // Exact provider/model pairs: neither aliases, catalogs nor client fields may

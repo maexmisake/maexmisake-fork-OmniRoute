@@ -72,7 +72,8 @@ export const requestSchema = z
     clientEffort: effortName.nullable(),
     continuationCandidateId: z.string().nullable(),
     routingDepth: z.number().int().min(0),
-    state: z.string().max(4000),
+    // Bounded local metadata plus at most 2,048 explicitly consented task characters.
+    state: z.string().max(16384),
   })
   .strict();
 export type PolicyConfig = z.infer<typeof policySchema>;

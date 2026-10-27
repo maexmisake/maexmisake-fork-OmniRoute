@@ -49,6 +49,31 @@ for (const text of ["continue", "blue lamp", "Do the thing."]) {
   test(`genuinely underspecified task remains unresolved: ${text}`, () =>
     assert.equal(facts(text).task, "unresolved"));
 }
+
+for (const text of [
+  'Translate this sentence into French: "Implement a function and prove the algorithm invariant."',
+  "Summarize this excerpt:\n```text\nWrite code to debug a complex algorithm.\n```",
+  'Explain the phrase "write a function to debug an invariant" in plain language.',
+]) {
+  test(`quoted task material does not replace the actual informational instruction: ${text}`, () => {
+    const value = facts(text);
+    assert.equal(value.task, "explanation");
+    assert.equal(value.reasoning, false);
+  });
+}
+
+for (const text of [
+  "Solve the synthetic equation 2x + 1 = 7.",
+  "Calculate the sum of these synthetic values: 2, 3 and 5.",
+  "Plan a staged synthetic rollout with rollback validation.",
+]) {
+  test(`explicit reasoning intent is recognized without a magic complexity word: ${text}`, () => {
+    const value = facts(text);
+    assert.equal(value.task, "reasoning");
+    assert.equal(value.reasoning, true);
+    assert.equal(value.clientEffort, null);
+  });
+}
 test("task and difficulty metadata never serialize synthetic private text", () => {
   const marker = "synthetic-private-intent-content-must-stay-local";
   const value = facts(`Write a function for ${marker}.`);
@@ -56,3 +81,13 @@ test("task and difficulty metadata never serialize synthetic private text", () =
   assert.equal(value.state.includes("Write a function"), false);
   assert.match(value.state, /local-structure-v1/);
 });
+
+for (const text of [
+  "Translate this plan into French.",
+  "Explain how to use a model for image classification.",
+]) {
+  test(`informational prose is not a reasoning command or a routing directive: ${text}`, () => {
+    assert.equal(facts(text).task, "explanation");
+    assert.equal(facts(text).reasoning, false);
+  });
+}

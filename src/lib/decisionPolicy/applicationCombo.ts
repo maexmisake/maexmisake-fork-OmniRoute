@@ -111,6 +111,7 @@ export type AutomaticPlan = {
   comboId: string;
   name: string;
   config: z.infer<typeof configuration>;
+  clientTaskContextConsent?: boolean;
 };
 function nativeOutputPlan(plan: AutomaticPlan): ProviderNativeOutput | undefined {
   return plan.config.applicationMode === "provider-native-output-v1"
@@ -131,7 +132,8 @@ export async function prepareAutomaticCombo(
   model: string,
   body: unknown,
   keyId?: string,
-  clientInput: unknown = body
+  clientInput: unknown = body,
+  clientTaskContextConsent = false
 ): Promise<AutomaticPlan | Response | null> {
   const combo = await getComboByName(model);
   if (!combo || !boundedDecisionEnabled(combo)) return null;
@@ -165,6 +167,7 @@ export async function prepareAutomaticCombo(
     name: model,
     config: parsed.data,
     sourcePolicy: JSON.stringify((combo.config as Record<string, unknown>).decisionPolicy),
+    clientTaskContextConsent,
   };
 }
 function prepareToolInput(
@@ -203,13 +206,15 @@ function preparedApplicationInput(
 function validRequestFacts(
   raw: unknown,
   tools?: ApplicationTools,
-  nativeOutput?: ProviderNativeOutput
+  nativeOutput?: ProviderNativeOutput,
+  disclosure?: { decisionContext?: unknown; clientTaskContextConsent?: boolean }
 ) {
   const facts = extractRequestFacts(raw, {
     measureContext: (body) =>
       Buffer.byteLength(JSON.stringify(body), "utf8") + body.messages.length * 256,
     continuationCandidateId: tools?.continuation?.binding.candidateId,
     nativeOutput,
+    ...disclosure,
   });
   if (!facts.ok || facts.facts.images) return null;
   if (
@@ -908,7 +913,8 @@ async function selectApplicationCandidate(
   tools: ApplicationTools | undefined,
   facts: NonNullable<ReturnType<typeof validRequestFacts>>,
   state: SelectionState,
-  trace: Array<{ phase: string; id?: string; reason: string }>
+  trace: Array<{ phase: string; id?: string; reason: string }>,
+  rawBody: Record<string, unknown>
 ): Promise<Candidate> {
   const snapshot = await candidateSnapshot(plan, keyId);
   if (tools?.continuation) {
@@ -939,8 +945,21 @@ async function selectApplicationCandidate(
   if (!eligible[0]) throw new Error("decision_no_route");
   state.mode = applicationSelectionMode(plan, eligible.length);
   if (state.mode === "native") {
+    const selection = plan.config.selection;
+    const shared = validRequestFacts(rawBody, tools, nativeOutputPlan(plan), {
+      decisionContext: selection?.mode === "native" ? selection.decisionContext : undefined,
+      clientTaskContextConsent: plan.clientTaskContextConsent,
+    });
+    if (!shared) throw new Error("decision_task_context_rejected");
+    if (selection?.mode === "native" && selection.decisionContext?.mode === "task-text")
+      trace.push({
+        phase: "decision_context",
+        reason: plan.clientTaskContextConsent
+          ? "task_context_shared"
+          : "task_context_local_summary",
+      });
     state.native = await prepareNativeStage(plan, eligible, keyId, signal);
-    return state.native.select(facts.facts);
+    return state.native.select(shared.facts);
   }
   traceNoDecisionSelection(trace, eligible[0], state.mode);
   return eligible[0];
@@ -984,7 +1003,8 @@ export async function executeAutomaticCombo(
       tools,
       extracted,
       state,
-      trace
+      trace,
+      body
     );
     if (await getComboByName(`${candidate.provider}/${candidate.model}`))
       throw new Error("decision_no_route");

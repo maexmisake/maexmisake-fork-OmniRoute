@@ -21,6 +21,7 @@ import { useDecisionRoutingEditor } from "./useDecisionRoutingEditor";
 import ProfileFields from "./ProfileFields";
 import DecisionAttemptsPanel from "./DecisionAttemptsPanel";
 import OutputPolicyFields from "./OutputPolicyFields";
+import DecisionContextFields from "./DecisionContextFields";
 
 function NativeFields({
   draft,
@@ -42,7 +43,13 @@ function NativeFields({
         <Select
           label="Decision provider and exact model"
           value={draft.binding}
-          onChange={(event) => update({ binding: event.target.value, selectorConnection: "" })}
+          onChange={(event) =>
+            update({
+              binding: event.target.value,
+              selectorConnection: "",
+              decisionContextAcknowledged: false,
+            })
+          }
           disabled={disabled}
         >
           <option value="">Choose a decision binding</option>
@@ -55,7 +62,9 @@ function NativeFields({
         <Select
           label="Decision connection"
           value={draft.selectorConnection}
-          onChange={(event) => update({ selectorConnection: event.target.value })}
+          onChange={(event) =>
+            update({ selectorConnection: event.target.value, decisionContextAcknowledged: false })
+          }
           disabled={disabled || !binding}
         >
           <option value="">Choose an explicit connection</option>
@@ -85,6 +94,7 @@ function NativeFields({
           disabled={disabled}
         />
       </div>
+      <DecisionContextFields draft={draft} disabled={disabled} update={update} />
       <p className="mt-4 text-sm text-text-muted">
         Native selection uses Choice. Listed protocol support does not establish account access,
         remaining quota or live compatibility. Free Jev is a separate exact binding; no paid
