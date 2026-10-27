@@ -823,7 +823,8 @@ async function handleChatImplementation(
     body,
     apiKeyInfo?.id,
     boundedClientInput,
-    request.headers.get(DECISION_TASK_CONTEXT_HEADER) === "task-text"
+    request.headers.get(DECISION_TASK_CONTEXT_HEADER) === "task-text",
+    request.headers
   );
   if (automaticPlan instanceof Response) return automaticPlan;
   // Only this validated, bounded lane needs an owned working copy before hooks.

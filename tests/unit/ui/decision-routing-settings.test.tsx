@@ -206,6 +206,50 @@ afterEach(() => {
 });
 
 describe("decision routing settings", () => {
+  it("preserves durable routing sessions across unrelated edit and save/reload", async () => {
+    const savedPolicy = policy();
+    savedPolicy.sessions = {
+      mode: "task-boundary",
+      idleTtlMs: 60000,
+      maxTurns: 20,
+      minStableTurns: 2,
+      maxActiveSessions: 4,
+    };
+    const api = server(record(savedPolicy));
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    expect(
+      (screen.getByLabelText("Enable durable routing sessions") as HTMLInputElement).checked
+    ).toBe(true);
+    fireEvent.change(screen.getByLabelText("Overall request timeout (ms)"), {
+      target: { value: "29000" },
+    });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(api.calls.some((row) => row.init.method === "PUT")).toBe(true));
+    const saved = api.calls.filter((row) => row.init.method === "PUT").at(-1)!.body!
+      .policy as DecisionPolicyEditorValue;
+    expect(saved.sessions).toEqual(savedPolicy.sessions);
+    expect(
+      (screen.getByLabelText("Enable durable routing sessions") as HTMLInputElement).checked
+    ).toBe(true);
+  });
+  it("keeps durable routing sessions off by default and validates stability bounds before save", async () => {
+    server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    const enabled = screen.getByLabelText("Enable durable routing sessions") as HTMLInputElement;
+    expect(enabled.checked).toBe(false);
+    fireEvent.click(enabled);
+    fireEvent.change(screen.getByLabelText("Maximum session turns"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Minimum stable turns before task change"), {
+      target: { value: "3" },
+    });
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Minimum stable turns before task change"), {
+      target: { value: "2" },
+    });
+    expect(saveButton().disabled).toBe(false);
+  });
   it("preserves opt-in scoped retry configuration across editing and save/reload", async () => {
     const savedPolicy = policy();
     savedPolicy.retry = { transitions: [{ from: "light", to: "deep", scopes: ["account-quota"] }] };

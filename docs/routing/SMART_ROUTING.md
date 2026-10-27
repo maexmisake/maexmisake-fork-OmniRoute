@@ -135,6 +135,50 @@ spending and unknown costs remain separate. Historical checkpoint evidence is
 recorded in [the native-router report](NATIVE_ROUTER_COMPLETION.md); a new source
 tree requires its own build and browser acceptance.
 
+## Opt-in conversation stability
+
+The **Conversation routing stability** controls save an optional `sessions`
+configuration. It is off by default. Existing stateless clients keep their current
+behavior. Clients that opt in send `x-omniroute-routing-session: new`, then reuse
+the returned `x-omniroute-routing-session` identifier with the same authenticated
+API key and combo. The identifier does not authorize access by itself and is not
+forwarded to an execution provider.
+
+The server retains the exact candidate, provider, model, connection and effort.
+Task preference changes alone cannot replace that pin. A client may explicitly
+send `x-omniroute-task-boundary: new-task`; reselection is permitted only after
+`minStableTurns` successful turns on the current binding. Current authorization,
+availability, context limits and explicit client effort remain hard requirements.
+An unavailable or conflicting pin rejects before dispatch. Tool continuations
+retain their exact origin and reject a new-task boundary. Pinned turns do not
+enter the configured execution retry chain.
+
+`idleTtlMs` is bounded from 1,000 to 1,800,000 milliseconds; `maxTurns` from 1 to
+256; `minStableTurns` from 1 to 32 and no greater than `maxTurns`;
+`maxActiveSessions` from 1 to 32 per client key and combo. A live claimed turn
+counts toward the limit even after its idle deadline. Claims are exclusive and
+are never taken over to replay uncertain work. Expired, policy-changed or
+credential-changed pins require a new session. A rejected request proven not to
+have started execution can release an existing pin for another valid request.
+
+[`decisionSessions.ts`](../../src/lib/db/decisionSessions.ts) stores routing
+metadata only, without task text or transcripts. It checks the admitted authority
+again before publishing success; only the existing operational `apiKeyHealth`
+observation is excluded from the persistent authority comparison. Full fresh
+dispatch fences remain unchanged. JSON success publishes its pin atomically with
+the owned successful receipt. Streaming holds terminal frames until raw and
+client completion proofs and the metadata commit succeed. Existing finite stream
+proof limits remain: 1 MiB total, 64 KiB per frame, 8,192 events and a 64 KiB held
+completion tail. Oversized, cancelled or incomplete streams cannot publish a
+reusable successful pin. These are validation limits, not provider generation
+ceilings or billing guarantees.
+
+The namespaced `nr-218` migration adds this metadata table. Stop old workers and
+drain requests before upgrading; mixed-worker rolling upgrades are unverified.
+No production database was migrated by the offline tests. Responses API
+`previous_response_id` parity still needs its separate protocol/history ownership
+integration; this Chat session feature does not silently claim that support.
+
 The architecture review consulted
 [hermes-jev-routing at 06a53646587c](https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/06a53646587c33174a0fbfbb3713eca90bbb8586/public/hermes-jev-routing)
 by Apostol Apostolov (MIT). This work copies no plugin source and installs or runs

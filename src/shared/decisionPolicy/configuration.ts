@@ -55,6 +55,17 @@ export const boundedDecisionConfigurationSchema = z
       .optional(),
     policy: policySchema,
     retry: applicationRetrySchema.optional(),
+    sessions: z
+      .object({
+        mode: z.literal("task-boundary"),
+        idleTtlMs: z.number().int().min(1000).max(1800000),
+        maxTurns: z.number().int().min(1).max(256),
+        minStableTurns: z.number().int().min(1).max(32),
+        maxActiveSessions: z.number().int().min(1).max(32),
+      })
+      .strict()
+      .refine((value) => value.minStableTurns <= value.maxTurns)
+      .optional(),
     selection: z
       .union([z.object({ mode: z.literal("deterministic") }).strict(), nativeSelectionSchema])
       .optional(),

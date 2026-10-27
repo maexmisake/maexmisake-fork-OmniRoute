@@ -9,6 +9,19 @@ import { prepareNativeStage, type NativeStage } from "./applicationSelection";
 import { createApplicationHealthReader } from "./applicationAvailability";
 import { runApplicationAttempts, type RetryReservation } from "./applicationRetry";
 import {
+  parseApplicationSession,
+  prepareApplicationSession,
+  retainSessionPin,
+  type SessionInput,
+} from "./applicationSession";
+import {
+  attachRoutingSession,
+  assertRoutingSession,
+  completeRoutingSession,
+  releaseRoutingSession,
+  type SessionClaim,
+} from "../db/decisionSessions";
+import {
   completedExecutionRejection,
   type CompletedExecutionRejection,
 } from "../../../open-sse/services/decisionPolicy/retryPolicy.ts";
@@ -25,7 +38,10 @@ import {
   type CandidateState,
   type Trace,
 } from "../../../open-sse/services/decisionPolicy/contract.ts";
-import { eligibleCandidates } from "../../../open-sse/services/decisionPolicy/eligibility.ts";
+import {
+  eligibleCandidates,
+  exclusionReasons,
+} from "../../../open-sse/services/decisionPolicy/eligibility.ts";
 import {
   extractRequestFacts,
   normalizeDecisionTextWire,
@@ -120,6 +136,7 @@ export type AutomaticPlan = {
   name: string;
   config: z.infer<typeof configuration>;
   clientTaskContextConsent?: boolean;
+  sessionInput?: SessionInput;
 };
 function nativeOutputPlan(plan: AutomaticPlan): ProviderNativeOutput | undefined {
   return plan.config.applicationMode === "provider-native-output-v1"
@@ -141,7 +158,8 @@ export async function prepareAutomaticCombo(
   body: unknown,
   keyId?: string,
   clientInput: unknown = body,
-  clientTaskContextConsent = false
+  clientTaskContextConsent = false,
+  headers = new Headers()
 ): Promise<AutomaticPlan | Response | null> {
   const combo = await getComboByName(model);
   if (!combo || !boundedDecisionEnabled(combo)) return null;
@@ -160,6 +178,14 @@ export async function prepareAutomaticCombo(
   createValidationPluginFence().assertIdle();
   if (!parsed.success) return automaticRejection("invalid_configuration");
   if (!keyId) return automaticRejection("authentication_required");
+  let sessionInput: SessionInput | undefined;
+  try {
+    sessionInput = parseApplicationSession(headers, !!parsed.data.sessions);
+  } catch {
+    return automaticRejection("session_rejected");
+  }
+  if (sessionInput && settings.echoRequestedModelName === true)
+    return automaticRejection("session_model_echo_unsupported");
   const admission = preparedApplicationInput(
     clientInput,
     body,
@@ -176,6 +202,7 @@ export async function prepareAutomaticCombo(
     config: parsed.data,
     sourcePolicy: JSON.stringify((combo.config as Record<string, unknown>).decisionPolicy),
     clientTaskContextConsent,
+    sessionInput,
   };
 }
 function prepareToolInput(
@@ -554,6 +581,21 @@ async function buildAttempt(
 ): Promise<ApplicationAttempt & AttemptIdentity> {
   const connectionId = plan.config.connections[candidate.id];
   assertNativeConnectionUnleased(connectionId);
+  // Capture authority before any asynchronous credential/executor preparation.
+  // Another worker may rotate the shared row without invalidating this worker's auth cache.
+  const preparationStamp = authorityStamp(
+    {
+      id: "",
+      keyId,
+      comboId: plan.comboId,
+      candidateId: candidate.id,
+      provider: candidate.provider,
+      model: candidate.model,
+      connectionId,
+      effort: candidate.effort.value ?? "",
+    },
+    plan.sourcePolicy
+  );
   const connection = await getProviderConnectionById(connectionId);
   if (
     !connection ||
@@ -608,6 +650,7 @@ async function buildAttempt(
     plan.name
   );
   const stamp = authorityStamp(identity, plan.sourcePolicy);
+  if (stamp !== preparationStamp) throw new Error("decision_authority_changed");
   const endpoint = new URL(contract.endpoint);
   assertApplicationEgress(candidate.provider, contract, endpoint.href);
   const plugins = createValidationPluginFence();
@@ -822,7 +865,7 @@ function releaseAttempt(attempt: ApplicationAttempt | undefined): void {
   }
 }
 type ApplicationSelectionMode =
-  "no-route" | "native" | "sole-eligible" | "deterministic" | "continuation-pin";
+  "no-route" | "native" | "sole-eligible" | "deterministic" | "continuation-pin" | "session-pin";
 function applicationSelectionMode(
   plan: AutomaticPlan,
   eligibleCount: number
@@ -975,9 +1018,32 @@ async function selectApplicationCandidate(
   facts: NonNullable<ReturnType<typeof validRequestFacts>>,
   state: SelectionState,
   trace: Array<{ phase: string; id?: string; reason: string }>,
-  rawBody: Record<string, unknown>
+  rawBody: Record<string, unknown>,
+  session?: SessionClaim
 ): Promise<Candidate> {
   const snapshot = await candidateSnapshot(plan, keyId);
+  const sessionBinding = session?.binding;
+  if (sessionBinding && (retainSessionPin(plan, session) || tools?.continuation)) {
+    if (tools?.continuation && plan.sessionInput?.boundary)
+      throw new Error("decision_session_rejected");
+    const pinned = plan.config.policy.candidates.find(
+      (candidate) =>
+        candidate.id === sessionBinding.candidateId &&
+        candidate.provider === sessionBinding.provider &&
+        candidate.model === sessionBinding.model &&
+        candidate.effort.value === sessionBinding.effort &&
+        plan.config.connections[candidate.id] === sessionBinding.connectionId &&
+        !exclusionReasons(candidate, facts.facts, plan.config.policy, snapshot).length
+    );
+    if (
+      !pinned ||
+      !(await supportedExecutionCandidates(plan, [pinned], trace, !!tools, facts.body)).length
+    )
+      throw new Error("decision_session_rejected");
+    state.mode = "session-pin";
+    trace.push({ phase: "selection", id: pinned.id, reason: "session_pin" });
+    return pinned;
+  }
   if (tools?.continuation) {
     const binding = tools.continuation.binding;
     const pinned = eligibleCandidates(plan.config.policy, facts.facts, snapshot, trace).find(
@@ -1016,6 +1082,49 @@ async function selectApplicationCandidate(
 function prepareTools(plan: AutomaticPlan, keyId: string) {
   return plan.toolRequest ? new ApplicationTools(plan, keyId, plan.toolRequest) : undefined;
 }
+function prepareSessionCompletion(
+  plan: AutomaticPlan,
+  session: SessionClaim | undefined,
+  attempt: ApplicationAttempt & AttemptIdentity,
+  response: Response
+): void {
+  if (!session || !response.ok) return;
+  if (attempt.stream?.active) {
+    attempt.stream.onClientCompletion(
+      () => completeRoutingSession(session, attempt, plan.config.sessions!),
+      () => releaseRoutingSession(session)
+    );
+  } else completeRoutingSession(session, attempt, plan.config.sessions!);
+}
+function annotateApplicationResult(
+  plan: AutomaticPlan,
+  result: Awaited<ReturnType<typeof runApplicationAttempts>>,
+  state: SelectionState,
+  session?: SessionClaim
+): Response {
+  const annotated = completedResponse(
+    result.response,
+    result.attempt,
+    result.candidate,
+    state.mode,
+    state.native
+  );
+  if (result.attempts > 1)
+    annotated.headers.set("x-omniroute-execution-attempts", String(result.attempts));
+  if (session) {
+    annotated.headers.set("x-omniroute-routing-session", session.id);
+    const exposed = annotated.headers.get("Access-Control-Expose-Headers");
+    annotated.headers.set(
+      "Access-Control-Expose-Headers",
+      [exposed, "x-omniroute-routing-session"].filter(Boolean).join(", ")
+    );
+  }
+  if (nativeOutputPlan(plan)) {
+    annotated.headers.set("x-omniroute-output-policy", "provider-native");
+    annotated.headers.set("x-omniroute-output-limit-enforced", "false");
+  }
+  return annotated;
+}
 export async function executeAutomaticCombo(
   plan: AutomaticPlan,
   body: Record<string, unknown>,
@@ -1033,14 +1142,18 @@ export async function executeAutomaticCombo(
   let attempt: (ApplicationAttempt & AttemptIdentity) | undefined;
   const state: SelectionState = { mode: "no-route" };
   let streamHandedOff = false;
+  let session: SessionClaim | undefined;
   // A configured selector is not an observed selection before eligibility succeeds.
 
   try {
     signal.throwIfAborted();
     if (body.model !== plan.name) return automaticRejection();
     const tools = prepareTools(plan, keyId);
+    if (tools?.continuation && plan.sessionInput?.boundary)
+      throw new Error("decision_session_rejected");
     const extracted = validRequestFacts(body, tools, nativeOutputPlan(plan));
     if (!extracted) return automaticRejection();
+    session = prepareApplicationSession(plan, keyId);
     const trace: Array<{ phase: string; id?: string; reason: string }> = [];
     if (extracted.facts.difficulty)
       trace.push({ phase: "difficulty", reason: `local_difficulty_${extracted.facts.difficulty}` });
@@ -1054,7 +1167,8 @@ export async function executeAutomaticCombo(
       extracted,
       state,
       trace,
-      body
+      body,
+      session
     );
     if (await getComboByName(`${candidate.provider}/${candidate.model}`))
       throw new Error("decision_no_route");
@@ -1063,10 +1177,11 @@ export async function executeAutomaticCombo(
       initial: candidate,
       signal,
       deadlineAt,
-      continuation: !!tools?.continuation,
+      continuation: !!tools?.continuation || state.mode === "session-pin",
       trace,
       capture: (value) => {
         attempt = value;
+        if (session) attachRoutingSession(session, value);
       },
       acknowledge: (previous, failure) => state.native?.acknowledgeRejection(previous, failure),
       eligible: async () =>
@@ -1097,8 +1212,9 @@ export async function executeAutomaticCombo(
           retry ? prepareTools(plan, keyId) : tools,
           retry
         ),
-      dispatch: async (next, owned) =>
-        reportedClaudeClientUsage(
+      dispatch: async (next, owned) => {
+        if (session) assertRoutingSession(session);
+        return reportedClaudeClientUsage(
           await withApplicationAttempt(owned, () =>
             dispatch(
               selectedRequest(extracted.body, next),
@@ -1107,24 +1223,14 @@ export async function executeAutomaticCombo(
             )
           ),
           owned
-        ),
+        );
+      },
     });
     attempt = result.attempt;
     const response = result.response;
     signal.throwIfAborted();
-    const annotated = completedResponse(
-      response,
-      attempt,
-      result.candidate,
-      state.mode,
-      state.native
-    );
-    if (result.attempts > 1)
-      annotated.headers.set("x-omniroute-execution-attempts", String(result.attempts));
-    if (nativeOutputPlan(plan)) {
-      annotated.headers.set("x-omniroute-output-policy", "provider-native");
-      annotated.headers.set("x-omniroute-output-limit-enforced", "false");
-    }
+    prepareSessionCompletion(plan, session, attempt, response);
+    const annotated = annotateApplicationResult(plan, result, state, session);
     if (attempt.stream?.active && response.ok) {
       streamHandedOff = true;
       return attempt.stream.wrap(annotated);
@@ -1138,6 +1244,7 @@ export async function executeAutomaticCombo(
       ? state.native.annotate(response)
       : annotateNoDecision(response, state.mode, attempt);
   } finally {
+    if (!streamHandedOff && session) releaseRoutingSession(session);
     if (!streamHandedOff) releaseAttempt(attempt);
   }
 }

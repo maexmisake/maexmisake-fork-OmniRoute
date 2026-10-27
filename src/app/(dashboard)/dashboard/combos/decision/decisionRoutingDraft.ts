@@ -47,6 +47,11 @@ export type Draft = {
   retryEnabled: boolean;
   maxExecutionAttempts: string;
   retryTransitions: string;
+  sessionsEnabled: boolean;
+  sessionIdleTtlMs: string;
+  sessionMaxTurns: string;
+  sessionMinStableTurns: string;
+  sessionMaxActive: string;
   candidates: string;
   taskOrder: string;
   connections: Record<string, string>;
@@ -85,6 +90,11 @@ export function draftFromPolicy(policy: DecisionPolicyEditorValue | null): Draft
     retryEnabled: !!policy?.retry,
     maxExecutionAttempts: String(policy?.policy.maxExecutionAttempts ?? 1),
     retryTransitions: JSON.stringify(policy?.retry?.transitions ?? [], null, 2),
+    sessionsEnabled: !!policy?.sessions,
+    sessionIdleTtlMs: String(policy?.sessions?.idleTtlMs ?? 300000),
+    sessionMaxTurns: String(policy?.sessions?.maxTurns ?? 64),
+    sessionMinStableTurns: String(policy?.sessions?.minStableTurns ?? 2),
+    sessionMaxActive: String(policy?.sessions?.maxActiveSessions ?? 8),
     candidates: JSON.stringify(policy?.policy.candidates ?? [], null, 2),
     taskOrder: JSON.stringify(policy?.policy.taskOrder ?? {}, null, 2),
     connections: { ...(policy?.connections ?? {}) },
@@ -235,6 +245,17 @@ function parseDraft(draft: Draft, options: EditorOptions) {
     selection,
     connections: draft.connections,
     ...(draft.retryEnabled ? { retry: { transitions: parseJson(draft.retryTransitions) } } : {}),
+    ...(draft.sessionsEnabled
+      ? {
+          sessions: {
+            mode: "task-boundary",
+            idleTtlMs: Number(draft.sessionIdleTtlMs),
+            maxTurns: Number(draft.sessionMaxTurns),
+            minStableTurns: Number(draft.sessionMinStableTurns),
+            maxActiveSessions: Number(draft.sessionMaxActive),
+          },
+        }
+      : {}),
     policy: {
       version: 1,
       candidates,

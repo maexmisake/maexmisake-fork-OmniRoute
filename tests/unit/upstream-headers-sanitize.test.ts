@@ -5,6 +5,21 @@ import {
   isForbiddenUpstreamHeaderName,
   isForbiddenCustomHeaderName,
 } from "../../src/shared/constants/upstreamHeaders.ts";
+import { buildExecutorClientHeaders } from "../../open-sse/handlers/chatCore/executorClientHeaders.ts";
+
+test("routing session locators and boundary controls cannot become upstream headers", () => {
+  const controls = {
+    "X-OmniRoute-Routing-Session": "synthetic-private-locator",
+    "x-omniroute-task-boundary": "new-task",
+    "X-Custom": "kept",
+  };
+  assert.deepEqual(sanitizeUpstreamHeadersMap(controls), { "X-Custom": "kept" });
+  assert.deepEqual(buildExecutorClientHeaders(controls), { "X-Custom": "kept" });
+  for (const name of Object.keys(controls).slice(0, 2)) {
+    assert.equal(isForbiddenUpstreamHeaderName(name), true);
+    assert.equal(isForbiddenCustomHeaderName(name), true);
+  }
+});
 
 test("task-context consent is a router control and cannot be configured as an upstream extra header", () => {
   assert.deepEqual(

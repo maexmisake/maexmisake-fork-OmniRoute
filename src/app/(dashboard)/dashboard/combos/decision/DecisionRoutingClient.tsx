@@ -23,6 +23,7 @@ import DecisionAttemptsPanel from "./DecisionAttemptsPanel";
 import OutputPolicyFields from "./OutputPolicyFields";
 import DecisionContextFields from "./DecisionContextFields";
 import RetryPolicyFields from "./RetryPolicyFields";
+import SessionPolicyFields from "./SessionPolicyFields";
 
 function NativeFields({
   draft,
@@ -298,6 +299,7 @@ export default function DecisionRoutingClient() {
           </Card>
           <OutputPolicyFields draft={draft} disabled={disabled} update={editor.updateDraft} />
           <RetryPolicyFields draft={draft} disabled={disabled} update={editor.updateDraft} />
+          <SessionPolicyFields draft={draft} disabled={disabled} update={editor.updateDraft} />
           {draft.mode === "native" && (
             <NativeFields
               draft={draft}

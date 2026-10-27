@@ -1,15 +1,15 @@
 ---
 title: "Native Router Migration Compatibility"
 version: 3.8.52
-lastUpdated: 2026-10-26
+lastUpdated: 2026-10-27
 ---
 
 # Native router migration compatibility
 
-The distribution ships **214 SQL files**: 209 core migrations through numeric
-`212`, plus five files under `src/lib/db/migrations/native-router/`. The bundled
+The distribution ships **215 SQL files**: 209 core migrations through numeric
+`212`, plus six files under `src/lib/db/migrations/native-router/`. The bundled
 files use the existing namespace convention and are recorded as `nr-213` through
-`nr-217`. They load automatically after core migrations, without an environment
+`nr-218`. They load automatically after core migrations, without an environment
 change. The `nr` namespace is reserved; optional extra directories remain separate.
 
 ## Verified upstream boundary and later correction

@@ -1,5 +1,9 @@
 import type { ApplicationToolHooks } from "../../../open-sse/services/decisionPolicy/applicationContext.ts";
-import { ClientToolSSEFramer } from "./toolResponseProof";
+import {
+  ClientToolSSEFramer,
+  ClientOpenAIToolCollector,
+  type ClientToolSSEFrame,
+} from "./toolResponseProof";
 import {
   settleDecisionAttempt,
   finishDecisionApplication,
@@ -21,6 +25,16 @@ function concatFrames(chunks: Uint8Array[], bytes: number): Uint8Array {
   return result;
 }
 type Json = Record<string, unknown>;
+function sessionClientCompletion(
+  client: ClientOpenAIToolCollector,
+  frame: ClientToolSSEFrame
+): boolean {
+  if (frame.done) {
+    client.done();
+    return true;
+  }
+  return frame.payload ? client.accept(frame.payload).completion : false;
+}
 function object(value: unknown): Json {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("decision_stream_invalid");
@@ -311,6 +325,13 @@ class ApplicationStream {
   private verifiedClientUsage: Json | null = null;
   private clientTail = "";
   private clientDecoder = new TextDecoder();
+  private commitCompletion?: () => void;
+  private releaseCompletion?: () => void;
+  onClientCompletion(commit: () => void, release: () => void): void {
+    if (this.commitCompletion || this.finalized) throw new Error("decision_stream_rejected");
+    this.commitCompletion = commit;
+    this.releaseCompletion = release;
+  }
   constructor(
     private identity: AttemptIdentity,
     private signal: AbortSignal,
@@ -334,6 +355,11 @@ class ApplicationStream {
     } catch {
       /* Durable unknown liability remains authoritative; never replay. */
     } finally {
+      try {
+        this.releaseCompletion?.();
+      } catch {
+        /* Stale session ownership cannot be reused. */
+      }
       try {
         releaseDecisionAttempt(this.identity);
       } catch {
@@ -470,10 +496,26 @@ class ApplicationStream {
     this.signal.throwIfAborted();
     if (this.finalized) throw new Error("decision_stream_rejected");
   }
+  private commitClientMetadata(
+    framer: ClientToolSSEFramer,
+    client?: ClientOpenAIToolCollector
+  ): void {
+    framer.finish();
+    if (!this.rawComplete) throw new Error("decision_stream_incomplete");
+    if (client?.finish()) throw new Error("decision_stream_rejected");
+    this.tools?.validateClientComplete(this.successStatus());
+    if (this.successStatus() < 400) {
+      this.tools?.commitClientComplete();
+      this.commitCompletion?.();
+    }
+  }
   private wrapTools(response: Response): Response {
     const reader = response.body!.getReader();
     this.clientReader = reader;
     const framer = new ClientToolSSEFramer();
+    const sessionClient = this.tools
+      ? undefined
+      : new ClientOpenAIToolCollector(this.identity.model);
     const queued: Uint8Array[] = [],
       held: Uint8Array[] = [];
     let holding = false,
@@ -484,16 +526,15 @@ class ApplicationStream {
       const chunk = await reader.read();
       this.assertClientOpen();
       if (chunk.done) {
-        framer.finish();
-        if (!this.rawComplete) throw new Error("decision_stream_incomplete");
-        this.tools!.validateClientComplete(this.successStatus());
-        if (this.successStatus() < 400) this.tools!.commitClientComplete();
+        this.commitClientMetadata(framer, sessionClient);
         queued.push(concatFrames(held, heldBytes));
         ended = true;
         return;
       }
       for (const frame of framer.push(chunk.value)) {
-        const completion = this.tools!.clientFrame(frame.payload, frame.done);
+        const completion =
+          this.tools?.clientFrame(frame.payload, frame.done) ??
+          sessionClientCompletion(sessionClient!, frame);
         holding ||= completion;
         if (holding) {
           heldBytes += frame.bytes.byteLength;
@@ -541,7 +582,7 @@ class ApplicationStream {
     return headers;
   }
   wrap(response: Response): Response {
-    if (this.tools) return this.wrapTools(response);
+    if (this.tools || this.commitCompletion) return this.wrapTools(response);
     this.clientReader = response.body!.getReader();
     const body = new ReadableStream<Uint8Array>(
       {

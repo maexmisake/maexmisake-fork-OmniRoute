@@ -483,6 +483,47 @@ test("original Hermes tool kwargs and supplied result construction continue thro
   assert.ok(signature.includes("synthetic-account-bound-signature-1"));
 });
 
+test("durable sessions keep exact tool origin and reject task-boundary reselection", async () => {
+  const config = structuredClone(initialConfig) as { decisionPolicy: Record<string, unknown> };
+  config.decisionPolicy.sessions = {
+    mode: "task-boundary",
+    idleTtlMs: 60000,
+    maxTurns: 20,
+    minStableTurns: 2,
+    maxActiveSessions: 4,
+  };
+  await updateCombo(comboId, { config });
+  const body = sourceBody(),
+    initialRequest = request(body);
+  initialRequest.headers.set("x-omniroute-routing-session", "new");
+  const initial = await POST(initialRequest);
+  assert.equal(initial.status, 200);
+  assert.match(await consume(initial), /fixture-call-one/);
+  const session = initial.headers.get("x-omniroute-routing-session")!;
+  assert.match(session, /^[a-f0-9-]{36}$/);
+  const continuedBody = { ...body, messages: protocol() };
+  const invalid = request(continuedBody);
+  invalid.headers.set("x-omniroute-routing-session", session);
+  invalid.headers.set("x-omniroute-task-boundary", "new-task");
+  const denied = await POST(invalid);
+  await denied.text();
+  assert.equal(denied.status, 409);
+  assert.equal(decisions, 1);
+  assert.equal(executions, 1);
+  const next = request(continuedBody);
+  next.headers.set("x-omniroute-routing-session", session);
+  const completed = await POST(next);
+  assert.equal(completed.status, 200);
+  assert.match(await consume(completed), /Synthetic continuation answer/);
+  assert.equal(completed.headers.get("x-omniroute-selection-mode"), "session-pin");
+  assert.equal(decisions, 1);
+  assert.equal(executions, 2);
+  for (const row of readDecisionAttempts(key.id).filter((row) => row.lane === "execution")) {
+    assert.equal(row.connection_id, sonnetId);
+    assert.equal(row.effort, "high");
+    assert.equal(row.application_status, 200);
+  }
+});
 async function rejectedToolStream(response: Response) {
   const reader = response.body!.getReader(),
     decoder = new TextDecoder();

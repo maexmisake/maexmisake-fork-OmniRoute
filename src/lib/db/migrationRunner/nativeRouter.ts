@@ -14,6 +14,7 @@ const NAMES = new Map<string, string>([
   ...LEGACY.map((m) => [PREFIX + m.version, m.name] as [string, string]),
   ["nr-216", "native_attempt_leases"],
   ["nr-217", "tool_continuations"],
+  ["nr-218", "routing_sessions"],
 ]);
 const BASE_COLUMNS = {
   id: "TEXT",
@@ -345,6 +346,55 @@ function requireSchema(db: SqliteAdapter, number: number, leased: boolean): void
       fail("obsolete exclusive active-key index remains");
   }
   if (number >= 217) requireNativeToolSchema(db);
+  if (number >= 218) requireRoutingSessionSchema(db);
+}
+function requireRoutingSessionSchema(db: SqliteAdapter): void {
+  requireColumns(db, "decision_routing_sessions", {
+    id: "TEXT",
+    api_key_id: "TEXT",
+    combo_id: "TEXT",
+    policy_hash: "TEXT",
+    binding_json: "TEXT",
+    authority_hash: "TEXT",
+    turns: "INTEGER",
+    stable_turns: "INTEGER",
+    state: "TEXT",
+    lease_owner: "TEXT",
+    lease_expires_at: "INTEGER",
+    attempt_id: "TEXT",
+    expires_at: "INTEGER",
+  });
+  requireIndex(
+    db,
+    "decision_routing_sessions",
+    "idx_decision_sessions_owner",
+    ["api_key_id", "combo_id", "expires_at"],
+    0
+  );
+  requireNativeToolKeys(
+    db,
+    "decision_routing_sessions",
+    ["id"],
+    ["id", "api_key_id", "combo_id", "policy_hash", "turns", "stable_turns", "state", "expires_at"]
+  );
+  const columns = db.prepare("PRAGMA table_info(decision_routing_sessions)").all() as Array<{
+    name: string;
+    dflt_value: unknown;
+  }>;
+  for (const name of ["turns", "stable_turns"])
+    if (String(columns.find((column) => column.name === name)?.dflt_value) !== "0")
+      fail("routing session counter default is missing or incompatible");
+  const table = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='decision_routing_sessions'"
+    )
+    .get() as { sql: string };
+  if (
+    !/CHECK\s*\(\s*state\s+IN\s*\(\s*'idle'\s*,\s*'claimed'\s*,\s*'unknown'\s*\)\s*\)/i.test(
+      table.sql
+    )
+  )
+    fail("routing session state CHECK is missing");
 }
 
 function relevant(files: Migration[]): Migration[] {
@@ -352,6 +402,8 @@ function relevant(files: Migration[]): Migration[] {
 }
 
 function requirePredecessors(applied: Map<string, Marker>, number: number): void {
+  if (number >= 218 && applied.get("nr-217")?.name !== NAMES.get("nr-217"))
+    fail("predecessor nr-217 is not recorded");
   if (number >= 217 && applied.get("nr-216")?.name !== NAMES.get("nr-216"))
     fail("predecessor nr-216 is not recorded");
   for (const predecessor of LEGACY) {

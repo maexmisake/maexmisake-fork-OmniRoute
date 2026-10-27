@@ -36,6 +36,7 @@ const REASONS = [
   "recursion_unproven",
   "profile_unverified",
   "continuation_pin",
+  "session_pin",
   "task_preference_unresolved",
   "tool_execution_unproven",
   "execution_contract_unproven",

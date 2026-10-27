@@ -444,3 +444,57 @@ test("a disposable native database reopens with namespaced markers and original 
     reopened.close();
   }
 });
+function installSessionBundle(change?: (sql: string) => string) {
+  installBundle();
+  const dir = path.join(fixture, "native-router");
+  fs.copyFileSync(
+    path.join(source, "native-router/217_tool_continuations.sql"),
+    path.join(dir, "217_tool_continuations.sql")
+  );
+  const sql = fs.readFileSync(path.join(source, "native-router/218_routing_sessions.sql"), "utf8");
+  fs.writeFileSync(path.join(dir, "218_routing_sessions.sql"), change ? change(sql) : sql);
+}
+test("session migration has a distinct namespace, validates ownership keys and reopens idempotently", () => {
+  installSessionBundle();
+  const db = createBetterSqliteAdapter(baseDb());
+  try {
+    assert.equal(runMigrations(db), 6);
+    assert.equal(runMigrations(db), 0);
+    assert.equal(
+      (db.prepare("SELECT COUNT(*) AS n FROM decision_routing_sessions").get() as { n: number }).n,
+      0
+    );
+  } finally {
+    db.close();
+  }
+});
+for (const [name, from, to] of [
+  ["primary key", "id TEXT PRIMARY KEY NOT NULL", "id TEXT NOT NULL"],
+  ["owner nullability", "api_key_id TEXT NOT NULL", "api_key_id TEXT"],
+  ["counter default", "turns INTEGER NOT NULL DEFAULT 0", "turns INTEGER NOT NULL DEFAULT 1"],
+  ["state check", "CHECK(state IN ('idle','claimed','unknown'))", ""],
+])
+  test(`session migration rejects incompatible ${name} without recording nr218`, () => {
+    installSessionBundle((sql) => {
+      assert.ok(sql.includes(from));
+      return sql.replace(from, to);
+    });
+    const db = createBetterSqliteAdapter(baseDb());
+    try {
+      assert.throws(() => runMigrations(db), /migration provenance is ambiguous/i);
+      assert.equal(
+        db.prepare("SELECT 1 FROM _omniroute_migrations WHERE version='nr-218'").get(),
+        undefined
+      );
+      assert.equal(
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='decision_routing_sessions'"
+          )
+          .get(),
+        undefined
+      );
+    } finally {
+      db.close();
+    }
+  });

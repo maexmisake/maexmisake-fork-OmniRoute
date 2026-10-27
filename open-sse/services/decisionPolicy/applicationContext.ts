@@ -61,6 +61,7 @@ export type ApplicationAttempt = {
     wrap: (response: Response) => Response;
     reportedClientUsage: () => Record<string, unknown> | null;
     noteClientOutcome: (status: number) => void;
+    onClientCompletion: (commit: () => void, release: () => void) => void;
   };
   observe: (send: Promise<Response>) => Promise<Response>;
 };

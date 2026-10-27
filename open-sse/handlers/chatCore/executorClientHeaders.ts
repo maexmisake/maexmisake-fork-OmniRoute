@@ -14,6 +14,8 @@ const LEASE_CONTROL_HEADERS = new Set([
   "x-omniroute-lease-owner",
   "x-omniroute-lease-generation",
   "x-deadline-token",
+  "x-omniroute-routing-session",
+  "x-omniroute-task-boundary",
 ]);
 
 function isLeaseControlHeader(key: string): boolean {

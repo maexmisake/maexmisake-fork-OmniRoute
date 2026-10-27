@@ -44,6 +44,8 @@ const FORBIDDEN = new Set(
     "via",
     // Per-request consent belongs to the router, never a provider's extra headers.
     "x-omniroute-decision-context",
+    "x-omniroute-routing-session",
+    "x-omniroute-task-boundary",
   ].map((s) => s.toLowerCase())
 );
 
