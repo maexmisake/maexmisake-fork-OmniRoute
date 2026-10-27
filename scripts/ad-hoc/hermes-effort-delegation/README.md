@@ -68,6 +68,14 @@ flag. `capturedKwargs` and separately declared `driverFlags` can be handed direc
 to the installed SDK fixture. Metadata about source execution is never part of
 those kwargs or the request body.
 
+The pinned-client integration test also passes the optional source builder's
+omitted-effort text request through the actual application POST and streaming
+completion path. Synthetic native Choice may select either a Medium or High
+profile, with the selected connection/effort and known versus unknown cost checked
+in the durable receipts. This is source-builder and handler proof, without an
+installed SDK or full Hermes execution. It does not establish tool-loop or live
+agent acceptance; those retain their separate gates.
+
 This source capture uses supplied **parsed** reasoning state, closed import
 facades, a selected original profile-field declaration subset, unknown capability
 metadata, identity message sanitization and no real credentials, discovery or

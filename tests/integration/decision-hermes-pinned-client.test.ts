@@ -73,6 +73,7 @@ let selected = "sonnet-medium",
   unexpectedCalls = 0;
 let unknownCosts = false,
   refused = false;
+let delegatedSource = false;
 let lastExecution: Record<string, unknown> | undefined;
 const traces: Array<Record<string, unknown>> = [];
 const oldFetch = globalThis.fetch;
@@ -145,11 +146,16 @@ function mockDecision(sent: Record<string, unknown>) {
   const questions = sent.questions as Record<string, Record<string, unknown>>;
   const options = Object.keys(questions.route.criteria as Record<string, unknown>).sort();
   const effort = selected.endsWith("high") ? "high" : "medium";
-  assert.deepEqual(options, [`opus-${effort}`, `sonnet-${effort}`]);
+  assert.deepEqual(
+    options,
+    delegatedSource
+      ? ["opus-high", "opus-medium", "sonnet-high", "sonnet-medium"]
+      : [`opus-${effort}`, `sonnet-${effort}`]
+  );
   const criteria = questions.route.criteria as Record<string, string>;
   for (const option of options) {
     const offered = JSON.parse(criteria[option]);
-    assert.equal(offered.effort.value, effort);
+    assert.equal(offered.effort.value, delegatedSource ? option.split("-").at(-1) : effort);
     assert.equal(offered.provider, "claude");
   }
   const text = JSON.stringify(sent);
@@ -165,7 +171,10 @@ function mockDecision(sent: Record<string, unknown>) {
             choice: selected,
             confidence: 0.6,
             probabilities: Object.fromEntries(
-              options.map((id) => [id, id === selected ? 0.8 : 0.2])
+              options.map((id) => [
+                id,
+                delegatedSource ? (id === selected ? 0.7 : 0.1) : id === selected ? 0.8 : 0.2,
+              ])
             ),
           },
     },
@@ -183,6 +192,7 @@ function mockExecution(sent: Record<string, unknown>, headers: Headers) {
     assert.equal(Object.hasOwn(sent, parameter), false);
   assert.equal((sent.output_config as Record<string, unknown>).effort, effort);
   assert.equal((sent.thinking as Record<string, unknown>).type, "adaptive");
+  if (delegatedSource) return delegatedStream(sent.model);
   return Response.json({
     id: "synthetic-hermes-answer",
     model: sent.model,
@@ -198,6 +208,70 @@ function mockExecution(sent: Record<string, unknown>, headers: Headers) {
       ...(unknownCosts ? {} : { cost: 0.002 }),
     },
   });
+}
+function delegatedStream(model: unknown) {
+  const events = [
+    {
+      type: "message_start",
+      message: {
+        id: "synthetic-delegated",
+        type: "message",
+        role: "assistant",
+        model,
+        content: [],
+        usage: { input_tokens: 8, output_tokens: 0 },
+      },
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "Synthetic delegated answer" },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: 4, ...(unknownCosts ? {} : { cost: 0.002 }) },
+    },
+    { type: "message_stop" },
+  ];
+  return new Response(
+    events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+    { headers: { "content-type": "text/event-stream" } }
+  );
+}
+function delegatedCapture() {
+  const child = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      fileURLToPath(
+        new URL("../fixtures/decisionPolicy/hermesEffort/build_request.py", import.meta.url)
+      ),
+    ],
+    {
+      env: {
+        PATH: process.env.PATH!,
+        HOME: `${process.env.DATA_DIR}/empty-delegated-builder-home`,
+      },
+      input: JSON.stringify({ case: "delegated-unset", tools: false }),
+      encoding: "utf8",
+      timeout: 10000,
+      maxBuffer: 200000,
+    }
+  );
+  assert.equal(child.status, 0, child.stderr);
+  const value = JSON.parse(child.stdout);
+  assert.equal(value.ok, true);
+  assert.equal(value.pin, PIN);
+  assert.equal(value.fullHermesExecuted, false);
+  assert.equal(value.sdkWireCaptured, false);
+  assert.equal(Object.hasOwn(value.capturedKwargs, "reasoning_effort"), false);
+  assert.equal(Object.hasOwn(value.body, "reasoning_effort"), false);
+  assert.equal(Object.hasOwn(value.body, "tools"), false);
+  return value;
 }
 before(async () => {
   // Initialize the application's normal fetch patch before the closed fixture interceptor.
@@ -275,6 +349,7 @@ beforeEach(async () => {
   selected = "sonnet-medium";
   unknownCosts = false;
   refused = false;
+  delegatedSource = false;
   lastExecution = undefined;
 });
 after(async () => {
@@ -290,7 +365,7 @@ after(async () => {
       JSON.stringify(
         {
           pin: PIN,
-          proofKind: "original-kwargs-with-fixture-projection-through-actual-POST",
+          proofKind: "original-and-explicit-optional-profile-source-through-actual-POST",
           sdkWireCaptured: false,
           fullHermesExecuted: false,
           liveProvidersTested: false,
@@ -362,6 +437,44 @@ test("original pinned builder preserves supplied omitted-cap tool profiles witho
   assert.equal(parallel.body.parallel_tool_calls, true);
   assert.equal(parallel.capturedKwargs.max_tokens, undefined);
 });
+for (const chosen of ["opus-high", "sonnet-medium"]) {
+  test(`optional Hermes builder omission reaches actual streaming handler and chooses ${chosen}`, async () => {
+    delegatedSource = true;
+    selected = chosen;
+    unknownCosts = chosen === "sonnet-medium";
+    const source = delegatedCapture();
+    const decisionsBefore = decisionCalls,
+      executionsBefore = executionCalls;
+    const response = await POST(request(source.body));
+    const text = await response.text();
+    assert.equal(response.status, 200, text);
+    assert.match(text, /Synthetic delegated answer/);
+    assert.match(text, /\[DONE\]/);
+    assert.equal(decisionCalls, decisionsBefore + 1);
+    assert.equal(executionCalls, executionsBefore + 1);
+    const receipts = readDecisionAttempts(key.id);
+    assert.equal(receipts.length, 2);
+    const execution = receipts.find((row) => row.lane === "execution")!;
+    assert.equal(execution.candidate_id, chosen);
+    assert.equal(execution.effort, chosen.split("-").at(-1));
+    assert.equal(execution.connection_id, chosen.startsWith("opus") ? opusId : sonnetId);
+    assert.equal(execution.application_status, 200);
+    assert.equal(execution.cost_usd, unknownCosts ? null : 0.002);
+    traces.push({
+      case: "optional-delegation-actual-handler",
+      sourceProofKind: source.proofKind,
+      sourceFunctions: source.executedSourceFunctions,
+      driverFlags: source.driverFlags,
+      defaultResolverSourceKind: source.defaultResolverSourceKind,
+      chosen,
+      decisionCalls: 1,
+      executionCalls: 1,
+      sdkWireCaptured: false,
+      fullHermesExecuted: false,
+      reportedExecutionCostUsd: execution.cost_usd,
+    });
+  });
+}
 test("unknown providers/imports, socket access and extra_body collisions fail closed", () => {
   for (const name of [
     "unknown-provider",
