@@ -33,7 +33,12 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 const fail = (): never => {
   throw new Error("decision_session_rejected");
 };
-function sessionAuthority(binding: SessionBinding, keyId: string, comboId: string, policy: string) {
+export function sessionAuthority(
+  binding: SessionBinding,
+  keyId: string,
+  comboId: string,
+  policy: string
+) {
   const snapshot = JSON.parse(
     decisionAuthorityStamp({ ...binding, keyId, comboId, id: "" }, policy)
   );
@@ -158,7 +163,8 @@ export function assertRoutingSession(claim: SessionClaim): void {
 export function completeRoutingSession(
   claim: SessionClaim,
   attempt: AttemptIdentity,
-  limits: SessionPolicy
+  limits: SessionPolicy,
+  publish?: () => void
 ): void {
   finishDecisionApplicationWithMetadata(attempt, () => {
     const row = owned(claim);
@@ -185,6 +191,7 @@ export function completeRoutingSession(
         Date.now() + limits.idleTtlMs,
         claim.id
       );
+    publish?.();
   });
 }
 export function releaseRoutingSession(claim: SessionClaim): void {

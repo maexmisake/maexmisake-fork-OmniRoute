@@ -206,6 +206,50 @@ afterEach(() => {
 });
 
 describe("decision routing settings", () => {
+  it("requires explicit transcript acknowledgement and retains Responses storage settings on reload", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    expect(
+      (screen.getByLabelText("Enable encrypted Responses history") as HTMLInputElement).checked
+    ).toBe(false);
+    fireEvent.click(screen.getByLabelText("Enable durable routing sessions"));
+    fireEvent.click(screen.getByLabelText("Enable encrypted Responses history"));
+    expect(saveButton().disabled).toBe(true);
+    expect(screen.getByText(/client must also send store: true/)).toBeTruthy();
+    fireEvent.click(
+      screen.getByLabelText("I acknowledge storage of encrypted task and response transcripts")
+    );
+    fireEvent.change(screen.getByLabelText("Responses history lifetime (ms)"), {
+      target: { value: "60000" },
+    });
+    fireEvent.change(screen.getByLabelText("Maximum stored Responses per client and combo"), {
+      target: { value: "4" },
+    });
+    fireEvent.click(saveButton());
+    await screen.findByText("Routing settings saved.");
+    const saved = api.calls.find((call) => call.init.method === "PUT")?.body
+      ?.policy as DecisionPolicyEditorValue;
+    expect(saved.responses).toEqual({
+      history: "encrypted-opt-in-v1",
+      acknowledgeTranscriptStorage: true,
+      ttlMs: 60000,
+      maxStoredResponses: 4,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reload saved settings" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("Responses history lifetime (ms)") as HTMLInputElement).value
+      ).toBe("60000")
+    );
+    expect(
+      (
+        screen.getByLabelText(
+          "I acknowledge storage of encrypted task and response transcripts"
+        ) as HTMLInputElement
+      ).checked
+    ).toBe(true);
+  });
   it("preserves durable routing sessions across unrelated edit and save/reload", async () => {
     const savedPolicy = policy();
     savedPolicy.sessions = {

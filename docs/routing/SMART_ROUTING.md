@@ -175,9 +175,68 @@ ceilings or billing guarantees.
 
 The namespaced `nr-218` migration adds this metadata table. Stop old workers and
 drain requests before upgrading; mixed-worker rolling upgrades are unverified.
-No production database was migrated by the offline tests. Responses API
-`previous_response_id` parity still needs its separate protocol/history ownership
-integration; this Chat session feature does not silently claim that support.
+No production database was migrated by the offline tests.
+
+## Responses clients and opted-in history
+
+Automatic combos accept a strict Responses text/function subset through the
+existing Responses route. String `input` becomes a user message; text message
+items preserve their order. `instructions` applies to the current request, and
+`reasoning.effort` preserves explicit client intent. `max_output_tokens` maps to
+the bounded output reservation. Provider-native mode rejects caller caps and
+requires streaming. Unknown controls, images and provider built-in tools reject
+before dispatch rather than being silently dropped.
+
+Streaming emits Responses text and function-call events. Function `call_id`
+values round-trip unchanged, including reversed function-result input. Guarded
+tool continuation preserves its exact account, model, effort and private replay.
+If the originating tool request supplied `instructions`, resend them unchanged
+during its tool continuation; changing its canonical context is unsupported.
+Incomplete, refused, cancelled or invalid output cannot publish completed history.
+
+Storage is off by default. Enable **Conversation routing stability**, then
+**Enable encrypted Responses history**, explicitly acknowledge transcript storage,
+and choose the lifetime and per-client/per-combo record cap. The corresponding
+optional `responses` configuration uses `history: "encrypted-opt-in-v1"`,
+`acknowledgeTranscriptStorage: true`, `ttlMs` from 1,000 to 1,800,000 and
+`maxStoredResponses` from 1 to 32. It requires the `sessions` configuration.
+The client must independently send `store: true`. Existing storage encryption
+must be available, and no-log client keys cannot store or resume this history.
+No encryption key or credential is created by this feature; encryption failure
+rejects publication rather than falling back to plaintext.
+
+`store: true` reserves a record slot before selection or dispatch and returns a
+server-owned response ID. A subsequent `previous_response_id` restores the full
+admitted dialogue plus the new delta, including string deltas. It pins the exact
+origin and skips reselection and automatic execution retry. A different key,
+combo, policy, credential authority, expired source or conflicting routing-session
+or task-boundary header rejects. Source validity is rechecked under the owned
+session transaction at admission; a valid admitted turn may finish within its
+request lease even if the source expires during execution.
+
+Omitted or false `store` never persists the new turn. It can still resume a valid
+owned previous response, but the new response ID will not be resumable. Explicit
+sequential reuse of an older ID is a new potentially billable request, not an
+idempotent replay. Concurrent or uncertain session work cannot be replayed.
+
+[`decisionResponses.ts`](../../src/lib/db/decisionResponses.ts) owns the encrypted
+history store added by `nr-219`. A stored transcript has at most 128 canonical
+messages and 2 MiB of serialized plaintext before encryption. Admission reserves
+one message for the assistant and checks the entire assembled input against the
+existing request/context bounds; it never drops an oversized prefix. Expired
+records are inaccessible and cleaned lazily by the next storage reservation for
+that client and combo. This is not a timed physical purge or secure-erasure
+guarantee. Tool metadata, session success and encrypted-history publication share
+the owned receipt transaction before `response.completed` is exposed.
+
+The inherited provider-native mode has mixed wire contracts: the twelve Claude
+pairs and Gemini High retain finite required provider limits using the operator
+allowance; the nine original Codex pairs and fixed-thinking AGY Opus omit wire
+output caps. `x-omniroute-output-limit-enforced` now reports that distinction.
+The allowance is not a universal generation or spending ceiling. Synthetic
+Responses handler tests cover all 23 identities and their function-tool loops;
+they establish no live entitlement, SDK/full-agent compatibility or measured
+routing-quality improvement.
 
 The architecture review consulted
 [hermes-jev-routing at 06a53646587c](https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/06a53646587c33174a0fbfbb3713eca90bbb8586/public/hermes-jev-routing)

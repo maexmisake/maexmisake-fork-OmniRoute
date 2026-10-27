@@ -613,7 +613,7 @@ async function expectRejected(
   assert.equal(executions, 0);
   assert.equal(readDecisionAttempts(key.id).length, 0);
 }
-async function expectSuccess(target: Candidate, order?: string[]) {
+async function expectSuccess(target: Candidate, order?: string[], responses = false) {
   await configure(target, {}, order);
   const { resolveApplicationProvider } =
     await import("../../src/lib/decisionPolicy/applicationProvider.ts");
@@ -630,11 +630,29 @@ async function expectSuccess(target: Candidate, order?: string[]) {
       `Synthetic prepared-provider precondition rejected: ${message}; metadata keys ${Object.keys(row.providerSpecificData ?? {}).join(",")}`
     );
   }
-  const response = await POST(request());
+  const response = responses
+    ? await (
+        await import("../../src/app/api/v1/responses/route.ts")
+      ).POST(
+        new Request("http://application.invalid/api/v1/responses", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${key.key}` },
+          body: JSON.stringify({
+            model: MODEL,
+            input: [{ role: "user", content: `Explain a synthetic lamp. ${SECRET_MARKER}` }],
+            stream: true,
+            store: false,
+          }),
+        })
+      )
+    : await POST(request());
   const text = await consume(response);
   assert.equal(response.status, 200, response.headers.get("x-omniroute-decision-reason") ?? text);
   assert.equal(response.headers.get("x-omniroute-output-policy"), "provider-native");
-  assert.equal(response.headers.get("x-omniroute-output-limit-enforced"), "false");
+  assert.equal(
+    response.headers.get("x-omniroute-output-limit-enforced"),
+    target.provider === "codex" || target.id === opus.id ? "false" : "true"
+  );
   assert.equal(response.headers.get("x-omniroute-selection-mode"), "native");
   assert.match(text, /Synthetic native output/);
   assert.equal(text.includes(QUOTA_MARKER), false);
@@ -658,7 +676,22 @@ async function expectSuccess(target: Candidate, order?: string[]) {
   assert.equal(execution.output_tokens, 4);
   assert.equal(execution.reasoning_tokens, target.provider === "claude" ? null : 2);
   assert.equal(execution.cost_usd, target.provider === "claude" ? 0 : null);
+  if (responses) {
+    const frames = text
+      .split(/\n\n/)
+      .filter((frame) => frame.includes("data: "))
+      .map((frame) => JSON.parse(frame.split("data: ")[1]));
+    const terminal = frames.at(-1);
+    assert.equal(terminal.type, "response.completed");
+    assert.equal(terminal.response.model, target.model);
+    assert.equal(terminal.response.usage.cost, target.provider === "claude" ? 0 : null);
+  }
 }
+
+for (const candidate of originalPool)
+  test(`Responses native output preserves original ${candidate.id} with its declared wire contract`, async () => {
+    await expectSuccess(candidate, undefined, true);
+  });
 
 for (const consent of [null, "task-text", "Task-Text", "task-text, task-text"]) {
   test(`native-output task context requires exact client consent=${consent}`, async () => {

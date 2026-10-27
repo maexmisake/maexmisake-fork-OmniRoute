@@ -18,6 +18,7 @@ import { readToolContinuations } from "../../src/lib/db/decisionContinuations.ts
 import { clearClaudeThinkingStore } from "../../open-sse/services/claudeThinkingStore.ts";
 process.env.REQUIRE_API_KEY = "true";
 process.env.APP_LOG_TO_FILE = "false";
+process.env.STORAGE_ENCRYPTION_KEY = "synthetic-tools-responses-test-key";
 const MODEL = "synthetic-hermes-pinned";
 const DECISION = "https://opencode.ai/inference/systemone/v1/systemone";
 const EXECUTE = "https://api.anthropic.com/v1/messages?beta=true";
@@ -483,6 +484,214 @@ test("original Hermes tool kwargs and supplied result construction continue thro
   assert.ok(signature.includes("synthetic-account-bound-signature-1"));
 });
 
+test("Responses function tools preserve native call IDs and exact continuation without reselection", async () => {
+  const { POST: responsesPOST } = await import("../../src/app/api/v1/responses/route.ts");
+  const original = sourceBody();
+  const tools = (original.tools as Array<{ type: string; function: Record<string, unknown> }>).map(
+    (tool) => ({ type: tool.type, ...tool.function })
+  );
+  const send = (input: unknown) =>
+    responsesPOST(
+      new Request("http://synthetic.invalid/api/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key.key}` },
+        body: JSON.stringify({
+          model: MODEL,
+          input,
+          tools,
+          tool_choice: "auto",
+          parallel_tool_calls: true,
+          max_output_tokens: 64,
+          reasoning: { effort: "high" },
+          stream: true,
+          store: false,
+        }),
+      })
+    );
+  const initial = await send(original.messages);
+  assert.equal(initial.status, 200, await initial.clone().text());
+  const frames = (await consume(initial))
+    .split(/\n\n/)
+    .filter((frame) => frame.includes("data: "))
+    .map((frame) => JSON.parse(frame.split("data: ")[1]));
+  const final = frames.at(-1);
+  assert.equal(final.type, "response.completed");
+  const calls = final.response.output.filter(
+    (item: { type: string }) => item.type === "function_call"
+  );
+  assert.deepEqual(
+    calls.map((call: { call_id: string }) => call.call_id),
+    ["fixture-call-one", "fixture-call-two"]
+  );
+  assert.equal(decisions, 1);
+  assert.equal(executions, 1);
+  const continued = await send([
+    ...(original.messages as unknown[]),
+    ...final.response.output,
+    {
+      type: "function_call_output",
+      call_id: "fixture-call-two",
+      output: '{"answer":"synthetic second"}',
+    },
+    {
+      type: "function_call_output",
+      call_id: "fixture-call-one",
+      output: '{"answer":"synthetic first"}',
+    },
+  ]);
+  assert.equal(continued.status, 200, await continued.clone().text());
+  assert.match(await consume(continued), /Synthetic continuation answer/);
+  assert.equal(decisions, 1);
+  assert.equal(executions, 2);
+  assert.equal(continued.headers.get("x-omniroute-selection-mode"), "continuation-pin");
+  assert.ok(JSON.stringify(wires[1]).includes("synthetic-account-bound-signature-1"));
+  for (const row of readDecisionAttempts(key.id).filter((row) => row.lane === "execution")) {
+    assert.equal(row.connection_id, sonnetId);
+    assert.equal(row.effort, "high");
+    assert.equal(row.application_status, 200);
+  }
+});
+
+test("Responses stored function results resume only the owned native tool origin", async () => {
+  const { POST: responsesPOST } = await import("../../src/app/api/v1/responses/route.ts");
+  const config = structuredClone(initialConfig) as { decisionPolicy: Record<string, unknown> };
+  config.decisionPolicy.sessions = {
+    mode: "task-boundary",
+    idleTtlMs: 60000,
+    maxTurns: 20,
+    minStableTurns: 2,
+    maxActiveSessions: 4,
+  };
+  config.decisionPolicy.responses = {
+    history: "encrypted-opt-in-v1",
+    acknowledgeTranscriptStorage: true,
+    ttlMs: 60000,
+    maxStoredResponses: 4,
+  };
+  await updateCombo(comboId, { config });
+  const original = sourceBody();
+  const tools = (original.tools as Array<{ type: string; function: Record<string, unknown> }>).map(
+    (tool) => ({ type: tool.type, ...tool.function })
+  );
+  const send = (input: unknown, previous?: string) =>
+    responsesPOST(
+      new Request("http://synthetic.invalid/api/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key.key}` },
+        body: JSON.stringify({
+          model: MODEL,
+          input,
+          tools,
+          tool_choice: "auto",
+          parallel_tool_calls: true,
+          max_output_tokens: 64,
+          stream: true,
+          store: true,
+          ...(previous ? { previous_response_id: previous } : {}),
+        }),
+      })
+    );
+  const initial = await send(original.messages);
+  assert.equal(initial.status, 200, await initial.clone().text());
+  const frames = (await consume(initial))
+    .split(/\n\n/)
+    .filter((frame) => frame.includes("data: "))
+    .map((frame) => JSON.parse(frame.split("data: ")[1]));
+  const final = frames.at(-1);
+  assert.equal(final.type, "response.completed");
+  assert.equal(final.response.store, true);
+  assert.equal(
+    final.response.output.filter((item: { type: string }) => item.type === "function_call").length,
+    2
+  );
+  const continued = await send(
+    [
+      {
+        type: "function_call_output",
+        call_id: "fixture-call-two",
+        output: '{"answer":"synthetic second"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "fixture-call-one",
+        output: '{"answer":"synthetic first"}',
+      },
+    ],
+    final.response.id
+  );
+  assert.equal(continued.status, 200, await continued.clone().text());
+  assert.match(await consume(continued), /Synthetic continuation answer/);
+  assert.equal(decisions, 1);
+  assert.equal(executions, 2);
+  assert.equal(continued.headers.get("x-omniroute-selection-mode"), "session-pin");
+  assert.ok(JSON.stringify(wires[1]).includes("synthetic-account-bound-signature-1"));
+  for (const row of readDecisionAttempts(key.id).filter((row) => row.lane === "execution")) {
+    assert.equal(row.connection_id, sonnetId);
+    assert.equal(row.effort, "high");
+    assert.equal(row.application_status, 200);
+  }
+});
+
+test("Responses failed history publication rolls back native tool issuance", async () => {
+  const { POST: responsesPOST } = await import("../../src/app/api/v1/responses/route.ts");
+  const config = structuredClone(initialConfig) as { decisionPolicy: Record<string, unknown> };
+  config.decisionPolicy.sessions = {
+    mode: "task-boundary",
+    idleTtlMs: 60000,
+    maxTurns: 20,
+    minStableTurns: 2,
+    maxActiveSessions: 4,
+  };
+  config.decisionPolicy.responses = {
+    history: "encrypted-opt-in-v1",
+    acknowledgeTranscriptStorage: true,
+    ttlMs: 60000,
+    maxStoredResponses: 4,
+  };
+  await updateCombo(comboId, { config });
+  const original = sourceBody();
+  const tools = (original.tools as Array<{ type: string; function: Record<string, unknown> }>).map(
+    (tool) => ({ type: tool.type, ...tool.function })
+  );
+  getDbInstance().exec(
+    "CREATE TRIGGER synthetic_responses_publication_failure BEFORE UPDATE OF state ON decision_response_histories WHEN NEW.state='ready' BEGIN SELECT RAISE(ABORT,'synthetic-publication-failure'); END"
+  );
+  try {
+    const response = await responsesPOST(
+      new Request("http://synthetic.invalid/api/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key.key}` },
+        body: JSON.stringify({
+          model: MODEL,
+          input: original.messages,
+          tools,
+          tool_choice: "auto",
+          parallel_tool_calls: true,
+          max_output_tokens: 64,
+          stream: true,
+          store: true,
+        }),
+      })
+    );
+    let text = "";
+    try {
+      text = await response.text();
+    } catch {
+      /* Expected publication rejection. */
+    }
+    assert.equal(text.includes('"type":"response.completed"'), false);
+    assert.equal(
+      readToolContinuations(key.id, comboId).filter((row) => row.state === "issued").length,
+      0
+    );
+    const execution = readDecisionAttempts(key.id).find((row) => row.lane === "execution")!;
+    assert.equal(execution.state, "completed");
+    assert.equal(execution.application_status, 409);
+  } finally {
+    getDbInstance().exec("DROP TRIGGER synthetic_responses_publication_failure");
+  }
+});
+
 test("durable sessions keep exact tool origin and reject task-boundary reselection", async () => {
   const config = structuredClone(initialConfig) as { decisionPolicy: Record<string, unknown> };
   config.decisionPolicy.sessions = {
@@ -720,57 +929,109 @@ test("reused IDs in a second complete group retain separate occurrence-bound sig
   assert.equal(executionRows().length, 3);
 });
 
+async function postResponseToolContract(body: Record<string, unknown>): Promise<Response> {
+  const { POST: responsesPOST } = await import("../../src/app/api/v1/responses/route.ts");
+  const input: unknown[] = [];
+  for (const row of body.messages as Array<Record<string, unknown>>) {
+    if (row.role === "tool")
+      input.push({ type: "function_call_output", call_id: row.tool_call_id, output: row.content });
+    else {
+      if (row.content || !row.tool_calls) input.push({ role: row.role, content: row.content });
+      for (const call of (row.tool_calls as Array<{
+        id: string;
+        function: { name: string; arguments: string };
+      }>) ?? [])
+        input.push({
+          type: "function_call",
+          call_id: call.id,
+          name: call.function.name,
+          arguments: call.function.arguments,
+        });
+    }
+  }
+  const tools = (body.tools as Array<{ type: string; function: Record<string, unknown> }>).map(
+    (tool) => ({ type: tool.type, ...tool.function })
+  );
+  return responsesPOST(
+    new Request("http://synthetic.invalid/api/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key.key}` },
+      body: JSON.stringify({
+        model: body.model,
+        input,
+        tools,
+        tool_choice: "auto",
+        parallel_tool_calls: true,
+        reasoning: { effort: body.reasoning_effort },
+        stream: true,
+        store: false,
+      }),
+    })
+  );
+}
 for (const family of ["opus", "sonnet", "haiku"] as const)
   for (const effort of ["medium", "high", "xhigh", "max"])
-    for (const native of [false, true]) {
-      test(`synthetic ${native ? "native-output " : ""}adjusted Hermes tools continue with exact ${family} ${effort}`, async () => {
-        expectedEffort = effort;
-        selected = `${family}-${effort}`;
-        const other = family === "opus" ? "sonnet" : "opus";
-        const config = structuredClone(initialConfig) as {
-          decisionPolicy: Record<string, unknown>;
-        };
-        const policy = config.decisionPolicy.policy as Record<string, unknown>;
-        policy.candidates = [candidate(other, effort), candidate(family, effort)];
-        offeredIds = [`${other}-${effort}`, selected];
-        policy.taskOrder = { tools: offeredIds, continuation: offeredIds };
-        config.decisionPolicy.connections = {
-          [`${other}-${effort}`]: other === "opus" ? opusId : sonnetId,
-          [selected]: family === "opus" ? opusId : family === "sonnet" ? sonnetId : haikuId,
-        };
-        if (native) {
-          config.decisionPolicy.applicationMode = "provider-native-output-v1";
-          config.decisionPolicy.nativeOutput = {
-            acknowledgeNoTokenCeiling: true,
-            contextOutputTokens: 64,
+    for (const native of [false, true])
+      for (const responses of native ? [false, true] : [false]) {
+        test(`synthetic ${responses ? "Responses " : ""}${native ? "native-output " : ""}adjusted Hermes tools continue with exact ${family} ${effort}`, async () => {
+          expectedEffort = effort;
+          selected = `${family}-${effort}`;
+          const other = family === "opus" ? "sonnet" : "opus";
+          const config = structuredClone(initialConfig) as {
+            decisionPolicy: Record<string, unknown>;
           };
-        }
-        await updateCombo(comboId, { config });
-        // Explicit synthetic effort/model-pool substitution, not captured Hermes defaults.
-        const body = {
-          ...sourceBody(native ? "omitted-cap-tools" : "stream-tools"),
-          reasoning_effort: effort,
-        };
-        const initial = await POST(request(body));
-        assert.equal(initial.status, 200);
-        const first = await throughDone(initial);
-        const continued = await POST(request({ ...body, messages: protocol() }));
-        assert.equal(
-          continued.status,
-          200,
-          continued.headers.get("x-omniroute-decision-reason") ?? ""
-        );
-        await consume(continued);
-        await first.reader.cancel();
-        assert.equal(decisions, 1);
-        assert.equal(executions, 2);
-        for (const row of executionRows()) {
-          assert.equal(row.model, `claude-${family}-5-5`);
-          assert.equal(row.effort, effort);
-          assert.equal(row.application_status, 200);
-        }
-      });
-    }
+          const policy = config.decisionPolicy.policy as Record<string, unknown>;
+          policy.candidates = [candidate(other, effort), candidate(family, effort)];
+          offeredIds = [`${other}-${effort}`, selected];
+          policy.taskOrder = { tools: offeredIds, continuation: offeredIds };
+          config.decisionPolicy.connections = {
+            [`${other}-${effort}`]: other === "opus" ? opusId : sonnetId,
+            [selected]: family === "opus" ? opusId : family === "sonnet" ? sonnetId : haikuId,
+          };
+          if (native) {
+            config.decisionPolicy.applicationMode = "provider-native-output-v1";
+            config.decisionPolicy.nativeOutput = {
+              acknowledgeNoTokenCeiling: true,
+              contextOutputTokens: 64,
+            };
+          }
+          await updateCombo(comboId, { config });
+          // Explicit synthetic effort/model-pool substitution, not captured Hermes defaults.
+          const body = {
+            ...sourceBody(native ? "omitted-cap-tools" : "stream-tools"),
+            reasoning_effort: effort,
+          };
+          const initial = responses
+            ? await postResponseToolContract(body)
+            : await POST(request(body));
+          assert.equal(initial.status, 200);
+          const first = responses ? undefined : await throughDone(initial);
+          if (responses) {
+            const text = await consume(initial);
+            assert.match(text, /"type":"response.completed"/);
+            assert.match(text, /fixture-call-one/);
+            assert.match(text, /fixture-call-two/);
+          }
+          const continuationBody = { ...body, messages: protocol() };
+          const continued = responses
+            ? await postResponseToolContract(continuationBody)
+            : await POST(request(continuationBody));
+          assert.equal(
+            continued.status,
+            200,
+            continued.headers.get("x-omniroute-decision-reason") ?? ""
+          );
+          await consume(continued);
+          await first?.reader.cancel();
+          assert.equal(decisions, 1);
+          assert.equal(executions, 2);
+          for (const row of executionRows()) {
+            assert.equal(row.model, `claude-${family}-5-5`);
+            assert.equal(row.effort, effort);
+            assert.equal(row.application_status, 200);
+          }
+        });
+      }
 
 async function configureNativeTools(patch: Record<string, unknown> = {}) {
   const config = structuredClone(initialConfig) as { decisionPolicy: Record<string, unknown> };

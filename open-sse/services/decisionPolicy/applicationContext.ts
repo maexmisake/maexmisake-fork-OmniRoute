@@ -48,6 +48,8 @@ export type ApplicationAttempt = {
     "agy-gemini-high-v1" | "agy-opus-fixed-native-output-v1" | "codex-native-output-v1";
   /** Trusted operator context allowance, never a provider-enforced generation ceiling. */
   nativeOutput?: { contextOutputTokens: number };
+  /** Private strict Responses ingress has already been projected to canonical Chat. */
+  canonicalChat?: boolean;
   tools?: ApplicationToolHooks;
   /** Release occupancy without asserting that a started remote call stopped. */
   release?: () => void;
@@ -61,7 +63,7 @@ export type ApplicationAttempt = {
     wrap: (response: Response) => Response;
     reportedClientUsage: () => Record<string, unknown> | null;
     noteClientOutcome: (status: number) => void;
-    onClientCompletion: (commit: () => void, release: () => void) => void;
+    onClientCompletion: (commit: (commitTools: () => void) => void, release: () => void) => void;
   };
   observe: (send: Promise<Response>) => Promise<Response>;
 };

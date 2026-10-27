@@ -43,6 +43,7 @@ const REASONS = [
   "sole_eligible_no_decision",
   "deterministic_no_decision",
   "provider_native_limit_not_enforced",
+  "provider_native_policy_selected",
   "native_choice",
   "local_difficulty_easy",
   "local_difficulty_moderate",

@@ -504,7 +504,7 @@ export function decisionAuthorityStamp(identity: AttemptIdentity, expectedPolicy
   const db = getDbInstance();
   const key = db
     .prepare(
-      "SELECT key_hash,is_active,is_banned,revoked_at,expires_at,model_access_mode,allowed_models,blocked_models,allowed_combos,allowed_connections,allowed_quotas,disable_non_public_models,allowed_endpoints,scopes,access_schedule,forced_model,proxy_id,ip_allowlist,max_requests_per_day,max_requests_per_minute,max_sessions,rate_limits FROM api_keys WHERE id=?"
+      "SELECT key_hash,is_active,is_banned,revoked_at,expires_at,model_access_mode,allowed_models,blocked_models,allowed_combos,allowed_connections,allowed_quotas,disable_non_public_models,allowed_endpoints,scopes,access_schedule,forced_model,proxy_id,ip_allowlist,max_requests_per_day,max_requests_per_minute,max_sessions,rate_limits,no_log FROM api_keys WHERE id=?"
     )
     .get(identity.keyId);
   const connection = db

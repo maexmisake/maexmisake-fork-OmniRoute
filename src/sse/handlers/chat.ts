@@ -824,11 +824,12 @@ async function handleChatImplementation(
     apiKeyInfo?.id,
     boundedClientInput,
     request.headers.get(DECISION_TASK_CONTEXT_HEADER) === "task-text",
-    request.headers
+    request.headers,
+    sourceFormat
   );
   if (automaticPlan instanceof Response) return automaticPlan;
   // Only this validated, bounded lane needs an owned working copy before hooks.
-  if (automaticPlan) body = structuredClone(body);
+  if (automaticPlan) body = structuredClone(automaticPlan.responsesBody ?? body);
   let managedLease: ManagedLeaseDispatchContext | null = null;
   if (isExclusiveLeaseManagedKey(apiKeyInfo)) {
     try {

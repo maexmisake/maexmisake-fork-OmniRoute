@@ -15,6 +15,7 @@ const NAMES = new Map<string, string>([
   ["nr-216", "native_attempt_leases"],
   ["nr-217", "tool_continuations"],
   ["nr-218", "routing_sessions"],
+  ["nr-219", "response_histories"],
 ]);
 const BASE_COLUMNS = {
   id: "TEXT",
@@ -347,6 +348,47 @@ function requireSchema(db: SqliteAdapter, number: number, leased: boolean): void
   }
   if (number >= 217) requireNativeToolSchema(db);
   if (number >= 218) requireRoutingSessionSchema(db);
+  if (number >= 219) requireResponseHistorySchema(db);
+}
+function requireResponseHistorySchema(db: SqliteAdapter): void {
+  requireColumns(db, "decision_response_histories", {
+    id: "TEXT",
+    session_id: "TEXT",
+    api_key_id: "TEXT",
+    combo_id: "TEXT",
+    owner: "TEXT",
+    state: "TEXT",
+    source_attempt_id: "TEXT",
+    binding_json: "TEXT",
+    policy_hash: "TEXT",
+    authority_hash: "TEXT",
+    history_ciphertext: "TEXT",
+    expires_at: "INTEGER",
+  });
+  requireNativeToolKeys(
+    db,
+    "decision_response_histories",
+    ["id"],
+    ["id", "session_id", "api_key_id", "combo_id", "owner", "state", "policy_hash", "expires_at"]
+  );
+  requireIndex(
+    db,
+    "decision_response_histories",
+    "idx_decision_responses_owner",
+    ["api_key_id", "combo_id", "expires_at"],
+    0
+  );
+  const row = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='decision_response_histories'"
+    )
+    .get() as { sql: string };
+  if (
+    !/CHECK\s*\(\s*state\s+IN\s*\(\s*'pending'\s*,\s*'ready'\s*,\s*'unknown'\s*\)\s*\)/i.test(
+      row.sql
+    )
+  )
+    fail("response history state CHECK is missing");
 }
 function requireRoutingSessionSchema(db: SqliteAdapter): void {
   requireColumns(db, "decision_routing_sessions", {
@@ -402,6 +444,8 @@ function relevant(files: Migration[]): Migration[] {
 }
 
 function requirePredecessors(applied: Map<string, Marker>, number: number): void {
+  if (number >= 219 && applied.get("nr-218")?.name !== NAMES.get("nr-218"))
+    fail("predecessor nr-218 is not recorded");
   if (number >= 218 && applied.get("nr-217")?.name !== NAMES.get("nr-217"))
     fail("predecessor nr-217 is not recorded");
   if (number >= 217 && applied.get("nr-216")?.name !== NAMES.get("nr-216"))

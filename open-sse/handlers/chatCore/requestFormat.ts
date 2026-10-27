@@ -16,6 +16,7 @@ import {
   shouldUseNativeXaiResponsesPassthrough,
 } from "./passthroughHelpers.ts";
 import { FORMATS } from "../../translator/formats.ts";
+import { currentApplicationAttempt } from "../../services/decisionPolicy/applicationContext.ts";
 
 /** True when the request originates from a Copilot client (matched by user-agent or any header). */
 function isCopilotClient(
@@ -87,21 +88,29 @@ export function resolveChatCoreRequestFormat(opts: {
 }) {
   const { clientRawRequest, body, provider, userAgent } = opts;
   const endpointPath = String(clientRawRequest?.endpoint || "");
-  const sourceFormat = detectFormatFromEndpoint(body, endpointPath);
+  const canonicalChat = currentApplicationAttempt()?.canonicalChat === true;
+  const sourceFormat = canonicalChat
+    ? FORMATS.OPENAI
+    : detectFormatFromEndpoint(body, endpointPath);
   const isResponsesEndpoint =
-    /\/responses(?=\/|$)/i.test(endpointPath) || /^responses(?=\/|$)/i.test(endpointPath);
-  const nativeCodexPassthrough = shouldUseNativeCodexPassthrough({
-    provider,
-    sourceFormat,
-    endpointPath,
-    body,
-    headers: clientRawRequest?.headers,
-  });
-  const nativeXaiResponsesPassthrough = shouldUseNativeXaiResponsesPassthrough({
-    provider,
-    sourceFormat,
-    endpointPath,
-  });
+    !canonicalChat &&
+    (/\/responses(?=\/|$)/i.test(endpointPath) || /^responses(?=\/|$)/i.test(endpointPath));
+  const nativeCodexPassthrough =
+    !canonicalChat &&
+    shouldUseNativeCodexPassthrough({
+      provider,
+      sourceFormat,
+      endpointPath,
+      body,
+      headers: clientRawRequest?.headers,
+    });
+  const nativeXaiResponsesPassthrough =
+    !canonicalChat &&
+    shouldUseNativeXaiResponsesPassthrough({
+      provider,
+      sourceFormat,
+      endpointPath,
+    });
   const isDroidCLI =
     userAgent?.toLowerCase().includes("droid") || userAgent?.toLowerCase().includes("codex-cli");
   const copilotCompatibleReasoning = isCopilotClient(clientRawRequest?.headers, userAgent);

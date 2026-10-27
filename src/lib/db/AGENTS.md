@@ -2,7 +2,7 @@
 
 **Purpose**: Domain-driven SQLite persistence. Each module owns a specific table set. Schema migrations are versioned and idempotent. No raw SQL in routes — all ops go through `src/lib/db/` modules.
 
-Live count: `ls src/lib/db/*.ts | wc -l` (currently 152). Migrations: `rg --files src/lib/db/migrations -g '*.sql' | wc -l` (currently 215: 209 core + 6 bundled native-router files).
+Live count: `ls src/lib/db/*.ts | wc -l` (currently 153). Migrations: `rg --files src/lib/db/migrations -g '*.sql' | wc -l` (currently 216: 209 core + 7 bundled native-router files).
 
 ---
 
@@ -10,7 +10,7 @@ Live count: `ls src/lib/db/*.ts | wc -l` (currently 152). Migrations: `rg --file
 
 - **`core.ts`** — `getDbInstance()` returns singleton `better-sqlite3` with WAL journaling. Exports `rowToCamel()` (snake_case → camelCase), `encryptConnectionFields()` for provider credentials at rest. `SCHEMA_SQL` defines **17 base tables** (verify: `grep -c "CREATE TABLE" src/lib/db/core.ts` minus 1 for `_omniroute_migrations`). Native-load / missing-driver classification lives in `sqliteLoadError.ts` and is re-exported from here.
 - **`migrationRunner.ts`** — Applies versioned SQL files from `db/migrations/` inside transactions. Tracks applied migrations in `_omniroute_migrations`. Each migration is idempotent.
-- **`db/migrations/`** - 215 SQL files (209 core files through `212_usage_history_provider_reported_cost.sql`, plus 6 namespaced native-router files; numbering has intentional gaps). Each runs in a transaction, never fails partially.
+- **`db/migrations/`** - 216 SQL files (209 core files through `212_usage_history_provider_reported_cost.sql`, plus 7 namespaced native-router files; numbering has intentional gaps). Each runs in a transaction, never fails partially.
 - The old `localDb.ts` barrel has been removed — consumers must import from the owning named module below.
 
 ## Key Domain Modules
@@ -22,6 +22,7 @@ Live count: `ls src/lib/db/*.ts | wc -l` (currently 152). Migrations: `rg --file
 | `combos.ts`                | `combos`, `combo_targets`                    | Combo routing configs, target ordering                                                                             |
 | `apiKeys.ts`               | `api_keys`                                   | API key lifecycle, scopes, quota tracking                                                                          |
 | `decisionContinuations.ts` | `decision_tool_turns`, `decision_tool_calls` | Owner-bound tool-turn metadata, atomic claims and bounded lineage; no raw message storage                          |
+| `decisionResponses.ts`     | `decision_response_histories`                | Opted-in encrypted, owned Responses transcript publication                                                         |
 | `decisionSessions.ts`      | `decision_routing_sessions`                  | Opt-in key/combo-scoped exact routing pins, exclusive turn claims and successful-receipt publication; no task text |
 | `settings.ts`              | `settings`                                   | KV store for system configuration                                                                                  |
 | `secrets.ts`               | `secrets`                                    | Encrypted secret storage (API keys at rest)                                                                        |
@@ -46,7 +47,7 @@ Live count: `ls src/lib/db/*.ts | wc -l` (currently 152). Migrations: `rg --file
 | `healthCheck.ts`           | health ops                                   | DB health monitoring                                                                                               |
 | `databaseSettings.ts`      | database settings                            | DB-level configuration                                                                                             |
 
-Full list: `ls src/lib/db/*.ts | wc -l` (152 files). Drift detection: `npm run check:docs-counts`.
+Full list: `ls src/lib/db/*.ts | wc -l` (153 files). Drift detection: `npm run check:docs-counts`.
 
 ## Encryption & Security
 

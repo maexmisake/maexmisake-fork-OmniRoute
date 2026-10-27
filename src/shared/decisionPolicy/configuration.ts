@@ -55,6 +55,15 @@ export const boundedDecisionConfigurationSchema = z
       .optional(),
     policy: policySchema,
     retry: applicationRetrySchema.optional(),
+    responses: z
+      .object({
+        history: z.literal("encrypted-opt-in-v1"),
+        acknowledgeTranscriptStorage: z.literal(true),
+        ttlMs: z.number().int().min(1000).max(1800000),
+        maxStoredResponses: z.number().int().min(1).max(32),
+      })
+      .strict()
+      .optional(),
     sessions: z
       .object({
         mode: z.literal("task-boundary"),
@@ -74,6 +83,7 @@ export const boundedDecisionConfigurationSchema = z
   .strict()
   .refine(
     (value) =>
+      (!value.responses || !!value.sessions) &&
       (value.applicationMode === "provider-native-output-v1"
         ? value.nativeOutput !== undefined
         : value.nativeOutput === undefined) &&

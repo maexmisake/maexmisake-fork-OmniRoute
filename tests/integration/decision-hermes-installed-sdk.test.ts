@@ -515,8 +515,10 @@ function upstream(model: string, stream: boolean, tools: boolean) {
   );
 }
 before(async () => {
-  if (!AVAILABLE) return;
-  assert.equal(existsSync(PYTHON!), true, "The explicitly configured SDK executable must exist");
+  // Direct closed Responses contracts reuse only the application/provider fixtures below.
+  // Actual SDK tests retain their explicit AVAILABLE skip; this never configures or runs an SDK.
+  if (AVAILABLE)
+    assert.equal(existsSync(PYTHON!), true, "The explicitly configured SDK executable must exist");
   process.env.REQUIRE_API_KEY = "true";
   process.env.APP_LOG_TO_FILE = "false";
   await import("../../open-sse/utils/proxyFetch.ts");
@@ -748,7 +750,6 @@ before(async () => {
   );
 });
 beforeEach(async () => {
-  if (!AVAILABLE) return;
   const { __resetRateLimitManagerForTests } =
     await import("../../open-sse/services/rateLimitManager.ts");
   await __resetRateLimitManagerForTests();
@@ -818,7 +819,6 @@ beforeEach(async () => {
   clearClaudeThinkingStore();
 });
 after(async () => {
-  if (!AVAILABLE) return;
   if (process.env.DECISION_HERMES_CONTROLS_TRACE_FILE)
     writeFileSync(
       process.env.DECISION_HERMES_CONTROLS_TRACE_FILE,
@@ -1045,6 +1045,73 @@ const nativeToolPairs = [
   ),
   ["agy", BOUNDED_AGY_OPUS_MODEL, "high"],
 ] as const;
+for (const [provider, model, level] of [
+  ...nativeToolPairs,
+  ["agy", BOUNDED_AGY_MODEL, "high"] as const,
+]) {
+  test(`direct Responses native-output ${provider} ${model} ${level} tools roundtrip without SDK execution`, async () => {
+    assert.ok(provider === "codex" || provider === "agy");
+    if (model === BOUNDED_AGY_MODEL) {
+      nativeToolMode = true;
+      configuredSchema = CONTROL_SCHEMA;
+      await configureAgy(false);
+    } else await configureNativeText(provider, { tools: true, model, effort: level });
+    const { POST: responsesPOST } = await import("../../src/app/api/v1/responses/route.ts");
+    const input = [{ role: "user", content: "Explain a synthetic lamp" }];
+    const send = (items: unknown[]) =>
+      responsesPOST(
+        new Request("http://synthetic.invalid/api/v1/responses", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${key.key}` },
+          body: JSON.stringify({
+            model: MODEL,
+            input: items,
+            tools: [{ type: "function", name: "synthetic_tool", parameters: CONTROL_SCHEMA }],
+            tool_choice: "auto",
+            parallel_tool_calls: true,
+            reasoning: { effort: level },
+            stream: true,
+            store: false,
+          }),
+        })
+      );
+    const initial = await send(input);
+    const text = await initial.text();
+    assert.equal(initial.status, 200, text);
+    const events = text
+      .split(/\n\n/)
+      .filter((frame) => frame.includes("data: "))
+      .map((frame) => JSON.parse(frame.split("data: ")[1]));
+    const first = events.at(-1);
+    assert.equal(first.type, "response.completed");
+    const calls = first.response.output.filter(
+      (item: { type: string }) => item.type === "function_call"
+    );
+    assert.ok(calls.length > 0);
+    const continued = await send([
+      ...input,
+      ...first.response.output,
+      ...calls.map((call: { call_id: string }) => ({
+        type: "function_call_output",
+        call_id: call.call_id,
+        output: '{"answer":"synthetic result"}',
+      })),
+    ]);
+    const finalText = await continued.text();
+    assert.equal(continued.status, 200, finalText);
+    assert.match(finalText, /Synthetic SDK OK/);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 2);
+    for (const row of readDecisionAttempts(key.id).filter((row) => row.lane === "execution")) {
+      assert.equal(row.provider, provider);
+      assert.equal(row.model, model);
+      assert.equal(row.effort, level);
+      assert.equal(row.connection_id, provider === "codex" ? codexId : agyId);
+      assert.equal(row.application_status, 200);
+      assert.equal(row.cost_usd, null);
+    }
+  });
+}
 for (const [provider, model, level] of nativeToolPairs) {
   test(
     `installed SDK native-output original ${provider} ${model} ${level} tool loop preserves private replay`,

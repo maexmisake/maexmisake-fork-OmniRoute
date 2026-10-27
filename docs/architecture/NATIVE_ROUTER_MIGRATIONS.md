@@ -6,10 +6,10 @@ lastUpdated: 2026-10-27
 
 # Native router migration compatibility
 
-The distribution ships **215 SQL files**: 209 core migrations through numeric
-`212`, plus six files under `src/lib/db/migrations/native-router/`. The bundled
+The distribution ships **216 SQL files**: 209 core migrations through numeric
+`212`, plus seven files under `src/lib/db/migrations/native-router/`. The bundled
 files use the existing namespace convention and are recorded as `nr-213` through
-`nr-218`. They load automatically after core migrations, without an environment
+`nr-219`. They load automatically after core migrations, without an environment
 change. The `nr` namespace is reserved; optional extra directories remain separate.
 
 ## Verified upstream boundary and later correction
@@ -91,6 +91,15 @@ permissions. The guarded handler must validate complete provider/client output,
 current authorization, cancellation, exact identity and required in-memory
 signed replay. Database fixtures do not establish those runtime or live-provider
 properties.
+
+`nr-218_routing_sessions` stores exact key/combo/policy-bound routing metadata,
+exclusive owner/lease state and the selected provider/model/account/effort. It
+stores no transcript. `nr-219_response_histories` adds a separately opted-in
+encrypted history store with pending capacity reservations, scope/expiry indexes
+and ready/unknown states. Source readiness is revalidated at owned admission;
+tool metadata, session success and history publication compose inside the owned
+receipt transaction. The runtime rejects plaintext encryption fallback. Neither
+migration enables these features or creates encryption credentials.
 
 ## Inventory and packaging
 

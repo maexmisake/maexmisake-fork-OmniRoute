@@ -2,6 +2,7 @@
 import Card from "@/shared/components/Card";
 import Input from "@/shared/components/Input";
 import type { Draft } from "./decisionRoutingDraft";
+import ResponsesHistoryFields from "./ResponsesHistoryFields";
 
 const controls = [
   ["Session idle timeout (ms)", "sessionIdleTtlMs", 1000, 1800000],
@@ -26,7 +27,14 @@ export default function SessionPolicyFields({
           aria-label="Enable durable routing sessions"
           checked={draft.sessionsEnabled}
           disabled={disabled}
-          onChange={(event) => update({ sessionsEnabled: event.target.checked })}
+          onChange={(event) =>
+            update({
+              sessionsEnabled: event.target.checked,
+              ...(!event.target.checked
+                ? { responsesEnabled: false, responsesAcknowledged: false }
+                : {}),
+            })
+          }
         />
         Keep the selected account, model and effort for clients requesting a routing session.
       </label>
@@ -58,6 +66,7 @@ export default function SessionPolicyFields({
         provider prompt-cache reuse. Streams retain finite proof limits and publish a reusable pin
         only after complete validation.
       </p>
+      <ResponsesHistoryFields draft={draft} disabled={disabled} update={update} />
     </Card>
   );
 }

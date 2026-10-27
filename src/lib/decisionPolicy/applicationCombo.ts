@@ -1,4 +1,16 @@
 import { ApplicationTools, applicationToolRequest } from "./applicationTools";
+import { applicationResponsesResult } from "./applicationResponses";
+import {
+  prepareResponsesRouting,
+  reserveApplicationResponse,
+  createResponsesResultOptions,
+  type ApplicationResponsesState,
+} from "./applicationResponsesRouting";
+import {
+  assertResponseHistoryAllowed,
+  releaseResponseHistory,
+  type ResponseHistorySlot,
+} from "../db/decisionResponses";
 import {
   canonicalToolJSON,
   type InspectedToolRequest,
@@ -137,6 +149,8 @@ export type AutomaticPlan = {
   config: z.infer<typeof configuration>;
   clientTaskContextConsent?: boolean;
   sessionInput?: SessionInput;
+  responsesBody?: Record<string, unknown>;
+  responses?: ApplicationResponsesState;
 };
 function nativeOutputPlan(plan: AutomaticPlan): ProviderNativeOutput | undefined {
   return plan.config.applicationMode === "provider-native-output-v1"
@@ -159,7 +173,8 @@ export async function prepareAutomaticCombo(
   keyId?: string,
   clientInput: unknown = body,
   clientTaskContextConsent = false,
-  headers = new Headers()
+  headers = new Headers(),
+  sourceFormat?: string
 ): Promise<AutomaticPlan | Response | null> {
   const combo = await getComboByName(model);
   if (!combo || !boundedDecisionEnabled(combo)) return null;
@@ -186,6 +201,29 @@ export async function prepareAutomaticCombo(
   }
   if (sessionInput && settings.echoRequestedModelName === true)
     return automaticRejection("session_model_echo_unsupported");
+  let responsesBody: Record<string, unknown> | undefined;
+  let responses: AutomaticPlan["responses"];
+  if (sourceFormat === "openai-responses") {
+    try {
+      const prepared = prepareResponsesRouting({
+        client: clientInput,
+        working: body,
+        keyId,
+        comboId: String(combo.id),
+        policy: JSON.stringify((combo.config as Record<string, unknown>).decisionPolicy),
+        config: parsed.data,
+        sessionInput,
+        echo: settings.echoRequestedModelName === true,
+      });
+      responsesBody = prepared.body;
+      responses = prepared.state;
+      sessionInput = prepared.sessionInput;
+      body = responsesBody;
+      clientInput = responsesBody;
+    } catch {
+      return automaticRejection("responses_request_unsupported");
+    }
+  }
   const admission = preparedApplicationInput(
     clientInput,
     body,
@@ -203,6 +241,8 @@ export async function prepareAutomaticCombo(
     sourcePolicy: JSON.stringify((combo.config as Record<string, unknown>).decisionPolicy),
     clientTaskContextConsent,
     sessionInput,
+    responsesBody,
+    responses,
   };
 }
 function prepareToolInput(
@@ -715,6 +755,7 @@ async function buildAttempt(
   };
   return {
     rejection: () => rejection,
+    canonicalChat: !!plan.responsesBody,
     stream,
     tools: toolHooks,
     ...(contract.executionContract ? { executionContract: contract.executionContract } : {}),
@@ -1091,7 +1132,7 @@ function prepareSessionCompletion(
   if (!session || !response.ok) return;
   if (attempt.stream?.active) {
     attempt.stream.onClientCompletion(
-      () => completeRoutingSession(session, attempt, plan.config.sessions!),
+      (commitTools) => completeRoutingSession(session, attempt, plan.config.sessions!, commitTools),
       () => releaseRoutingSession(session)
     );
   } else completeRoutingSession(session, attempt, plan.config.sessions!);
@@ -1121,9 +1162,57 @@ function annotateApplicationResult(
   }
   if (nativeOutputPlan(plan)) {
     annotated.headers.set("x-omniroute-output-policy", "provider-native");
-    annotated.headers.set("x-omniroute-output-limit-enforced", "false");
+    const contract = result.attempt.executionContract;
+    annotated.headers.set(
+      "x-omniroute-output-limit-enforced",
+      contract === "codex-native-output-v1" || contract === "agy-opus-fixed-native-output-v1"
+        ? "false"
+        : "true"
+    );
   }
   return annotated;
+}
+async function completeApplicationResponse(
+  plan: AutomaticPlan,
+  result: Awaited<ReturnType<typeof runApplicationAttempts>>,
+  state: SelectionState,
+  signal: AbortSignal,
+  callerSignal: AbortSignal,
+  session?: SessionClaim,
+  responseSlot?: ResponseHistorySlot
+): Promise<{ response: Response; streaming: boolean }> {
+  const attempt = result.attempt;
+  const responsesOptions = createResponsesResultOptions({
+    state: plan.responses,
+    attempt,
+    signal,
+    session,
+    slot: responseSlot,
+    sessionPolicy: plan.config.sessions,
+    failureStatus: () => failureStatus(signal, callerSignal),
+  });
+  if (responsesOptions && !attempt.stream?.active)
+    result.response = await applicationResponsesResult(
+      result.response,
+      attempt.model,
+      responsesOptions
+    );
+  const response = result.response;
+  signal.throwIfAborted();
+  if (!responsesOptions) prepareSessionCompletion(plan, session, attempt, response);
+  if (responsesOptions && attempt.stream?.active)
+    attempt.stream.onClientCompletion(responsesOptions.prepare, () => {});
+  const annotated = annotateApplicationResult(plan, result, state, session);
+  if (attempt.stream?.active && response.ok) {
+    const wrapped = attempt.stream.wrap(annotated);
+    return {
+      response: responsesOptions
+        ? await applicationResponsesResult(wrapped, attempt.model, responsesOptions)
+        : wrapped,
+      streaming: true,
+    };
+  }
+  return { response: annotated, streaming: false };
 }
 export async function executeAutomaticCombo(
   plan: AutomaticPlan,
@@ -1143,6 +1232,7 @@ export async function executeAutomaticCombo(
   const state: SelectionState = { mode: "no-route" };
   let streamHandedOff = false;
   let session: SessionClaim | undefined;
+  let responseSlot: ResponseHistorySlot | undefined;
   // A configured selector is not an observed selection before eligibility succeeds.
 
   try {
@@ -1154,11 +1244,18 @@ export async function executeAutomaticCombo(
     const extracted = validRequestFacts(body, tools, nativeOutputPlan(plan));
     if (!extracted) return automaticRejection();
     session = prepareApplicationSession(plan, keyId);
+    responseSlot = reserveApplicationResponse(
+      plan.responses,
+      session,
+      plan.sourcePolicy,
+      plan.config.responses,
+      plan.config.policy.timeoutMs
+    );
     const trace: Array<{ phase: string; id?: string; reason: string }> = [];
     if (extracted.facts.difficulty)
       trace.push({ phase: "difficulty", reason: `local_difficulty_${extracted.facts.difficulty}` });
     if (nativeOutputPlan(plan))
-      trace.push({ phase: "output_policy", reason: "provider_native_limit_not_enforced" });
+      trace.push({ phase: "output_policy", reason: "provider_native_policy_selected" });
     const candidate = await selectApplicationCandidate(
       plan,
       keyId,
@@ -1214,6 +1311,7 @@ export async function executeAutomaticCombo(
         ),
       dispatch: async (next, owned) => {
         if (session) assertRoutingSession(session);
+        if (plan.responses?.store || plan.responses?.origin) assertResponseHistoryAllowed(keyId);
         return reportedClaudeClientUsage(
           await withApplicationAttempt(owned, () =>
             dispatch(
@@ -1227,15 +1325,17 @@ export async function executeAutomaticCombo(
       },
     });
     attempt = result.attempt;
-    const response = result.response;
-    signal.throwIfAborted();
-    prepareSessionCompletion(plan, session, attempt, response);
-    const annotated = annotateApplicationResult(plan, result, state, session);
-    if (attempt.stream?.active && response.ok) {
-      streamHandedOff = true;
-      return attempt.stream.wrap(annotated);
-    }
-    return annotated;
+    const completed = await completeApplicationResponse(
+      plan,
+      result,
+      state,
+      signal,
+      callerSignal,
+      session,
+      responseSlot
+    );
+    streamHandedOff = completed.streaming;
+    return completed.response;
   } catch (error) {
     const status = failureStatus(signal, callerSignal, state.native);
     state.native?.finishFailure(status);
@@ -1244,6 +1344,7 @@ export async function executeAutomaticCombo(
       ? state.native.annotate(response)
       : annotateNoDecision(response, state.mode, attempt);
   } finally {
+    if (!streamHandedOff && responseSlot) releaseResponseHistory(responseSlot, attempt);
     if (!streamHandedOff && session) releaseRoutingSession(session);
     if (!streamHandedOff) releaseAttempt(attempt);
   }

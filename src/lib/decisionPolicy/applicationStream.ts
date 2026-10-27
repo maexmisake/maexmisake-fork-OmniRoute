@@ -325,9 +325,9 @@ class ApplicationStream {
   private verifiedClientUsage: Json | null = null;
   private clientTail = "";
   private clientDecoder = new TextDecoder();
-  private commitCompletion?: () => void;
+  private commitCompletion?: (commitTools: () => void) => void;
   private releaseCompletion?: () => void;
-  onClientCompletion(commit: () => void, release: () => void): void {
+  onClientCompletion(commit: (commitTools: () => void) => void, release: () => void): void {
     if (this.commitCompletion || this.finalized) throw new Error("decision_stream_rejected");
     this.commitCompletion = commit;
     this.releaseCompletion = release;
@@ -505,8 +505,9 @@ class ApplicationStream {
     if (client?.finish()) throw new Error("decision_stream_rejected");
     this.tools?.validateClientComplete(this.successStatus());
     if (this.successStatus() < 400) {
-      this.tools?.commitClientComplete();
-      this.commitCompletion?.();
+      const commitTools = () => this.tools?.commitClientComplete();
+      if (this.commitCompletion) this.commitCompletion(commitTools);
+      else commitTools();
     }
   }
   private wrapTools(response: Response): Response {

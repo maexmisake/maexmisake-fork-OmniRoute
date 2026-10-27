@@ -48,6 +48,10 @@ export type Draft = {
   maxExecutionAttempts: string;
   retryTransitions: string;
   sessionsEnabled: boolean;
+  responsesEnabled: boolean;
+  responsesAcknowledged: boolean;
+  responseTtlMs: string;
+  responseMaxStored: string;
   sessionIdleTtlMs: string;
   sessionMaxTurns: string;
   sessionMinStableTurns: string;
@@ -91,6 +95,10 @@ export function draftFromPolicy(policy: DecisionPolicyEditorValue | null): Draft
     maxExecutionAttempts: String(policy?.policy.maxExecutionAttempts ?? 1),
     retryTransitions: JSON.stringify(policy?.retry?.transitions ?? [], null, 2),
     sessionsEnabled: !!policy?.sessions,
+    responsesEnabled: !!policy?.responses,
+    responsesAcknowledged: policy?.responses?.acknowledgeTranscriptStorage === true,
+    responseTtlMs: String(policy?.responses?.ttlMs ?? 300000),
+    responseMaxStored: String(policy?.responses?.maxStoredResponses ?? 8),
     sessionIdleTtlMs: String(policy?.sessions?.idleTtlMs ?? 300000),
     sessionMaxTurns: String(policy?.sessions?.maxTurns ?? 64),
     sessionMinStableTurns: String(policy?.sessions?.minStableTurns ?? 2),
@@ -245,6 +253,16 @@ function parseDraft(draft: Draft, options: EditorOptions) {
     selection,
     connections: draft.connections,
     ...(draft.retryEnabled ? { retry: { transitions: parseJson(draft.retryTransitions) } } : {}),
+    ...(draft.responsesEnabled
+      ? {
+          responses: {
+            history: "encrypted-opt-in-v1",
+            acknowledgeTranscriptStorage: draft.responsesAcknowledged,
+            ttlMs: Number(draft.responseTtlMs),
+            maxStoredResponses: Number(draft.responseMaxStored),
+          },
+        }
+      : {}),
     ...(draft.sessionsEnabled
       ? {
           sessions: {

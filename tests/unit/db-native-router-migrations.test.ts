@@ -498,3 +498,59 @@ for (const [name, from, to] of [
       db.close();
     }
   });
+
+function installResponseBundle(change?: (sql: string) => string) {
+  installSessionBundle();
+  const sql = fs.readFileSync(
+    path.join(source, "native-router/219_response_histories.sql"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(fixture, "native-router/219_response_histories.sql"),
+    change ? change(sql) : sql
+  );
+}
+test("encrypted Responses history migration validates its own namespace and reopens idempotently", () => {
+  installResponseBundle();
+  const db = createBetterSqliteAdapter(baseDb());
+  try {
+    assert.equal(runMigrations(db), 7);
+    assert.equal(runMigrations(db), 0);
+    assert.equal(
+      (db.prepare("SELECT COUNT(*) AS n FROM decision_response_histories").get() as { n: number })
+        .n,
+      0
+    );
+  } finally {
+    db.close();
+  }
+});
+for (const [name, from, to] of [
+  ["primary key", "id TEXT PRIMARY KEY NOT NULL", "id TEXT NOT NULL"],
+  ["owner nullability", "owner TEXT NOT NULL", "owner TEXT"],
+  ["state check", "CHECK(state IN ('pending','ready','unknown'))", ""],
+])
+  test(`Responses history migration rejects incompatible ${name} without recording nr219`, () => {
+    installResponseBundle((sql) => {
+      assert.ok(sql.includes(from));
+      return sql.replace(from, to);
+    });
+    const db = createBetterSqliteAdapter(baseDb());
+    try {
+      assert.throws(() => runMigrations(db), /migration provenance is ambiguous/i);
+      assert.equal(
+        db.prepare("SELECT 1 FROM _omniroute_migrations WHERE version='nr-219'").get(),
+        undefined
+      );
+      assert.equal(
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='decision_response_histories'"
+          )
+          .get(),
+        undefined
+      );
+    } finally {
+      db.close();
+    }
+  });
