@@ -40,6 +40,16 @@ context reason codes, not the text.
 
 ## Client intent
 
+Profiles may include optional `selectionGuidance` of at most 1,000 characters.
+This is an operator preference, separate from capability evidence and quality
+measurements. It stays local unless the operator separately acknowledges sharing
+guidance with the exact decision provider, model and connection. The stored
+`selection.guidanceDisclosure` binds that acknowledgement to the destination;
+missing or mismatched consent never serializes guidance into Choice criteria.
+The editor clears acknowledgement when the destination or profile payload changes.
+This acknowledgement is separate from per-request task-text consent. Never put
+secrets in guidance. The existing total native request byte limit still applies.
+
 [`requestFacts.ts`](../../open-sse/services/decisionPolicy/requestFacts.ts) separates
 task intent from difficulty. Quoted text, block quotes and fenced payloads do not
 replace the surrounding instruction. Informational questions about models remain

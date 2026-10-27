@@ -6,6 +6,7 @@ import type { Candidate, Draft } from "./decisionRoutingDraft";
 const editableCandidate = candidateSchema.extend({
   provider: z.string().max(100),
   model: z.string().max(200),
+  selectionGuidance: z.string().max(1000).optional(),
   capabilities: candidateSchema.shape.capabilities.extend({
     contextTokens: z.number().nullable(),
   }),
@@ -83,6 +84,9 @@ export function changeProfile(
   });
   return {
     candidates: JSON.stringify(next, null, 2),
+    ...(identityChanged || Object.hasOwn(patch, "selectionGuidance")
+      ? { guidanceAcknowledged: false }
+      : {}),
     ...(identityChanged
       ? {
           connections: Object.fromEntries(

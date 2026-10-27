@@ -16,6 +16,18 @@ export default function DecisionContextFields({
   return (
     <fieldset className="mt-4 space-y-3 rounded-control border border-border p-3">
       <legend>Decision task privacy</legend>
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          aria-label="Allow sharing operator selection guidance with this decision destination"
+          checked={draft.guidanceAcknowledged}
+          disabled={disabled || !draft.binding || !draft.selectorConnection}
+          onChange={(event) => update({ guidanceAcknowledged: event.target.checked })}
+        />
+        Allow sharing operator selection guidance with the selected decision provider, model and
+        connection. Guidance may contain private content. It stays local by default; changing the
+        destination or editing guidance requires a new acknowledgement. Do not include secrets.
+      </label>
       <Select
         label="Decision task context"
         value={draft.decisionContextMode}

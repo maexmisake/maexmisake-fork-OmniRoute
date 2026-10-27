@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { guidanceDisclosureMatches } from "./taskContext.ts";
 
 const record = z.record(z.string(), z.unknown());
 const choice = z.object({
@@ -25,6 +26,9 @@ import type { Candidate, DecisionClient, DecisionOutcome } from "./contract.ts";
 export function nativeDecisionClient(options: {
   id: string;
   model: string;
+  provider?: string;
+  connectionId?: string;
+  guidanceDisclosure?: unknown;
   call: (
     body: Record<string, unknown>,
     signal: AbortSignal
@@ -36,6 +40,8 @@ export function nativeDecisionClient(options: {
   return {
     id: options.id,
     select: async (candidates, request, signal) => {
+      // Default is local-only. Consent must acknowledge this exact provider/model/connection.
+      const discloseGuidance = guidanceDisclosureMatches(options, options.guidanceDisclosure);
       if (candidates.length < 2 || candidates.length > 255)
         return { status: "invalid", costUsd: 0 };
       const body = {
@@ -59,6 +65,9 @@ export function nativeDecisionClient(options: {
                   },
                   capabilities: candidate.capabilities,
                   task: request.task,
+                  ...(discloseGuidance && candidate.selectionGuidance !== undefined
+                    ? { selectionGuidance: candidate.selectionGuidance }
+                    : {}),
                 }),
               ])
             ),

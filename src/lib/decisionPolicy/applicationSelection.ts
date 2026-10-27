@@ -363,6 +363,9 @@ export async function prepareNativeStage(
       const client = nativeDecisionClient({
         id: "application-native",
         model: selection.model,
+        provider: selection.provider,
+        connectionId: selection.connectionId,
+        guidanceDisclosure: selection.guidanceDisclosure,
         call: async (body) => {
           expectedBody = JSON.stringify(body);
           if (Buffer.byteLength(expectedBody) > 65536)

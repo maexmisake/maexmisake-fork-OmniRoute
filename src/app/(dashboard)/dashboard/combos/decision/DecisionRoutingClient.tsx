@@ -48,6 +48,7 @@ function NativeFields({
               binding: event.target.value,
               selectorConnection: "",
               decisionContextAcknowledged: false,
+              guidanceAcknowledged: false,
             })
           }
           disabled={disabled}
@@ -63,7 +64,11 @@ function NativeFields({
           label="Decision connection"
           value={draft.selectorConnection}
           onChange={(event) =>
-            update({ selectorConnection: event.target.value, decisionContextAcknowledged: false })
+            update({
+              selectorConnection: event.target.value,
+              decisionContextAcknowledged: false,
+              guidanceAcknowledged: false,
+            })
           }
           disabled={disabled || !binding}
         >

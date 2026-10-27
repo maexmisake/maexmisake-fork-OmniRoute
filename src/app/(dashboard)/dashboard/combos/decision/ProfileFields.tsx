@@ -89,6 +89,18 @@ function CapabilityFields({
         disabled={disabled}
         onChange={(event) => edit({ evidence: event.target.value || null })}
       />
+      <Input
+        label={`Selection guidance for ${row.id}`}
+        value={row.selectionGuidance ?? ""}
+        maxLength={1000}
+        disabled={disabled}
+        onChange={(event) => edit({ selectionGuidance: event.target.value || undefined })}
+      />
+      <p className="text-xs text-text-muted">
+        Optional operator preference. Local by default; sharing requires the separate destination
+        acknowledgement in Decision task privacy. Never include secrets. Guidance cannot change hard
+        eligibility or explicit client effort.
+      </p>
     </>
   );
 }

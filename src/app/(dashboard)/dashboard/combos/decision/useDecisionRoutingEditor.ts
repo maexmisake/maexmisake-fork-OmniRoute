@@ -175,7 +175,17 @@ export function useDecisionRoutingEditor() {
   const updateDraft = (patch: Partial<Draft>) => {
     if (busy || mustReload || mutation.current) return;
     setNotice("");
-    setDraft((previous) => (previous ? { ...previous, ...patch } : null));
+    setDraft((previous) =>
+      previous
+        ? {
+            ...previous,
+            ...patch,
+            ...(patch.candidates !== undefined && patch.candidates !== previous.candidates
+              ? { guidanceAcknowledged: false }
+              : {}),
+          }
+        : null
+    );
   };
   const reloadSaved = () => {
     if (mutation.current) return;

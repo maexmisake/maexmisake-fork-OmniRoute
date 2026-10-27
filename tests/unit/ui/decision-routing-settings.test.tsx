@@ -206,6 +206,49 @@ afterEach(() => {
 });
 
 describe("decision routing settings", () => {
+  it("keeps guidance local until destination acknowledgement and clears consent on edits or destination changes", async () => {
+    const api = server();
+    render(<DecisionRoutingClient />);
+    await chooseCombo();
+    const label = "Allow sharing operator selection guidance with this decision destination";
+    expect((screen.getByLabelText(label) as HTMLInputElement).checked).toBe(false);
+    fireEvent.change(screen.getByLabelText("Selection guidance for light"), {
+      target: { value: "Prefer concise synthetic transformations" },
+    });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(api.calls.some((row) => row.init.method === "PUT")).toBe(true));
+    let saved = api.calls.filter((row) => row.init.method === "PUT").at(-1)!.body!
+      .policy as DecisionPolicyEditorValue;
+    expect(saved.policy.candidates[0].selectionGuidance).toBe(
+      "Prefer concise synthetic transformations"
+    );
+    expect(
+      saved.selection?.mode === "native" && saved.selection.guidanceDisclosure
+    ).toBeUndefined();
+    fireEvent.click(screen.getByLabelText(label));
+    fireEvent.click(saveButton());
+    await waitFor(() =>
+      expect(api.calls.filter((row) => row.init.method === "PUT")).toHaveLength(2)
+    );
+    saved = api.calls.filter((row) => row.init.method === "PUT").at(-1)!.body!
+      .policy as DecisionPolicyEditorValue;
+    if (saved.selection?.mode !== "native") throw new Error("Expected native fixture");
+    expect(saved.selection.guidanceDisclosure).toEqual({
+      acknowledgeExternalTransmission: true,
+      provider: saved.selection.provider,
+      model: saved.selection.model,
+      connectionId: saved.selection.connectionId,
+    });
+    fireEvent.change(screen.getByLabelText("Selection guidance for light"), {
+      target: { value: "Changed synthetic preference" },
+    });
+    expect((screen.getByLabelText(label) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByLabelText(label));
+    fireEvent.change(screen.getByLabelText("Decision provider and exact model"), {
+      target: { value: JSON.stringify(["opencode-zen", "jev-1.13"]) },
+    });
+    expect((screen.getByLabelText(label) as HTMLInputElement).checked).toBe(false);
+  });
   it("requires disclosure consent, saves/reloads task context, and clears acknowledgement on provider changes", async () => {
     const api = server();
     render(<DecisionRoutingClient />);

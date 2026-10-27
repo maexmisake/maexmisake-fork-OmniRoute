@@ -155,7 +155,11 @@ test("invalid config, duplicate variants/IDs and stale task references fail befo
 });
 
 test("invalid task facts and oversized state never dispatch", async () => {
-  for (const patch of [{ contextTokens: -1 }, { state: "x".repeat(4001) }, { reasoning: "true" }]) {
+  for (const patch of [
+    { contextTokens: -1 },
+    { state: "x".repeat(16385) },
+    { reasoning: "true" },
+  ]) {
     const result = await runDecisionPolicy(config, { ...request, ...patch }, deps());
     assert.equal(result.status, "invalid_request");
     assert.equal(result.ledger.length, 0);

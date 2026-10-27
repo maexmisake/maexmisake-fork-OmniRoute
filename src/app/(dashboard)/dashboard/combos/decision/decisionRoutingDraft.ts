@@ -3,6 +3,7 @@ import {
   NATIVE_DECISION_BINDINGS,
   type DecisionPolicyEditorValue,
 } from "@/shared/decisionPolicy/configuration";
+import { guidanceDisclosureMatches } from "../../../../../../open-sse/services/decisionPolicy/taskContext";
 
 export type Binding = (typeof NATIVE_DECISION_BINDINGS)[number];
 export type Connection = {
@@ -40,6 +41,7 @@ export type Draft = {
   decisionContextMode: "local-summary" | "task-text";
   decisionContextAcknowledged: boolean;
   decisionContextMaxChars: string;
+  guidanceAcknowledged: boolean;
   timeout: string;
   unknownQuota: "reject" | "allow";
   candidates: string;
@@ -74,6 +76,7 @@ export function draftFromPolicy(policy: DecisionPolicyEditorValue | null): Draft
     decisionContextMaxChars: String(
       native?.decisionContext?.mode === "task-text" ? native.decisionContext.maxChars : 2048
     ),
+    guidanceAcknowledged: !!native && guidanceDisclosureMatches(native, native.guidanceDisclosure),
     timeout: String(policy?.policy.timeoutMs ?? 30000),
     unknownQuota: policy?.policy.unknownQuota ?? "reject",
     candidates: JSON.stringify(policy?.policy.candidates ?? [], null, 2),
@@ -188,6 +191,16 @@ function parseDraft(draft: Draft, options: EditorOptions) {
           mode: "native",
           provider: binding?.provider,
           model: binding?.model,
+          ...(draft.guidanceAcknowledged
+            ? {
+                guidanceDisclosure: {
+                  acknowledgeExternalTransmission: true,
+                  provider: binding?.provider,
+                  model: binding?.model,
+                  connectionId: draft.selectorConnection,
+                },
+              }
+            : {}),
           connectionId: draft.selectorConnection,
           timeoutMs: Number(draft.decisionTimeout),
           maxCandidates: Number(draft.maxCandidates),

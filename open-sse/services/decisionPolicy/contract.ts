@@ -13,6 +13,8 @@ export const candidateSchema = z
     model: z.string().min(1).max(200),
     endpointKind: z.enum(["direct", "router", "unknown"]),
     evidence: z.string().min(1).max(500).nullable(),
+    // Operator preference text for the selector, never inferred capability or a client override.
+    selectionGuidance: z.string().trim().min(1).max(1000).optional(),
     capabilities: z
       .object({
         text: knownFlag,

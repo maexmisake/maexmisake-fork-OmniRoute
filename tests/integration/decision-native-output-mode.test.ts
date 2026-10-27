@@ -98,6 +98,7 @@ const connections: Record<string, string> = {};
 let chosen: Candidate = codex[0];
 let decisions = 0;
 let lastDecisionState = "";
+let lastSelectionGuidance: string | undefined;
 let executions = 0;
 let unexpected = 0;
 let upstreamStatus = 200;
@@ -284,6 +285,9 @@ before(async () => {
     if (url === DECISION_URL) {
       decisions++;
       lastDecisionState = body.state;
+      lastSelectionGuidance = JSON.parse(
+        body.questions.route.criteria[chosen.id]
+      ).selectionGuidance;
       assert.equal(headers.get("authorization"), `Bearer ${ACCESS.selector}`);
       assert.equal(body.model, "jev-1.13-free");
       offered = Object.keys(body.questions.route.criteria);
@@ -439,6 +443,7 @@ beforeEach(async () => {
   key = await createApiKey("synthetic-native-output-client", "synthetic");
   decisions = executions = unexpected = 0;
   lastDecisionState = "";
+  lastSelectionGuidance = undefined;
   upstreamStatus = decisionStatus = 200;
   responseMode = "valid";
   decisionMode = "valid";
@@ -720,6 +725,48 @@ test("oversized consented task stops before any physical native decision or exec
   assert.equal(decisions, 0);
   assert.equal(executions, 0);
 });
+
+for (const consent of ["absent", "matching", "different-connection"]) {
+  test(`actual native selector guidance disclosure is destination-bound: ${consent}`, async () => {
+    const stored = (await getComboByName(MODEL))!.config as Json;
+    const config = stored.decisionPolicy as Json;
+    const selection = config.selection as Json;
+    expectedPool = originalPool.map((row) =>
+      row.id === chosen.id ? { ...row, selectionGuidance: "Synthetic operator preference" } : row
+    );
+    await updateCombo(comboId, {
+      config: {
+        decisionPolicy: {
+          ...config,
+          policy: { ...(config.policy as Json), candidates: expectedPool },
+          selection: {
+            ...selection,
+            ...(consent === "absent"
+              ? {}
+              : {
+                  guidanceDisclosure: {
+                    acknowledgeExternalTransmission: true,
+                    provider: selection.provider,
+                    model: selection.model,
+                    connectionId: consent === "matching" ? selection.connectionId : "other",
+                  },
+                }),
+          },
+        },
+      },
+    });
+    const response = await POST(request());
+    await consume(response);
+    assert.equal(response.status, 200);
+    assert.equal(decisions, 1);
+    assert.equal(executions, 1);
+    assert.equal(
+      lastSelectionGuidance,
+      consent === "matching" ? "Synthetic operator preference" : undefined
+    );
+    assert.ok(!JSON.stringify(lastWire).includes("Synthetic operator preference"));
+  });
+}
 
 for (const candidate of [...codex, opus])
   test(`actual handler native output executes original ${candidate.id} once without a wire cap`, async () => {
