@@ -1806,9 +1806,10 @@ async function handleSingleModelChat(
   const pressureGuard = checkResourcePressureBeforeProviderWork();
   if (pressureGuard) return pressureGuard.response;
   const providerProfile = await getRuntimeProviderProfile(provider);
+  const bypassAvailability = !automaticAttempt && (forceLiveComboTest || hasForcedConnection);
   const gate = await checkPipelineGates(provider, model, {
-    ignoreCircuitBreaker: forceLiveComboTest || hasForcedConnection,
-    ignoreModelCooldown: forceLiveComboTest || hasForcedConnection,
+    ignoreCircuitBreaker: bypassAvailability,
+    ignoreModelCooldown: bypassAvailability,
     providerProfile,
     ...(bypassReason ? { bypassReason } : {}),
   });
@@ -2246,7 +2247,7 @@ async function handleSingleModelChat(
       try {
         execution = await dispatchChatWithAffinityEviction(
           {
-            bypassCircuitBreaker: forceLiveComboTest || hasForcedConnection,
+            bypassCircuitBreaker: bypassAvailability,
             breaker,
             body: requestBody,
             provider,

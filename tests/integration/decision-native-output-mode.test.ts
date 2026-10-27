@@ -435,6 +435,8 @@ before(async () => {
 });
 
 beforeEach(async () => {
+  (await import("../../src/shared/utils/circuitBreaker.ts")).resetAllCircuitBreakers();
+  (await import("../../src/domain/quotaCache.ts")).__clearForTests();
   const { __resetRateLimitManagerForTests } =
     await import("../../open-sse/services/rateLimitManager.ts");
   await __resetRateLimitManagerForTests();
@@ -767,6 +769,159 @@ for (const consent of ["absent", "matching", "different-connection"]) {
     assert.ok(!JSON.stringify(lastWire).includes("Synthetic operator preference"));
   });
 }
+
+for (const unavailable of [
+  "connection-cooldown",
+  "terminal-account",
+  "model-lock",
+  "key-scope",
+  "provider-breaker",
+  "cached-quota",
+]) {
+  test(`known ${unavailable} removes only the unavailable configured target before a decision`, async () => {
+    const primary = unavailable === "cached-quota" ? gemini : codex[0];
+    let quotaConnectionId = connections.agy;
+    if (unavailable === "cached-quota") {
+      const quotaConnection = await createProviderConnection({
+        provider: "agy",
+        authType: "oauth",
+        name: "synthetic-isolated-exhausted-quota",
+        accessToken: ACCESS.agy,
+        expiresAt: new Date(Date.now() + 86400000).toISOString(),
+        isActive: true,
+        testStatus: "active",
+        providerSpecificData: { projectId: "synthetic-project" },
+      });
+      assert.ok(quotaConnection);
+      quotaConnectionId = String(quotaConnection.id);
+    }
+    await configure(
+      primary,
+      unavailable === "cached-quota"
+        ? {
+            connections: Object.fromEntries(
+              originalPool.map((candidate) => [
+                candidate.id,
+                candidate.provider === "agy" ? quotaConnectionId : connections[candidate.provider],
+              ])
+            ),
+          }
+        : {}
+    );
+    chosen = alternate;
+    if (unavailable === "connection-cooldown")
+      await updateProviderConnection(connections.codex, {
+        rateLimitedUntil: new Date(Date.now() + 60000).toISOString(),
+      });
+    if (unavailable === "terminal-account")
+      await updateProviderConnection(connections.codex, { testStatus: "credits_exhausted" });
+    if (unavailable === "model-lock")
+      (await import("../../open-sse/services/accountFallback.ts")).lockModel(
+        "codex",
+        connections.codex,
+        primary.model,
+        "quota",
+        60000
+      );
+    if (unavailable === "key-scope")
+      await (
+        await import("../../src/lib/db/apiKeys.ts")
+      ).updateApiKeyPermissions(key.id, { allowedConnections: [connections.claude] });
+    if (unavailable === "provider-breaker") {
+      const breaker = (await import("../../src/shared/utils/circuitBreaker.ts")).getCircuitBreaker(
+        "codex",
+        { failureThreshold: 1, resetTimeout: 60000 }
+      );
+      await assert.rejects(
+        breaker.execute(async () => {
+          throw new Error("synthetic upstream outage");
+        })
+      );
+      assert.equal(breaker.getStatus().state, "OPEN");
+    }
+    if (unavailable === "cached-quota") {
+      const cache = await import("../../src/domain/quotaCache.ts");
+      const window = {
+        remainingPercentage: 0,
+        fractionReported: true,
+        resetAt: new Date(Date.now() + 60000).toISOString(),
+      };
+      cache.setQuotaCache(quotaConnectionId, "agy", {
+        [primary.model]: window,
+        gemini_weekly: window,
+      });
+      assert.equal(cache.isQuotaExhaustedForRequest(quotaConnectionId, "agy", primary.model), true);
+    }
+    const response = await POST(request());
+    await consume(response);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-omniroute-selection-mode"), "sole-eligible");
+    assert.equal(decisions, 0);
+    assert.equal(executions, 1);
+    assert.equal(lastWire!.model, alternate.model);
+    assert.equal(readDecisionAttempts(key.id).length, 1);
+  });
+}
+
+test("a half-open provider with its probe in flight cannot receive another automatic execution", async () => {
+  await configure(codex[0]);
+  chosen = alternate;
+  const breaker = (await import("../../src/shared/utils/circuitBreaker.ts")).getCircuitBreaker(
+    "codex",
+    { failureThreshold: 1, resetTimeout: 1 }
+  );
+  await assert.rejects(
+    breaker.execute(async () => {
+      throw new Error("synthetic outage");
+    })
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  let finishProbe!: () => void;
+  const probe = breaker.execute(
+    () =>
+      new Promise<void>((resolve) => {
+        finishProbe = resolve;
+      })
+  );
+  assert.equal(breaker.getStatus().state, "HALF_OPEN");
+  assert.equal(breaker.canExecute(), false);
+  try {
+    const response = await POST(request());
+    await consume(response);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-omniroute-selection-mode"), "sole-eligible");
+    assert.equal(decisions, 0);
+    assert.equal(executions, 1);
+  } finally {
+    finishProbe();
+    await probe;
+  }
+});
+
+test("an automatic forced connection cannot bypass a provider breaker opened after selection", async () => {
+  await configure(codex[0]);
+  afterDecision = async () => {
+    const breaker = (await import("../../src/shared/utils/circuitBreaker.ts")).getCircuitBreaker(
+      "codex",
+      { failureThreshold: 1, resetTimeout: 60000 }
+    );
+    await assert.rejects(
+      breaker.execute(async () => {
+        throw new Error("synthetic late outage");
+      })
+    );
+  };
+  const response = await POST(request());
+  await consume(response);
+  assert.notEqual(response.status, 200);
+  assert.equal(decisions, 1);
+  assert.equal(executions, 0);
+  const execution = readDecisionAttempts(key.id).find((row) => row.lane === "execution");
+  if (execution) {
+    assert.equal(execution.state, "cancelled");
+    assert.equal(execution.cost_usd, 0);
+  }
+});
 
 for (const candidate of [...codex, opus])
   test(`actual handler native output executes original ${candidate.id} once without a wire cap`, async () => {

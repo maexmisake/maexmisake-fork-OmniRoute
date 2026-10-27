@@ -85,6 +85,11 @@ export type CandidateState = {
   authorized: boolean | null;
   available: boolean | null;
   quota: "available" | "exhausted" | "unknown";
+  availabilityReason?:
+    | "provider_breaker_unavailable"
+    | "connection_terminal"
+    | "connection_cooldown"
+    | "model_lockout";
 };
 export type Snapshot = Readonly<Record<string, CandidateState | undefined>>;
 export type Trace = { phase: string; id?: string; reason: string };

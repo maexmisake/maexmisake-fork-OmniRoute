@@ -6,6 +6,7 @@ import {
 import { createApplicationStream } from "./applicationStream";
 import { assertNativeConnectionUnleased } from "./exclusiveLease";
 import { prepareNativeStage, type NativeStage } from "./applicationSelection";
+import { createApplicationHealthReader } from "./applicationAvailability";
 import { getExecutor } from "../../../open-sse/executors/index.ts";
 import { createValidationDispatchFence } from "../modelValidation/dispatchFence";
 import { createValidationPluginFence } from "../modelValidation/pluginFence";
@@ -17,6 +18,7 @@ export { nativeSelectionSchema } from "../../shared/decisionPolicy/configuration
 import {
   type Candidate,
   type CandidateState,
+  type Trace,
 } from "../../../open-sse/services/decisionPolicy/contract.ts";
 import { eligibleCandidates } from "../../../open-sse/services/decisionPolicy/eligibility.ts";
 import {
@@ -753,16 +755,18 @@ async function reportedClaudeClientUsage(
 }
 async function candidateSnapshot(plan: AutomaticPlan, keyId: string) {
   const snapshot: Record<string, CandidateState | undefined> = {};
+  const key = await getApiKeyById(keyId);
+  const health = await createApplicationHealthReader(plan.config.policy.candidates);
   for (const candidate of plan.config.policy.candidates) {
-    const allowed = await isModelAllowedForKey(
-      String((await getApiKeyById(keyId))?.key ?? ""),
-      `${candidate.provider}/${candidate.model}`
-    );
+    const connectionId = plan.config.connections[candidate.id];
+    const allowed =
+      !!key &&
+      (!key.allowedConnections?.length || key.allowedConnections.includes(connectionId)) &&
+      (await isModelAllowedForKey(String(key.key), `${candidate.provider}/${candidate.model}`));
     const conn = await getProviderConnectionById(plan.config.connections[candidate.id]);
     snapshot[candidate.id] = {
       authorized: allowed,
-      available: conn?.isActive === true,
-      quota: "unknown",
+      ...health(candidate, conn),
     };
   }
   return snapshot;
@@ -906,6 +910,25 @@ async function supportedExecutionCandidates(
   }
   return allowed;
 }
+function nativeSelectionFacts(
+  plan: AutomaticPlan,
+  rawBody: Record<string, unknown>,
+  tools: ApplicationTools | undefined,
+  trace: Trace[]
+) {
+  const selection = plan.config.selection;
+  const shared = validRequestFacts(rawBody, tools, nativeOutputPlan(plan), {
+    decisionContext: selection?.mode === "native" ? selection.decisionContext : undefined,
+    clientTaskContextConsent: plan.clientTaskContextConsent,
+  });
+  if (!shared) throw new Error("decision_task_context_rejected");
+  if (selection?.mode === "native" && selection.decisionContext?.mode === "task-text")
+    trace.push({
+      phase: "decision_context",
+      reason: plan.clientTaskContextConsent ? "task_context_shared" : "task_context_local_summary",
+    });
+  return shared.facts;
+}
 async function selectApplicationCandidate(
   plan: AutomaticPlan,
   keyId: string,
@@ -945,21 +968,9 @@ async function selectApplicationCandidate(
   if (!eligible[0]) throw new Error("decision_no_route");
   state.mode = applicationSelectionMode(plan, eligible.length);
   if (state.mode === "native") {
-    const selection = plan.config.selection;
-    const shared = validRequestFacts(rawBody, tools, nativeOutputPlan(plan), {
-      decisionContext: selection?.mode === "native" ? selection.decisionContext : undefined,
-      clientTaskContextConsent: plan.clientTaskContextConsent,
-    });
-    if (!shared) throw new Error("decision_task_context_rejected");
-    if (selection?.mode === "native" && selection.decisionContext?.mode === "task-text")
-      trace.push({
-        phase: "decision_context",
-        reason: plan.clientTaskContextConsent
-          ? "task_context_shared"
-          : "task_context_local_summary",
-      });
+    const shared = nativeSelectionFacts(plan, rawBody, tools, trace);
     state.native = await prepareNativeStage(plan, eligible, keyId, signal);
-    return state.native.select(shared.facts);
+    return state.native.select(shared);
   }
   traceNoDecisionSelection(trace, eligible[0], state.mode);
   return eligible[0];

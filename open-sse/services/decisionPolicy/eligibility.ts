@@ -30,6 +30,17 @@ function healthExclusions(state: CandidateState | undefined, config: PolicyConfi
   const reasons: string[] = [];
   if (state?.authorized !== true) reasons.push("unauthorized_or_unknown");
   if (state?.available !== true) reasons.push("unavailable_or_unknown");
+  if (
+    state?.available === false &&
+    state.availabilityReason &&
+    [
+      "provider_breaker_unavailable",
+      "connection_terminal",
+      "connection_cooldown",
+      "model_lockout",
+    ].includes(state.availabilityReason)
+  )
+    reasons.push(state.availabilityReason);
   if (state?.quota === "exhausted") reasons.push("quota_exhausted");
   if (
     (!state || !["available", "exhausted"].includes(state.quota)) &&

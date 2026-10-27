@@ -64,6 +64,21 @@ Fixture success does not establish a full Hermes agent run.
 
 ## Evidence boundaries
 
+Before selection,
+[`applicationAvailability.ts`](../../src/lib/decisionPolicy/applicationAvailability.ts)
+uses existing local quota observations, operator quota thresholds, connection
+cooldowns/terminal states, model lockouts and configured provider breakers. A busy
+half-open probe also excludes that provider. Key connection restrictions apply
+before a candidate is offered. Only the operator's existing eligible profile order
+can supply an alternative; a sole eligible profile needs no decision call. Missing
+quota remains unknown. This preflight performs no provider probe or credential refresh.
+
+Automatic execution keeps the normal breaker and model-cooldown gates even though
+its selected connection is pinned. A provider becoming unavailable after Choice
+cannot turn that pin into an override. The application lane still permits one
+physical execution; an operator-configured retry chain after dispatch is a remaining
+integration gap. Unknown completion does not authorize an execution replay here.
+
 [`decisionPolicyMetrics.ts`](../../scripts/router-eval/decisionPolicyMetrics.ts)
 computes offline metrics from a result artifact and a separate label artifact.
 Both carry the suite hash; case, input and response hashes must match. These hashes
