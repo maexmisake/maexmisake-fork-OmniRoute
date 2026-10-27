@@ -474,7 +474,10 @@ function reportedApplicationUsage(provider: string, data: Record<string, unknown
     data?.usage && typeof data.usage === "object" ? (data.usage as Record<string, unknown>) : {};
   const cost = numberOrNull(usage.cost);
   if (provider === "claude") return { ...claudeReportedUsage(usage), cost };
-  const completion = usage.completion_tokens_details as Record<string, unknown> | undefined;
+  // Error receipts may retain the Responses spelling even on a chat endpoint.
+  // Preserve its reported reasoning count without treating missing price as zero.
+  const completion = (usage.completion_tokens_details ?? usage.output_tokens_details) as
+    Record<string, unknown> | undefined;
   const prompt = usage.prompt_tokens_details as Record<string, unknown> | undefined;
   return {
     input: numberOrNull(usage.prompt_tokens, true),

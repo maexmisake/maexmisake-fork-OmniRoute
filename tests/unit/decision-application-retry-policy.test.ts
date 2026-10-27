@@ -19,6 +19,49 @@ test("a quota error with reported generated output is not a clean rejection proo
     );
   }
 });
+
+for (const field of ["completion_tokens_details", "output_tokens_details"]) {
+  test(`quota retry rejects generated or malformed nested ${field}`, () => {
+    for (const details of [
+      { reasoning_tokens: 7 },
+      { reasoning_tokens: "7" },
+      { reasoning_tokens: null },
+      { reasoning_tokens: -1 },
+      { reasoning_tokens: false },
+      { audio_tokens: 1 },
+      null,
+      [],
+      0,
+      "unknown",
+    ]) {
+      assert.equal(
+        completedExecutionRejection(
+          429,
+          {
+            error: { code: "insufficient_quota", scope: "account" },
+            usage: { completion_tokens: 0, [field]: details },
+          },
+          null
+        ),
+        null,
+        JSON.stringify(details)
+      );
+    }
+  });
+  test(`quota retry retains clean zero nested ${field}`, () => {
+    assert.equal(
+      completedExecutionRejection(
+        429,
+        {
+          error: { code: "insufficient_quota", scope: "account" },
+          usage: { completion_tokens: 0, [field]: { reasoning_tokens: 0, audio_tokens: 0 } },
+        },
+        null
+      )?.scope,
+      "account-quota"
+    );
+  });
+}
 test("expired Retry-After HTTP date is honored as already elapsed", () => {
   const now = Date.parse("2026-10-27T05:00:00Z");
   assert.deepEqual(

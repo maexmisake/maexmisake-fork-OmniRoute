@@ -77,6 +77,14 @@ export function validApplicationRetry(
 
 /** Closed error shapes only: a successful/partial output is never a rejection proof.
  * Missing billing remains unknown; this classifies completion, not price. */
+function zeroGenerationDetails(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every((counter) => counter === 0)
+  );
+}
 function cleanRejectionBody(body: Record<string, unknown> | null): body is Record<string, unknown> {
   if (!body || ["choices", "output", "response", "content"].some((key) => key in body))
     return false;
@@ -86,6 +94,12 @@ function cleanRejectionBody(body: Record<string, unknown> | null): body is Recor
     if (
       ["completion_tokens", "output_tokens", "reasoning_tokens"].some(
         (key) => key in usage && usage[key] !== 0
+      )
+    )
+      return false;
+    if (
+      ["completion_tokens_details", "output_tokens_details"].some(
+        (key) => key in usage && !zeroGenerationDetails(usage[key])
       )
     )
       return false;

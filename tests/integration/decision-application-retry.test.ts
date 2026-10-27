@@ -24,6 +24,7 @@ let retryAfter: string | null = null;
 let mode: "json" | "reset" = "json";
 let beforePrimaryReply: (() => Promise<void>) | undefined;
 let decisions = 0;
+let failureUsage: Record<string, unknown> | undefined;
 const server = createServer(async (request, response) => {
   let raw = "";
   for await (const chunk of request) raw += chunk;
@@ -44,7 +45,12 @@ const server = createServer(async (request, response) => {
       "content-type": "application/json",
       ...(retryAfter ? { "retry-after": retryAfter } : {}),
     });
-    response.end(JSON.stringify({ error: { code: failure.code, scope: failure.scope } }));
+    response.end(
+      JSON.stringify({
+        error: { code: failure.code, scope: failure.scope },
+        ...(failureUsage ? { usage: failureUsage } : {}),
+      })
+    );
   } else {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
@@ -109,7 +115,7 @@ after(async () => {
   );
   resetDbInstance();
 });
-async function fixture(enabled = true, native = false, samePair = false) {
+async function fixture(enabled = true, native = false, samePair = false, sessions = false) {
   resetAllCircuitBreakers();
   hits = [];
   failure = { status: 429, code: "insufficient_quota", scope: "account" };
@@ -117,6 +123,7 @@ async function fixture(enabled = true, native = false, samePair = false) {
   mode = "json";
   beforePrimaryReply = undefined;
   decisions = 0;
+  failureUsage = undefined;
   const key = await createApiKey("synthetic-retry-client", "synthetic");
   const connections: Record<string, string> = {};
   for (const id of ["primary", "backup"]) {
@@ -153,6 +160,17 @@ async function fixture(enabled = true, native = false, samePair = false) {
       decisionPolicy: {
         enabled: true,
         applicationMode: "bounded-v1",
+        ...(sessions
+          ? {
+              sessions: {
+                mode: "task-boundary",
+                idleTtlMs: 60000,
+                maxTurns: 8,
+                minStableTurns: 2,
+                maxActiveSessions: 4,
+              },
+            }
+          : {}),
         ...(selector
           ? {
               selection: {
@@ -205,11 +223,15 @@ async function fixture(enabled = true, native = false, samePair = false) {
       },
     },
   });
-  const request = (signal?: AbortSignal) =>
+  const request = (signal?: AbortSignal, headers: Record<string, string> = {}) =>
     new Request("http://application.invalid/api/v1/chat/completions", {
       method: "POST",
       signal,
-      headers: { "content-type": "application/json", authorization: `Bearer ${key.key}` },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${key.key}`,
+        ...headers,
+      },
       body: JSON.stringify({
         model: name,
         messages: [{ role: "user", content: "Explain a loop" }],
@@ -240,6 +262,45 @@ test("configured account-quota rejection reaches exact eligible backup with sepa
   );
   assert.equal(response.headers.get("x-omniroute-routing-cost-status"), "unknown");
   assert.equal(response.headers.get("x-omniroute-decision-candidate"), "backup");
+});
+
+for (const field of ["completion_tokens_details", "output_tokens_details"]) {
+  test(`nested ${field} generation prevents actual backup and retains first unknown charge`, async () => {
+    const f = await fixture();
+    failureUsage = { completion_tokens: 0, [field]: { reasoning_tokens: 7 } };
+    const response = await POST(f.request());
+    await response.text();
+    assert.equal(response.status, 429);
+    assert.deepEqual(hits, ["gpt-5.4"]);
+    const rows = readDecisionAttempts(f.key.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].candidate_id, "primary");
+    assert.equal(rows[0].reasoning_tokens, 7);
+    assert.equal(rows[0].cost_usd, null);
+    assert.equal(rows[0].http_status, 429);
+  });
+}
+
+test("new owned session pins the completed retry backup and resumes without reselection", async () => {
+  const f = await fixture(true, true, false, true);
+  const first = await POST(f.request(undefined, { "x-omniroute-routing-session": "new" }));
+  assert.equal(first.status, 200, await first.text());
+  const id = first.headers.get("x-omniroute-routing-session");
+  assert.match(id ?? "", /^[0-9a-f-]{36}$/i);
+  assert.equal(first.headers.get("x-omniroute-decision-candidate"), "backup");
+  assert.equal(decisions, 1);
+  assert.deepEqual(hits, ["gpt-5.4", "gpt-5.4-mini"]);
+  const resumed = await POST(f.request(undefined, { "x-omniroute-routing-session": id! }));
+  assert.equal(resumed.status, 200, await resumed.text());
+  assert.equal(resumed.headers.get("x-omniroute-routing-session"), id);
+  assert.equal(resumed.headers.get("x-omniroute-decision-candidate"), "backup");
+  assert.equal(decisions, 1);
+  assert.deepEqual(hits, ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-mini"]);
+  const execution = readDecisionAttempts(f.key.id).filter((row) => row.lane === "execution");
+  assert.equal(execution.length, 3);
+  assert.equal(execution[0].cost_usd, null);
+  assert.equal(execution[1].connection_id, f.connections.backup);
+  assert.equal(execution[2].connection_id, f.connections.backup);
 });
 test("one native Choice can hand over through two configured executions without another decision", async () => {
   const f = await fixture(true, true);
